@@ -1,0 +1,7 @@
+{
+  "status": "valid",
+  "identifier": {
+    "type": "dns",
+    "value": "www.example.org"
+  }
+}

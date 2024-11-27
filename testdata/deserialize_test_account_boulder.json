@@ -1,0 +1,13 @@
+{
+  "key": {
+    "kty": "RSA",
+    "n": "rirbAo8mcOGwVWMAwcTTM-_axrGN2cE_eTQz-ZDQspJMpTcbDsW6dzczZ55gF_5Cx5emvA77EDI575KdFTMt06oNNdh_5JM8c83pkQgLQ5QwTAd86C27M-iP-sIsiJpZAgNBRMlsqh3ex1scs7Febw6oZPcnGRGM8vCx1YVpkaLfLcd8WzF12FXJcdJlGpdLVQn3X5VYe0bgsSJenZTB8AYV_3DJr_uTbLvYssEzkuGDZ5SfVfUEIgiwzOU7lILObSiOwqm5uabfFSwTdZNEZGwVj1io0sMCx5C0bqq6gqz0KIuZvQbVH3dpCE29ko5gYg45nkI25D6zgewHW0Uq1w",
+    "e": "AQAB"
+  },
+  "contact": [
+    "mailto:not-an-actual-address@null.null"
+  ],
+  "initialIp": "2a01:4f8:151:506c::2",
+  "createdAt": "2019-08-13T12:32:10Z",
+  "status": "valid"
+}

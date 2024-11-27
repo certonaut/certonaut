@@ -1,0 +1,7 @@
+{
+  "newNonce": "https://inv.alid/new-nonce",
+  "newAccount": "https://inv.alid/new-account",
+  "newOrder": "https://inv.alid/new-order",
+  "revokeCert": "https://inv.alid/revoke-cert",
+  "keyChange": "https://inv.alid/key-change"
+}

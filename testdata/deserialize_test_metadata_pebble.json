@@ -1,0 +1,8 @@
+{
+  "externalAccountRequired": false,
+  "profiles": {
+    "default": "The profile you know and love",
+    "shortlived": "A short-lived cert profile, without actual enforcement"
+  },
+  "termsOfService": "data:text/plain,Do%20what%20thou%20wilt"
+}
