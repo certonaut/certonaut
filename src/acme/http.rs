@@ -1,5 +1,5 @@
-use crate::protocol::error::ProtocolResult;
-use crate::protocol::object::Nonce;
+use crate::acme::error::ProtocolResult;
+use crate::acme::object::Nonce;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
 use serde::Serialize;
 use std::time::Duration;
@@ -114,7 +114,7 @@ impl HttpClient {
     pub async fn post<T: Serialize>(&self, url: Url, body: &T) -> ProtocolResult<Response> {
         let request_builder = self.client.post(url);
         // RFC8555 Section 6.2, "[clients] must have the Content-Type header field set
-        // to "application/jose+json"
+        // to "application/jose+json""
         let request = request_builder
             .header(
                 reqwest::header::CONTENT_TYPE,

@@ -1,5 +1,5 @@
 use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair};
-use crate::protocol::object::Nonce;
+use crate::acme::object::Nonce;
 use anyhow::Context;
 use aws_lc_rs::digest::{digest, SHA256};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -211,7 +211,7 @@ mod tests {
         ProtectedHeader,
     };
     use crate::crypto::signing::Curve;
-    use crate::protocol::object::Nonce;
+    use crate::acme::object::Nonce;
     use rstest::rstest;
     use url::Url;
 

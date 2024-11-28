@@ -34,7 +34,7 @@ pub(crate) mod serde_helper {
     /// PassthroughBytes is a serde-deserializable type that simply takes in a byte array as input
     /// and deserializes it unchanged.
     #[derive(Debug)]
-    pub(crate) struct PassthroughBytes {
+    pub struct PassthroughBytes {
         inner: Vec<u8>,
     }
 

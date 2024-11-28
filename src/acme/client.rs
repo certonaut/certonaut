@@ -1,12 +1,12 @@
-use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
-use crate::crypto::signing::KeyPair;
-use crate::protocol::error::ProtocolError;
-use crate::protocol::error::ProtocolResult;
-use crate::protocol::http::{HttpClient, RelationLink};
-use crate::protocol::object::{
+use crate::acme::error::ProtocolError;
+use crate::acme::error::ProtocolResult;
+use crate::acme::http::{HttpClient, RelationLink};
+use crate::acme::object::{
     Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Directory, EmptyObject,
     FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
 };
+use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
+use crate::crypto::signing::KeyPair;
 use crate::util::serde_helper::PassthroughBytes;
 use anyhow::{anyhow, bail};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -16,7 +16,7 @@ use reqwest::StatusCode;
 use serde::de::value::BytesDeserializer;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::any::{Any, TypeId};
+use std::any::TypeId;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -110,7 +110,7 @@ impl AcmeClient {
             let status = response.status();
             match status {
                 StatusCode::OK | StatusCode::CREATED => {
-                    // Weird hack: The ACME protocol uses JSON for every request and response, except
+                    // Weird hack: The ACME acme uses JSON for every request and response, except
                     // for downloading a certificate. To avoid unnecessary redundancy, we always
                     // deserialize JSON here, except if the caller requests a PassthroughBytes
                     // struct, where we just pass the received bytes as-is.

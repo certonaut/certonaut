@@ -1,27 +1,17 @@
-extern crate core;
-
-use crate::crypto::signing::KeyPair;
-use crate::pebble::pebble_root;
-use crate::protocol::client::{AccountRegisterOptions, AcmeClientBuilder};
-use crate::protocol::http::HttpClient;
-use crate::protocol::object::{ChallengeStatus, InnerChallenge, NewOrderRequest, OrderStatus};
 use anyhow::{anyhow, bail, Context};
+use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
+use certonaut::acme::http::HttpClient;
+use certonaut::acme::object::{ChallengeStatus, InnerChallenge, NewOrderRequest, OrderStatus};
+use certonaut::crypto::signing::KeyPair;
+use certonaut::pebble::pebble_root;
 use std::fs::File;
 use url::Url;
 
-mod crypto;
-mod pebble;
-mod protocol;
-mod util;
-
-const ACME_STAGING_URL: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
 const PEBBLE_URL: &str = "https://localhost:14000/dir";
 
-// Idea: Have a fully-guided, step-by-step interactive default CLI interface, in addition
-// to scripted/automated
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+#[tokio::test]
+#[ignore]
+async fn pebble_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let acme_url = Url::parse(PEBBLE_URL)?;
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;

@@ -1,4 +1,4 @@
-use crate::protocol::object::Identifier;
+use crate::acme::object::Identifier;
 use serde::Deserialize;
 use std::fmt::{Display, Formatter};
 
@@ -46,7 +46,7 @@ impl Display for ProtocolError {
                 write!(f, "ACME error: {e}")
             }
             ProtocolError::Generic(e) => write!(f, "error: {e}"),
-            ProtocolError::ProtocolViolation(e) => write!(f, "protocol error: {e}"),
+            ProtocolError::ProtocolViolation(e) => write!(f, "acme error: {e}"),
         }
     }
 }

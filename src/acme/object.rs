@@ -1,5 +1,5 @@
 use crate::crypto::jws::JsonWebKey;
-use crate::protocol::error::{Problem, ProtocolError};
+use crate::acme::error::{Problem, ProtocolError};
 use crate::util::serde_helper::optional_offset_date_time;
 use serde::{Deserialize, Serialize};
 use std::cmp::PartialEq;

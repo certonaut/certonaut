@@ -1,0 +1,28 @@
+syntax = "proto3";
+package astrolink;
+
+// Configuration contains all global, persistent settings for the Orbiter
+message Configuration {
+  bool has_configuration = 1;
+}
+
+// CertificateAuthority describes static information about a certificate authority (CA)
+message CertificateAuthority {
+  // Unique identifier for this CA
+  int64 id = 1;
+  // User-friendly name of the CA
+  string name = 2;
+  // The ACME directory URL of the CA. If the CA has multiple directory URLs, each URL is a separate CA
+  string acme_url = 3;
+  // True, if the CA is public. A public CA is one that is open to the public,
+  // and performs DV from the worldwide internet
+  bool is_public = 4;
+  // True, if this CA is the default for new certificates.
+  bool is_default = 5;
+  // True, if this CA issues only test-use certificates that should not be used in production.
+  bool is_testing = 6;
+}
+
+message ListCertificateAuthorityResponse {
+  repeated CertificateAuthority certificate_authorities = 1;
+}
