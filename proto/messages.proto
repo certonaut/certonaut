@@ -9,7 +9,7 @@ message Configuration {
 // CertificateAuthority describes static information about a certificate authority (CA)
 message CertificateAuthority {
   // Unique identifier for this CA
-  int64 id = 1;
+  string id = 1;
   // User-friendly name of the CA
   string name = 2;
   // The ACME directory URL of the CA. If the CA has multiple directory URLs, each URL is a separate CA
@@ -25,4 +25,21 @@ message CertificateAuthority {
 
 message ListCertificateAuthorityResponse {
   repeated CertificateAuthority certificate_authorities = 1;
+}
+
+message ListAccountRequest {
+  // The identifier of the CA for which to list accounts
+  string ca_id = 1;
+}
+
+message ListAccountResponse {
+  repeated Account accounts = 1;
+}
+
+// Account is an ACME account object
+message Account {
+  // Unique identifier for this account
+  string id = 1;
+  // User-friendly name of this account
+  string name = 2;
 }

@@ -1,17 +1,20 @@
-use certonaut::rpc::server::OrbiterService;
+use certonaut::daemon::OrbiterService;
+use certonaut::rpc::server::OrbiterRPCService;
 use certonaut::rpc::service::orbiter_server::OrbiterServer;
+use std::sync::Arc;
 use tonic::transport::Server;
-
-// Idea: Have a fully-guided, step-by-step interactive default CLI interface, in addition
-// to scripted/automated
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // TODO: Port configuration, Windows named pipes, Unix sockets, TLS
-    let addr = "[::1]:50051".parse()?;
-    let service = OrbiterService::default();
+    // TODO: Determine defaults for config, clap configurable
+    let config = certonaut::config::load("orbiter.toml")?;
+    let addr = config.rpc_address;
+    let service = Arc::new(OrbiterService::try_new(config).await?);
+    // TODO: Authentication such that not any local process can issue certs via orbiter
+    let rpc_service = OrbiterRPCService::new(service);
     Server::builder()
-        .add_service(OrbiterServer::new(service))
+        .add_service(OrbiterServer::new(rpc_service))
         .serve(addr)
         .await?;
     Ok(())

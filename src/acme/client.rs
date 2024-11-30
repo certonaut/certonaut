@@ -55,6 +55,7 @@ impl AcmeClientBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct AcmeClient {
     http_client: HttpClient,
     directory: Directory,
