@@ -1,7 +1,10 @@
 use crate::daemon::OrbiterService;
 use crate::rpc::service;
 use crate::rpc::service::orbiter_server::Orbiter;
-use crate::rpc::service::{CertificateAuthority, ListAccountRequest, ListAccountResponse};
+use crate::rpc::service::{
+    Account, CertificateAuthority, ListAccountRequest, ListAccountResponse, Metadata,
+    NewAccountRequest,
+};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -37,20 +40,29 @@ impl Orbiter for OrbiterRPCService {
         _request: Request<()>,
     ) -> Result<Response<service::ListCertificateAuthorityResponse>, Status> {
         let ca_list = self.service.list_certificate_authorities().await;
-        let ca_list = ca_list
-            .iter()
-            .map(|ca| ca.get_configuration())
-            .map(|config| CertificateAuthority {
+        let mut certificate_authorities = Vec::with_capacity(ca_list.len());
+        for ca in ca_list {
+            let lock = ca.read().await;
+            let config = lock.build_configuration();
+            let directory = &lock.get_directory().meta;
+            let meta = directory.as_ref().map(|meta| Metadata {
+                terms_of_service: meta.terms_of_service.as_ref().map(|url| url.to_string()),
+                website: meta.website.as_ref().map(|url| url.to_string()),
+                caa_identities: meta.caa_identities.clone(),
+                external_account_required: meta.external_account_required,
+            });
+            certificate_authorities.push(CertificateAuthority {
                 id: config.identifier.to_string(),
                 name: config.name.clone(),
                 acme_url: config.acme_directory.to_string(),
                 is_public: config.public,
                 is_default: config.default,
                 is_testing: config.testing,
-            })
-            .collect();
+                metadata: meta,
+            });
+        }
         Ok(Response::new(service::ListCertificateAuthorityResponse {
-            certificate_authorities: ca_list,
+            certificate_authorities,
         }))
     }
 
@@ -61,19 +73,32 @@ impl Orbiter for OrbiterRPCService {
         let request = request.into_inner();
         let accounts = self
             .service
-            .list_accounts(&request.ca_id)
+            .list_account_configs(&request.ca_id)
             .await
-            .map_err(|anyhow| Status::not_found(anyhow.to_string()))?;
+            .map_err(|err| Status::not_found(format!("{err:#}")))?;
         let accounts = accounts
             .iter()
-            .map(|account| {
-                let config = account.get_config();
-                service::Account {
-                    id: config.identifier.clone(),
-                    name: config.name.clone(),
-                }
+            .map(|config| Account {
+                id: config.identifier.clone(),
+                name: config.name.clone(),
             })
             .collect::<Vec<_>>();
         Ok(Response::new(ListAccountResponse { accounts }))
+    }
+
+    async fn create_account(
+        &self,
+        request: Request<NewAccountRequest>,
+    ) -> Result<Response<Account>, Status> {
+        let request = request.into_inner();
+        let account = self
+            .service
+            .create_account(request)
+            .await
+            .map_err(|err| Status::failed_precondition(format!("{err:#}")))?;
+        Ok(Response::new(Account {
+            id: account.identifier.clone(),
+            name: account.name.clone(),
+        }))
     }
 }

@@ -1,5 +1,5 @@
-use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair};
 use crate::acme::object::Nonce;
+use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair};
 use anyhow::Context;
 use aws_lc_rs::digest::{digest, SHA256};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -206,12 +206,12 @@ pub struct FlatJsonWebSignature {
 
 #[cfg(test)]
 mod tests {
+    use crate::acme::object::Nonce;
     use crate::crypto::jws::{
         Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters,
         ProtectedHeader,
     };
     use crate::crypto::signing::Curve;
-    use crate::acme::object::Nonce;
     use rstest::rstest;
     use url::Url;
 

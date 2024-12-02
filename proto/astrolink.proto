@@ -16,4 +16,6 @@ service Orbiter {
   rpc ListCertificateAuthorities (google.protobuf.Empty) returns (ListCertificateAuthorityResponse);
   // List currently active accounts for a specific CA
   rpc ListAccounts (ListAccountRequest) returns (ListAccountResponse);
+  // Create a new account at the specified CA
+  rpc CreateAccount(NewAccountRequest) returns (Account);
 }

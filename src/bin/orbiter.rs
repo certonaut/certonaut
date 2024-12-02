@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     // TODO: Determine defaults for config, clap configurable
     let config = certonaut::config::load("orbiter.toml")?;
     let addr = config.rpc_address;
-    let service = Arc::new(OrbiterService::try_new(config).await?);
+    let service = Arc::new(OrbiterService::load_from_config(config).await?);
     // TODO: Authentication such that not any local process can issue certs via orbiter
     let rpc_service = OrbiterRPCService::new(service);
     Server::builder()
