@@ -1,17 +1,27 @@
-use crate::acme::client::{AccountRegisterOptions, AcmeClient};
+use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
+use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
+use crate::acme::object::{
+    AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order,
+    OrderStatus, Token,
+};
 use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration};
 use crate::crypto::jws::JsonWebKey;
 use crate::crypto::signing;
 use crate::crypto::signing::KeyType;
 use crate::pebble::pebble_root;
-use anyhow::{bail, Context, Error};
+use anyhow::{anyhow, bail, Context, Error};
 use clap::Args;
+use rcgen::CertificateSigningRequest;
 use std::fmt::Display;
 use std::fs::File;
-use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::str::FromStr;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use time::error::ConversionRange;
+use tokio::sync::oneshot;
+use tracing::{debug, warn};
 use url::Url;
 
 pub mod acme;
@@ -89,6 +99,30 @@ async fn new_acme_client(
         .await
         .context(format!("Establishing connection to CA {name}"))?;
     Ok(client)
+}
+
+fn current_time_truncated() -> time::OffsetDateTime {
+    let now = time::OffsetDateTime::now_utc();
+    // unwrap is unreachable due to const valid nanosecond
+    now.replace_nanosecond(0).unwrap()
+}
+
+// TODO: must-staple option
+fn create_and_sign_csr(
+    cert_key: &rcgen::KeyPair,
+    identifiers: Vec<Identifier>,
+) -> Result<CertificateSigningRequest, Error> {
+    let cert_params = rcgen::CertificateParams::new(
+        identifiers
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<String>>(),
+    )
+    .context("CSR generation failed")?;
+    let csr = cert_params
+        .serialize_request(cert_key)
+        .context("Signing CSR failed")?;
+    Ok(csr)
 }
 
 #[derive(Debug)]
@@ -223,8 +257,8 @@ impl Certonaut {
     }
 
     pub fn choose_ca_id_from_name(&self, friendly_name: &str) -> String {
-        let mut ca_id = friendly_name.trim().to_lowercase().replace(" ", "");
-        ca_id.retain(|c| c.is_ascii());
+        let mut ca_id = friendly_name.trim().to_lowercase().replace(" ", "-");
+        ca_id.retain(|c| c.is_ascii_alphanumeric());
         let mut ca_num = self.config.ca_list.len();
         if ca_id.is_empty() {
             ca_id = format!("ca-{ca_num}");
@@ -300,4 +334,231 @@ impl Display for AccountChoice {
         }
         Ok(())
     }
+}
+
+pub struct AcmeIssuer {
+    client: Arc<AcmeClient>,
+    account: AcmeAccount,
+}
+
+impl AcmeIssuer {
+    pub fn new(client: Arc<AcmeClient>, account: AcmeAccount) -> Self {
+        Self { client, account }
+    }
+
+    pub async fn get_cert_from_finalized_order(
+        &self,
+        order: Order,
+    ) -> Result<DownloadedCertificate, Error> {
+        let certificate_url = order.certificate.ok_or(anyhow!(
+            "CA did not provide a certificate URL for final order"
+        ))?;
+        let cert = self
+            .client
+            .download_certificate(&self.account.jwk, &certificate_url)
+            .await
+            .context("Downloading certificate")?;
+        Ok(cert)
+    }
+
+    pub async fn issue(
+        // TODO: Do we need &mut?
+        &mut self,
+        cert_key: &rcgen::KeyPair,
+        cert_lifetime: Option<Duration>,
+        mut authorizers: Vec<Authorizer>,
+    ) -> Result<DownloadedCertificate, Error> {
+        let identifiers: Vec<Identifier> = authorizers
+            .iter()
+            .map(|authorizer| authorizer.identifier.clone())
+            .collect();
+        let csr = create_and_sign_csr(cert_key, identifiers.clone())?;
+        let (not_before, not_after) = match cert_lifetime {
+            Some(lifetime) => {
+                let not_before = current_time_truncated();
+                let not_after = time::Duration::try_from(lifetime)
+                    .and_then(|lifetime| not_before.checked_add(lifetime).ok_or(ConversionRange))
+                    .context("Range error computing cert validity dates")?;
+                (Some(not_before), Some(not_after))
+            }
+            None => (None, None),
+        };
+        let request = NewOrderRequest {
+            identifiers,
+            not_before,
+            not_after,
+        };
+        let (order_url, mut order) = self
+            .client
+            .new_order(&self.account.jwk, &request)
+            .await
+            .context("Creating new order")?;
+        debug!("Order URL: {}", order_url);
+        // TODO: Deadline issuance process
+        loop {
+            match order.status {
+                OrderStatus::Valid => {
+                    return self.get_cert_from_finalized_order(order).await;
+                }
+                OrderStatus::Processing => {
+                    let final_order = self
+                        .client
+                        .poll_order(&self.account.jwk, order, &order_url)
+                        .await?;
+                    return self.get_cert_from_finalized_order(final_order).await;
+                }
+                OrderStatus::Ready => {
+                    let final_order = self
+                        .client
+                        .finalize_order(&self.account.jwk, &order, &csr)
+                        .await?;
+                    return self.get_cert_from_finalized_order(final_order).await;
+                }
+                OrderStatus::Invalid => bail!("New order has unacceptable status (invalid)"),
+                OrderStatus::Pending => {
+                    // Go authorize
+                }
+            }
+            for authz_url in order.authorizations {
+                let authz = self
+                    .client
+                    .get_authorization(&self.account.jwk, &authz_url)
+                    .await?;
+                match authz.status {
+                    AuthorizationStatus::Valid => {
+                        // Skip
+                    }
+                    AuthorizationStatus::Pending => {
+                        let mut challenge_solver = authorizers.swap_remove(
+                            authorizers
+                            .iter()
+                            .position(|authorizer| authorizer.identifier == authz.identifier)
+                            .ok_or(anyhow!("Order contains pending authorization for {}, but this identifier was not part of our requested order", authz.identifier))?
+                        );
+                        let chosen_challenge = authz.challenges
+                            .into_iter()
+                            .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
+                            .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
+                            // TODO: Describe solver in error message
+                            .ok_or(anyhow!("Authorization for {} did not contain any pending challenge supported by solver", authz.identifier))?;
+
+                        // TODO: Timeout
+
+                        // Setup
+                        let challenge_solver = tokio::task::spawn_blocking(move || {
+                            challenge_solver
+                                .solver
+                                .deploy_challenge(chosen_challenge.inner_challenge)
+                                // Return the solver to the caller. This is a workaround for the 'static requirement of the closure.
+                                .map(|()| challenge_solver)
+                        })
+                        .await
+                        .expect("Challenge solver panic")
+                        .context(format!(
+                            "Setting up challenge solver for {}",
+                            authz.identifier
+                        ))?;
+
+                        // Validation
+                        self.client
+                            .validate_challenge(&self.account.jwk, &chosen_challenge.url)
+                            .await?;
+
+                        // Cleanup
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            challenge_solver.solver.cleanup_challenge()
+                        })
+                        .await
+                        .context("Challenge solver panicked during cleanup")?
+                        {
+                            warn!(
+                                "Challenge solver for {} encountered an error during cleanup: {:#}",
+                                authz.identifier, e
+                            );
+                        }
+                    }
+                    AuthorizationStatus::Invalid => {
+                        let id = &authz.identifier;
+                        let problems: Vec<Problem> = authz
+                            .challenges
+                            .into_iter()
+                            .filter_map(|challenge| challenge.error)
+                            .collect();
+                        let mut problem_string = String::new();
+                        problems.into_iter().for_each(|problem| {
+                            problem_string.push('\n');
+                            problem_string.push_str(&problem.to_string())
+                        });
+                        bail!("Failed to authorize {id}. The CA reported these problems: {problem_string}")
+                    }
+                    AuthorizationStatus::Deactivated
+                    | AuthorizationStatus::Expired
+                    | AuthorizationStatus::Revoked => {
+                        let id = &authz.identifier;
+                        bail!("Authorization for {id} is in an invalid status (deactivated, expired, or revoked)")
+                    }
+                }
+            }
+            order = self.client.get_order(&self.account.jwk, &order_url).await?
+        }
+        todo!()
+    }
+}
+
+pub struct Authorizer {
+    identifier: Identifier,
+    solver: Box<dyn ChallengeSolver>,
+}
+
+impl Default for Authorizer {
+    fn default() -> Self {
+        Self {
+            identifier: Identifier::Unknown,
+            solver: Box::new(NullSolver::default()),
+        }
+    }
+}
+
+pub trait ChallengeSolver: Send + Sync {
+    fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
+    fn deploy_challenge(&mut self, challenge: InnerChallenge) -> Result<(), Error>;
+    fn cleanup_challenge(self: Box<Self>) -> Result<(), Error>;
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct NullSolver {}
+
+impl ChallengeSolver for NullSolver {
+    fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
+        false
+    }
+
+    fn deploy_challenge(&mut self, _challenge: InnerChallenge) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+pub trait KeyAuthorization {
+    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String;
+}
+
+impl KeyAuthorization for InnerChallenge {
+    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
+        let token = match &self {
+            InnerChallenge::Http(http) => &http.token,
+            InnerChallenge::Dns(dns) => &dns.token,
+            InnerChallenge::Alpn(alpn) => &alpn.token,
+            InnerChallenge::Unknown => &Token::from_str("unknown").unwrap(),
+        };
+        get_key_authorization(account_key, token)
+    }
+}
+
+fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
+    let thumbprint = key.get_acme_thumbprint();
+    format!("{token}.{thumbprint}")
 }

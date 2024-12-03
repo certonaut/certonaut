@@ -367,8 +367,17 @@ impl AcmeClient {
         let order_url = response.location.ok_or(anyhow!(
             "Server did not provide an order URL upon finalizing"
         ))?;
+        self.poll_order(account_key, response.body, &order_url)
+            .await
+    }
+
+    pub async fn poll_order(
+        &self,
+        account_key: &JsonWebKey,
+        mut order: Order,
+        order_url: &Url,
+    ) -> anyhow::Result<Order> {
         let deadline = Instant::now() + MAX_POLL_DURATION;
-        let mut order: Order = response.body;
         while Instant::now() < deadline {
             match order.status {
                 OrderStatus::Pending => {

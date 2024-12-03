@@ -304,33 +304,6 @@ pub struct AlpnChallenge {
     pub token: Token,
 }
 
-pub trait KeyAuthorization {
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String;
-}
-
-fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
-    let thumbprint = key.get_acme_thumbprint();
-    format!("{token}.{thumbprint}")
-}
-
-impl KeyAuthorization for HttpChallenge {
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
-        get_key_authorization(account_key, &self.token)
-    }
-}
-
-impl KeyAuthorization for DnsChallenge {
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
-        get_key_authorization(account_key, &self.token)
-    }
-}
-
-impl KeyAuthorization for AlpnChallenge {
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
-        get_key_authorization(account_key, &self.token)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EmptyObject {}
 

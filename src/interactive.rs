@@ -2,13 +2,14 @@ use crate::acme::client::AcmeClient;
 use crate::config::CertificateAuthorityConfiguration;
 use crate::crypto::signing::{Curve, KeyType};
 use crate::{
-    new_acme_client, AccountChoice, AcmeAccount, CaChoice, Certonaut, IssueCommand,
+    new_acme_client, AccountChoice, AcmeAccount, AcmeIssuer, CaChoice, Certonaut, IssueCommand,
     NewAccountOptions, CRATE_NAME,
 };
 use anyhow::{bail, Context, Error};
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
 use inquire::{Confirm, Select, Text};
+use std::sync::Arc;
 use url::Url;
 
 #[derive(Debug)]
@@ -28,8 +29,8 @@ impl InteractiveClient {
                 .green()
                 .on_black()
         );
-        let (account, ca) = self.user_select_ca_and_account(&issue_cmd).await?;
-        println!("Selected account {account:#?} for CA {ca:#?}");
+        let (client, account) = self.user_select_ca_and_account(&issue_cmd).await?;
+        let issuer = AcmeIssuer::new(Arc::new(client), account);
         Ok(())
     }
 
@@ -188,7 +189,23 @@ impl InteractiveClient {
         if configured_accounts.is_empty() {
             return Ok(AccountChoice::NewAccount);
         }
-        todo!()
+        // If the user has only a single account, we select that by default
+        // because that's a very common setup. The user can still request for new accounts to be
+        // created explicitly.
+        if configured_accounts.len() == 1 {
+            return Ok(AccountChoice::ExistingAccount(ca.accounts[0].clone()));
+        }
+        let mut choices = configured_accounts
+            .iter()
+            .map(Clone::clone)
+            .map(AccountChoice::ExistingAccount)
+            .collect::<Vec<_>>();
+        choices.push(AccountChoice::NewAccount);
+        println!("You have multiple account configured for this CA");
+        let user_choice = Select::new("Select the account you want to use", choices)
+            .prompt()
+            .context("No account selected")?;
+        Ok(user_choice)
     }
 
     async fn user_create_account(
