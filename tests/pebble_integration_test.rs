@@ -19,7 +19,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
         .with_http_client(http_client)
         .try_build()
         .await?;
-    let keypair = KeyPair::load_from_disk(File::open("account.key")?)?;
+    let keypair = KeyPair::load_from_disk(File::open("testdata/account.key")?)?;
     let register_options = AccountRegisterOptions {
         key: keypair,
         contact: vec!["mailto:admin@example.org".parse()?],

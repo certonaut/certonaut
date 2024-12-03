@@ -1,6 +1,4 @@
-use crate::config::{
-    default_rpc_address, CertificateAuthorityConfiguration, ConfigBackend, Configuration,
-};
+use crate::config::{CertificateAuthorityConfiguration, ConfigBackend, Configuration};
 use anyhow::Error;
 use std::path::Path;
 use std::str::FromStr;
@@ -12,7 +10,6 @@ pub struct DefaultConfig {}
 impl DefaultConfig {
     pub fn get_config(&self) -> Configuration {
         Configuration {
-            rpc_address: default_rpc_address(),
             ca_list: vec![
                 CertificateAuthorityConfiguration {
                     name: "Let's Encrypt".to_string(),

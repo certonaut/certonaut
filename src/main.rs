@@ -1,18 +1,20 @@
-use anyhow::Context;
-use certonaut::client::Rover;
-use certonaut::config::DEFAULT_RPC;
-use certonaut::rpc::client::RpcClient;
-use certonaut::IssueCommand;
+use certonaut::interactive::InteractiveClient;
+use certonaut::{config, Certonaut, IssueCommand, CONFIG_FILE};
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]
 struct CommandLineArguments {
-    /// Address of the orbiter
-    #[arg(short, long, default_value = DEFAULT_RPC, env = "RPC_URL")]
-    connect: tonic::transport::Endpoint,
-
+    /// Path to configuration file
+    #[arg(
+        short,
+        long,
+        env = "CERTONAUT_CONFIG",
+        default_value = "certonaut.toml"
+    )]
+    config: PathBuf,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -34,14 +36,11 @@ fn is_interactive() -> bool {
 async fn main() -> anyhow::Result<()> {
     let interactive = is_interactive();
     let cli = CommandLineArguments::parse();
-    // TODO: Also consider grabbing RPC from the config file, if found at default location
-    let rpc_endpoint = cli.connect;
-    let rpc_uri = rpc_endpoint.uri().clone();
-
-    let rpc_client = RpcClient::try_new(rpc_endpoint).await.context(format!(
-        "Cannot connect to orbiter at address {rpc_uri}. Did you launch it?"
-    ))?;
-    let mut rover = Rover::new(rpc_client);
+    CONFIG_FILE
+        .set(cli.config.clone())
+        .expect("Config file already set");
+    let config = config::load(cli.config)?;
+    let client = Certonaut::new(config);
 
     let result = {
         match cli.command {
@@ -50,11 +49,13 @@ async fn main() -> anyhow::Result<()> {
                     // TODO: Greeting & first-time instructions for new users here
                     // TODO: interactive selection of action
                 }
+                println!("Welcome! There's nothing here yet.");
                 todo!()
             }
             Some(Commands::Issue(issue_cmd)) => {
                 if interactive {
-                    rover.interactive_issuance(issue_cmd).await
+                    let mut interactive_client = InteractiveClient::new(client);
+                    interactive_client.interactive_issuance(issue_cmd).await
                 } else {
                     todo!("Non-interactive issuance")
                 }

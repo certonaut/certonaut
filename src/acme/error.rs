@@ -1,5 +1,6 @@
 use crate::acme::object::Identifier;
 use serde::Deserialize;
+use std::error::Error;
 use std::fmt::{Display, Formatter};
 
 pub type ProtocolResult<T> = Result<T, ProtocolError>;
@@ -51,7 +52,16 @@ impl Display for ProtocolError {
     }
 }
 
-impl std::error::Error for ProtocolError {}
+impl Error for ProtocolError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match &self {
+            ProtocolError::Http(e) => e.source(),
+            ProtocolError::Generic(_) => None,
+            ProtocolError::AcmeProblem(_) => None,
+            ProtocolError::ProtocolViolation(_) => None,
+        }
+    }
+}
 
 pub const ACME_BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
 pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";

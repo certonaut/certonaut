@@ -13,9 +13,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to find reqwest version");
     println!("cargo:rustc-env=REQWEST_VERSION={}", reqwest_version);
     println!("cargo::rerun-if-changed=testdata");
-
-    // compile protos
-    tonic_build::compile_protos("proto/astrolink.proto")?;
-    println!("cargo:rerun-if-changed=proto");
     Ok(())
 }

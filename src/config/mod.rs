@@ -2,21 +2,15 @@ use crate::acme::object::Identifier;
 use crate::config::default::DefaultConfig;
 use crate::config::toml::TomlConfiguration;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tonic::transport::Uri;
 use url::Url;
 
 mod default;
 mod toml;
 
-pub const DEFAULT_RPC: &str = "http://[::1]:50051";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Configuration {
-    #[serde(default = "default_rpc_address")]
-    pub rpc_address: SocketAddr,
     #[serde(rename = "ca")]
     pub ca_list: Vec<CertificateAuthorityConfiguration>,
     #[serde(default, rename = "cert", skip_serializing_if = "Vec::is_empty")]
@@ -33,6 +27,7 @@ pub struct CertificateAuthorityConfiguration {
     pub public: bool,
     pub testing: bool,
     pub default: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfiguration>,
 }
 
@@ -73,10 +68,4 @@ pub fn load<P: AsRef<Path>>(file: P) -> Result<Configuration, anyhow::Error> {
 
 pub fn save<P: AsRef<Path>>(config: &Configuration, file: P) -> Result<(), anyhow::Error> {
     TomlConfiguration::save(config, file)
-}
-
-fn default_rpc_address() -> SocketAddr {
-    let uri = Uri::from_static(DEFAULT_RPC);
-    // Unwrap is OK as the input is const
-    SocketAddr::from_str(uri.authority().unwrap().as_str()).unwrap()
 }
