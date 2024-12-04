@@ -1,3 +1,12 @@
+use crate::acme::object::{Identifier, InnerChallenge, Token};
+use crate::crypto::jws::JsonWebKey;
+use crate::{ChallengeSolver, KeyAuthorization};
+use anyhow::{bail, Error};
+use async_trait::async_trait;
+use serde::Serialize;
+use std::sync::LazyLock;
+use url::Url;
+
 const PEBBLE_ROOT_PEM: &str = "-----BEGIN CERTIFICATE-----
 MIIDCTCCAfGgAwIBAgIIJOLbes8sTr4wDQYJKoZIhvcNAQELBQAwIDEeMBwGA1UE
 AxMVbWluaWNhIHJvb3QgY2EgMjRlMmRiMCAXDTE3MTIwNjE5NDIxMFoYDzIxMTcx
@@ -20,4 +29,67 @@ p9BI7gVKtWSZYegicA==
 
 pub fn pebble_root() -> reqwest::Result<reqwest::Certificate> {
     reqwest::Certificate::from_pem(PEBBLE_ROOT_PEM.as_bytes())
+}
+
+static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
+    LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
+
+#[derive(Default)]
+pub struct ChallengeTestHttpSolver {
+    http: reqwest::Client,
+    challenge: Option<InnerChallenge>,
+}
+
+#[async_trait]
+impl ChallengeSolver for ChallengeTestHttpSolver {
+    fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {
+        matches!(challenge, InnerChallenge::Http(_))
+    }
+
+    async fn deploy_challenge(
+        &mut self,
+        jwk: &JsonWebKey,
+        _identifier: &Identifier,
+        challenge: InnerChallenge,
+    ) -> Result<(), Error> {
+        let token = challenge.get_token();
+        let authorization = challenge.get_key_authorization(jwk);
+        let response = self
+            .http
+            .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-http01").unwrap())
+            .json(&ChallTestHttpBody {
+                token,
+                content: Some(authorization),
+            })
+            .send()
+            .await?;
+        self.challenge = Some(challenge);
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
+        if let Some(challenge) = self.challenge {
+            let response = self
+                .http
+                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("del-http01").unwrap())
+                .json(&ChallTestHttpBody {
+                    token: challenge.get_token(),
+                    content: None,
+                })
+                .send()
+                .await?;
+            response.error_for_status()?;
+            Ok(())
+        } else {
+            bail!("No challenge to cleanup")
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChallTestHttpBody<'a> {
+    token: &'a Token,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
 }
