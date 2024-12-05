@@ -1,6 +1,7 @@
 use crate::acme::object::{Identifier, InnerChallenge, Token};
+use crate::challenge_solver::KeyAuthorization;
 use crate::crypto::jws::JsonWebKey;
-use crate::{ChallengeSolver, KeyAuthorization};
+use crate::ChallengeSolver;
 use anyhow::{bail, Error};
 use async_trait::async_trait;
 use serde::Serialize;
@@ -31,8 +32,7 @@ pub fn pebble_root() -> reqwest::Result<reqwest::Certificate> {
     reqwest::Certificate::from_pem(PEBBLE_ROOT_PEM.as_bytes())
 }
 
-static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
-    LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
+static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> = LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
 
 #[derive(Default)]
 pub struct ChallengeTestHttpSolver {
@@ -46,12 +46,7 @@ impl ChallengeSolver for ChallengeTestHttpSolver {
         matches!(challenge, InnerChallenge::Http(_))
     }
 
-    async fn deploy_challenge(
-        &mut self,
-        jwk: &JsonWebKey,
-        _identifier: &Identifier,
-        challenge: InnerChallenge,
-    ) -> Result<(), Error> {
+    async fn deploy_challenge(&mut self, jwk: &JsonWebKey, _identifier: &Identifier, challenge: InnerChallenge) -> Result<(), Error> {
         let token = challenge.get_token();
         let authorization = challenge.get_key_authorization(jwk);
         let response = self

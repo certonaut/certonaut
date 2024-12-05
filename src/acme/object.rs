@@ -9,6 +9,7 @@ use url::Url;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Directory {
     pub new_nonce: Url,
     pub new_account: Url,
@@ -22,6 +23,7 @@ pub struct Directory {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Metadata {
     pub terms_of_service: Option<Url>,
     pub website: Option<Url>,
@@ -118,6 +120,7 @@ pub struct AccountRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Account {
     pub status: AccountStatus,
     #[serde(default)]
@@ -128,6 +131,7 @@ pub struct Account {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub enum AccountStatus {
     Valid,
     Deactivated,
@@ -192,6 +196,7 @@ pub struct NewOrderRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Order {
     pub status: OrderStatus,
     #[serde(default, with = "optional_offset_date_time")]
@@ -210,6 +215,7 @@ pub struct Order {
 // TODO: Implement Display for *Status enums
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub enum OrderStatus {
     Pending,
     Ready,
@@ -221,6 +227,7 @@ pub enum OrderStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Authorization {
     pub identifier: Identifier,
     pub status: AuthorizationStatus,
@@ -233,6 +240,7 @@ pub struct Authorization {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub enum AuthorizationStatus {
     Pending,
     Valid,
@@ -245,6 +253,7 @@ pub enum AuthorizationStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Challenge {
     pub url: Url,
     pub status: ChallengeStatus,
@@ -257,6 +266,7 @@ pub struct Challenge {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub enum ChallengeStatus {
     Pending,
     Processing,
@@ -267,6 +277,7 @@ pub enum ChallengeStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "type")]
+#[cfg_attr(test, derive(Serialize))]
 pub enum InnerChallenge {
     #[serde(rename = "http-01")]
     Http(HttpChallenge),
@@ -280,18 +291,21 @@ pub enum InnerChallenge {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct HttpChallenge {
     pub token: Token,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct DnsChallenge {
     pub token: Token,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(test, derive(Serialize))]
 pub struct AlpnChallenge {
     pub token: Token,
 }

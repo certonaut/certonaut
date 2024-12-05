@@ -1,5 +1,5 @@
 use crate::acme::object::Identifier;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -67,6 +67,7 @@ pub const ACME_BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
 pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Problem {
     #[serde(rename = "type")]
     pub typ: String,
@@ -109,6 +110,7 @@ impl Display for Problem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[cfg_attr(test, derive(Serialize))]
 pub struct Subproblem {
     #[serde(rename = "type")]
     pub typ: String,

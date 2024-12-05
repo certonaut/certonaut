@@ -34,7 +34,7 @@ impl InteractiveClient {
             identifier: Identifier::from_str("test.com")?,
             solver: Box::new(ChallengeTestHttpSolver::default()),
         };
-        let _cert = issuer.issue(&cert_key, None, vec![authorizer]).await?;
+        let _cert = issuer.issue(&cert_key, None, vec![authorizer]).await.context("Issuing certificate")?;
         println!("Got a certificate!");
         Ok(())
     }

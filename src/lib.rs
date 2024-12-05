@@ -1,9 +1,8 @@
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
-use crate::acme::object::{
-    AuthorizationStatus, Challenge, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus, Token,
-};
+use crate::acme::object::{AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus, Token};
+use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration};
 use crate::crypto::jws::JsonWebKey;
 use crate::crypto::signing;
@@ -16,15 +15,14 @@ use rcgen::CertificateSigningRequest;
 use std::fmt::Display;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use time::error::ConversionRange;
-use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use url::Url;
 
 pub mod acme;
+pub mod challenge_solver;
 pub mod config;
 pub mod crypto;
 pub mod interactive;
@@ -384,7 +382,7 @@ impl AcmeIssuer {
                                 "Authorization for {id} did not contain any pending challenge supported by solver"
                             ))?;
 
-                        // TODO: Timeout
+                        // TODO: Timeout solver
 
                         // Setup
                         challenge_solver
@@ -426,64 +424,4 @@ impl AcmeIssuer {
 pub struct Authorizer {
     identifier: Identifier,
     solver: Box<dyn ChallengeSolver>,
-}
-
-impl Default for Authorizer {
-    fn default() -> Self {
-        Self {
-            identifier: Identifier::Unknown,
-            solver: Box::new(NullSolver::default()),
-        }
-    }
-}
-
-#[async_trait]
-pub trait ChallengeSolver {
-    fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
-    async fn deploy_challenge(&mut self, jwk: &JsonWebKey, identifier: &Identifier, challenge: InnerChallenge) -> Result<(), Error>;
-    async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error>;
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct NullSolver {}
-
-#[async_trait]
-impl ChallengeSolver for NullSolver {
-    fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
-        false
-    }
-
-    async fn deploy_challenge(&mut self, _jwk: &JsonWebKey, _identifier: &Identifier, _challenge: InnerChallenge) -> Result<(), Error> {
-        Ok(())
-    }
-
-    async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
-pub trait KeyAuthorization {
-    fn get_token(&self) -> &Token;
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String;
-}
-
-impl KeyAuthorization for InnerChallenge {
-    fn get_token(&self) -> &Token {
-        match &self {
-            InnerChallenge::Http(http) => &http.token,
-            InnerChallenge::Dns(dns) => &dns.token,
-            InnerChallenge::Alpn(alpn) => &alpn.token,
-            InnerChallenge::Unknown => panic!("Unknown challenge cannot be authorized"),
-        }
-    }
-
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
-        let token = self.get_token();
-        get_key_authorization(account_key, token)
-    }
-}
-
-fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
-    let thumbprint = key.get_acme_thumbprint();
-    format!("{token}.{thumbprint}")
 }
