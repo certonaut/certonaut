@@ -1,6 +1,5 @@
 use crate::acme::object::Nonce;
-use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair};
-use anyhow::Context;
+use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
 use aws_lc_rs::digest::{digest, SHA256};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -42,6 +41,9 @@ pub enum Algorithm {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum KeyParameters {
+    // TODO: revocation with certificate key also uses jwk instead of kid.
+    // Either fake those via NewAccount, or introduce a CertificateKey enum
+    // that effectively only aliases?
     #[serde(rename = "jwk")]
     NewAccount(JsonWebKeyParameters),
     #[serde(rename = "kid")]
@@ -151,6 +153,7 @@ impl JsonWebKey {
         }
     }
 
+    #[must_use]
     pub fn into_existing(self, account_url: Url) -> Self {
         Self::new_existing(self.keypair, account_url)
     }
@@ -167,22 +170,18 @@ impl JsonWebKey {
         &self,
         header: &ProtectedHeader,
         payload: Option<&T>,
-    ) -> anyhow::Result<FlatJsonWebSignature> {
-        let header = serde_json::to_string(header).context("header serialization failed")?;
+    ) -> Result<FlatJsonWebSignature, SignatureError> {
+        let header = serde_json::to_string(header)?;
         let header = BASE64_URL_SAFE_NO_PAD.encode(header);
         let payload = match payload {
-            None => "".to_string(),
+            None => String::new(),
             Some(payload) => {
-                let payload =
-                    serde_json::to_string(payload).context("payload serialization failed")?;
+                let payload = serde_json::to_string(payload)?;
                 BASE64_URL_SAFE_NO_PAD.encode(payload)
             }
         };
-        let to_sign = format!("{}.{}", header, payload);
-        let signature = self
-            .keypair
-            .sign(to_sign.as_bytes())
-            .context("signing failed")?;
+        let to_sign = format!("{header}.{payload}");
+        let signature = self.keypair.sign(to_sign.as_bytes())?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature);
         Ok(FlatJsonWebSignature {
             header,
@@ -208,8 +207,7 @@ pub struct FlatJsonWebSignature {
 mod tests {
     use crate::acme::object::Nonce;
     use crate::crypto::jws::{
-        Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters,
-        ProtectedHeader,
+        Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters, ProtectedHeader,
     };
     use crate::crypto::signing::Curve;
     use rstest::rstest;
@@ -283,14 +281,8 @@ mod tests {
         )),
         "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s"
     )]
-    fn test_compute_account_thumbprint(
-        #[case] parameters: JsonWebKeyParameters,
-        #[case] expected_thumbprint: &str,
-    ) {
+    fn test_compute_account_thumbprint(#[case] parameters: JsonWebKeyParameters, #[case] expected_thumbprint: &str) {
         let actual_thumbprint = JsonWebKey::compute_account_thumbprint(&parameters);
-        assert_eq!(
-            &actual_thumbprint, expected_thumbprint,
-            "computed thumbprint not equal"
-        );
+        assert_eq!(&actual_thumbprint, expected_thumbprint, "computed thumbprint not equal");
     }
 }

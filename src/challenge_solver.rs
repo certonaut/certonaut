@@ -4,11 +4,21 @@ use anyhow::Error;
 use async_trait::async_trait;
 
 pub trait KeyAuthorization {
+    fn get_type(&self) -> &str;
     fn get_token(&self) -> &Token;
     fn get_key_authorization(&self, account_key: &JsonWebKey) -> String;
 }
 
 impl KeyAuthorization for InnerChallenge {
+    fn get_type(&self) -> &str {
+        match &self {
+            InnerChallenge::Http(_) => "http-01",
+            InnerChallenge::Dns(_) => "dns-01",
+            InnerChallenge::Alpn(_) => "tls-alpn-01",
+            InnerChallenge::Unknown => "unknown challenge type",
+        }
+    }
+
     fn get_token(&self) -> &Token {
         match &self {
             InnerChallenge::Http(http) => &http.token,
@@ -31,8 +41,14 @@ fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
 
 #[async_trait]
 pub trait ChallengeSolver {
+    fn name(&self) -> &'static str;
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
-    async fn deploy_challenge(&mut self, jwk: &JsonWebKey, identifier: &Identifier, challenge: InnerChallenge) -> Result<(), Error>;
+    async fn deploy_challenge(
+        &mut self,
+        jwk: &JsonWebKey,
+        identifier: &Identifier,
+        challenge: InnerChallenge,
+    ) -> Result<(), Error>;
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error>;
 }
 
@@ -41,11 +57,20 @@ pub struct NullSolver {}
 
 #[async_trait]
 impl ChallengeSolver for NullSolver {
-    fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
-        false
+    fn name(&self) -> &'static str {
+        "null solver"
     }
 
-    async fn deploy_challenge(&mut self, _jwk: &JsonWebKey, _identifier: &Identifier, _challenge: InnerChallenge) -> Result<(), Error> {
+    fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
+        true
+    }
+
+    async fn deploy_challenge(
+        &mut self,
+        _jwk: &JsonWebKey,
+        _identifier: &Identifier,
+        _challenge: InnerChallenge,
+    ) -> Result<(), Error> {
         Ok(())
     }
 

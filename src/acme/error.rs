@@ -1,64 +1,120 @@
+use crate::acme::http::HttpClient;
 use crate::acme::object::Identifier;
-use serde::{Deserialize, Serialize};
-use std::error::Error;
+use crate::crypto::signing::SignatureError;
+use serde::Deserialize;
 use std::fmt::{Display, Formatter};
+use std::time::SystemTime;
 
-pub type ProtocolResult<T> = Result<T, ProtocolError>;
+pub type ProtocolResult<T> = Result<T, Error>;
 
 #[derive(Debug)]
-pub enum ProtocolError {
+pub enum Error {
     Http(reqwest::Error),
-    #[deprecated(note = "This is a bad error type that should be refactored")]
-    Generic(String),
     AcmeProblem(Problem),
     ProtocolViolation(&'static str),
+    IoError(std::io::Error),
+    CryptoFailure(SignatureError),
+    DeserializationFailed(serde::de::value::Error),
+    RateLimited(RateLimitError),
+    TimedOut(&'static str),
 }
 
-impl ProtocolError {
-    pub async fn get_error_from_http(err_response: reqwest::Response) -> ProtocolError {
+impl Error {
+    pub async fn get_error_from_http(err_response: reqwest::Response) -> Error {
+        let retry_after = HttpClient::extract_backoff(&err_response);
         let status = err_response.status();
         if let Ok(problem) = err_response.json::<Problem>().await {
-            ProtocolError::AcmeProblem(problem)
+            if problem.is_rate_limit() {
+                RateLimitError { problem, retry_after }.into()
+            } else {
+                Error::AcmeProblem(problem)
+            }
         } else {
-            ProtocolError::Generic(format!("HTTP error: {status}"))
+            Error::AcmeProblem(Problem {
+                typ: "unknown".to_string(),
+                detail: Some(format!("HTTP error: {status}")),
+                subproblems: vec![],
+            })
         }
     }
 }
 
-impl From<reqwest::Error> for ProtocolError {
-    fn from(err: reqwest::Error) -> ProtocolError {
-        ProtocolError::Http(err)
+impl From<reqwest::Error> for Error {
+    fn from(err: reqwest::Error) -> Error {
+        Error::Http(err)
     }
 }
 
-impl From<Problem> for ProtocolError {
-    fn from(err: Problem) -> ProtocolError {
-        ProtocolError::AcmeProblem(err)
+impl From<Problem> for Error {
+    fn from(err: Problem) -> Error {
+        Error::AcmeProblem(err)
     }
 }
 
-impl Display for ProtocolError {
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Error {
+        Error::IoError(err)
+    }
+}
+
+impl From<serde::de::value::Error> for Error {
+    fn from(err: serde::de::value::Error) -> Error {
+        Error::DeserializationFailed(err)
+    }
+}
+
+impl From<SignatureError> for Error {
+    fn from(err: SignatureError) -> Error {
+        Error::CryptoFailure(err)
+    }
+}
+
+impl From<RateLimitError> for Error {
+    fn from(err: RateLimitError) -> Error {
+        Error::RateLimited(err)
+    }
+}
+
+impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
-            ProtocolError::Http(e) => {
+            Error::Http(e) => {
                 write!(f, "HTTP error: {e}")
             }
-            ProtocolError::AcmeProblem(e) => {
-                write!(f, "ACME error: {e}")
+            Error::AcmeProblem(e) => {
+                write!(f, "The CA reported a problem: {e}")
             }
-            ProtocolError::Generic(e) => write!(f, "error: {e}"),
-            ProtocolError::ProtocolViolation(e) => write!(f, "acme error: {e}"),
+            Error::ProtocolViolation(e) => write!(f, "ACME protocol specification violated: {e}"),
+            Error::IoError(io) => {
+                write!(f, "I/O error: {io}")
+            }
+            Error::CryptoFailure(msg) => {
+                write!(f, "error during cryptographic operation: {msg}")
+            }
+            Error::DeserializationFailed(serde) => {
+                write!(f, "parsing server response failed: {serde}")
+            }
+            Error::RateLimited(rate_limit) => {
+                write!(f, "{rate_limit}")
+            }
+            Error::TimedOut(msg) => {
+                write!(f, "timeout: {msg}")
+            }
         }
     }
 }
 
-impl Error for ProtocolError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Skip one level (i.e. directly call source on the embedded error)
+        // because we already print the higher-level error during Display, so don't duplicate it in the chain.
         match &self {
-            ProtocolError::Http(e) => e.source(),
-            ProtocolError::Generic(_) => None,
-            ProtocolError::AcmeProblem(_) => None,
-            ProtocolError::ProtocolViolation(_) => None,
+            Error::Http(e) => e.source(),
+            Error::IoError(io) => io.source(),
+            Error::DeserializationFailed(serde) => serde.source(),
+            Error::CryptoFailure(crypto) => crypto.source(),
+            Error::RateLimited(rate_limit) => rate_limit.source(),
+            Error::AcmeProblem(_) | Error::ProtocolViolation(_) | Error::TimedOut(_) => None,
         }
     }
 }
@@ -67,7 +123,7 @@ pub const ACME_BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
 pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Problem {
     #[serde(rename = "type")]
     pub typ: String,
@@ -78,19 +134,11 @@ pub struct Problem {
 
 impl Problem {
     pub fn is_bad_nonce(&self) -> bool {
-        self.typ == ACME_BAD_NONCE
-            || self
-                .subproblems
-                .iter()
-                .any(|problem| problem.is_bad_nonce())
+        self.typ == ACME_BAD_NONCE || self.subproblems.iter().any(Subproblem::is_bad_nonce)
     }
 
     pub fn is_rate_limit(&self) -> bool {
-        self.typ == ACME_RATE_LIMITED
-            || self
-                .subproblems
-                .iter()
-                .any(|problem| problem.is_rate_limit())
+        self.typ == ACME_RATE_LIMITED || self.subproblems.iter().any(Subproblem::is_rate_limit)
     }
 }
 
@@ -110,7 +158,7 @@ impl Display for Problem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(Serialize))]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub struct Subproblem {
     #[serde(rename = "type")]
     pub typ: String,
@@ -138,6 +186,30 @@ impl Display for Subproblem {
         }
         if let Some(identifier) = &self.identifier {
             write!(f, "(for identifier:  {identifier})")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct RateLimitError {
+    pub problem: Problem,
+    pub retry_after: Option<SystemTime>,
+}
+
+impl std::error::Error for RateLimitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+}
+
+impl Display for RateLimitError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let problem = &self.problem;
+        write!(f, "The CA enforced a rate limit: {problem}")?;
+        if let Some(retry_after) = self.retry_after {
+            let retry_after = time::OffsetDateTime::from(retry_after);
+            write!(f, ", and asked to us to retry after: {retry_after}")?;
         }
         Ok(())
     }

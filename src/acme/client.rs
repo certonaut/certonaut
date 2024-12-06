@@ -1,17 +1,17 @@
-use crate::acme::error::ProtocolError;
 use crate::acme::error::ProtocolResult;
+use crate::acme::error::{Error, RateLimitError};
 use crate::acme::http::HttpClient;
 use crate::acme::http::RelationLink;
 use crate::acme::object::{
-    Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Directory, EmptyObject, FinalizeRequest,
-    NewOrderRequest, Nonce, Order, OrderStatus,
+    Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Deactivation, Directory, EmptyObject,
+    FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
 };
 use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
 use crate::crypto::signing::KeyPair;
 use crate::util::serde_helper::PassthroughBytes;
-use anyhow::{anyhow, bail};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
 use serde::de::value::BytesDeserializer;
@@ -19,7 +19,6 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
 use url::Url;
@@ -72,7 +71,7 @@ impl AcmeClient {
         let directory_response = http_client.get(builder.server_url).await?;
         let directory = match directory_response.status() {
             StatusCode::OK => directory_response.json().await?,
-            _ => return Err(ProtocolError::get_error_from_http(directory_response).await),
+            _ => return Err(Error::get_error_from_http(directory_response).await),
         };
         Ok(Self {
             http_client,
@@ -85,7 +84,7 @@ impl AcmeClient {
         let mut last_error;
         let mut retry = 0;
         loop {
-            let pooled_nonce = self.nonce_pool.lock().unwrap().pop_front();
+            let pooled_nonce = self.nonce_pool.lock().pop_front();
             if let Some(pooled_nonce) = pooled_nonce {
                 return Ok(pooled_nonce);
             }
@@ -96,20 +95,13 @@ impl AcmeClient {
                 return Ok(nonce);
             }
 
-            let backoff = HttpClient::extract_backoff(&response)
-                .and_then(|date| date.duration_since(SystemTime::now()).ok())
-                .map_or(DEFAULT_RETRY_BACKOFF, |backoff| {
-                    if backoff > MAX_RETRY_BACKOFF {
-                        MAX_RETRY_BACKOFF
-                    } else {
-                        backoff
-                    }
-                });
-            last_error = ProtocolError::get_error_from_http(response).await;
+            let retry_after = HttpClient::extract_backoff(&response);
+            last_error = Error::get_error_from_http(response).await;
             retry += 1;
             if retry > MAX_RETRIES {
                 break;
             }
+            let backoff = backoff_from_retry_after(retry_after);
             tokio::time::sleep(backoff).await;
         }
         Err(last_error)
@@ -117,7 +109,7 @@ impl AcmeClient {
 
     fn try_store_nonce(&self, maybe_nonce: Option<Nonce>) {
         if let Some(nonce) = maybe_nonce {
-            self.nonce_pool.lock().unwrap().push_back(nonce);
+            self.nonce_pool.lock().push_back(nonce);
         }
     }
 
@@ -126,7 +118,7 @@ impl AcmeClient {
         target_url: &Url,
         key: &JsonWebKey,
         payload: Option<&T>,
-    ) -> anyhow::Result<AcmeResponse<R>> {
+    ) -> ProtocolResult<AcmeResponse<R>> {
         let mut last_error;
         let mut retry = 0;
         let mut header = ProtectedHeader::new(
@@ -162,15 +154,16 @@ impl AcmeClient {
                         status,
                         location,
                         links,
+                        retry_after,
                         body,
                     };
                     return Ok(response);
                 }
                 _ => {
-                    last_error = ProtocolError::get_error_from_http(response).await;
-                    if let ProtocolError::AcmeProblem(problem) = &last_error {
+                    last_error = Error::get_error_from_http(response).await;
+                    if let Error::AcmeProblem(problem) = &last_error {
                         if problem.is_bad_nonce() {
-                            header.nonce = new_nonce.ok_or(ProtocolError::ProtocolViolation(
+                            header.nonce = new_nonce.ok_or(Error::ProtocolViolation(
                                 "Server did not provide a Replay-Nonce on a badNonce error",
                             ))?;
                             retry += 1;
@@ -183,8 +176,11 @@ impl AcmeClient {
                         self.try_store_nonce(new_nonce);
 
                         if problem.is_rate_limit() {
-                            // TODO Return separate ratelimit error, to allow caller decision when to retry
-                            bail!("TODO: Rate limits!");
+                            return Err(RateLimitError {
+                                problem: problem.clone(),
+                                retry_after,
+                            }
+                            .into());
                         }
                     } else {
                         self.try_store_nonce(new_nonce);
@@ -196,19 +192,11 @@ impl AcmeClient {
             if status.is_client_error() || retry > MAX_RETRIES {
                 break;
             }
-            let backoff = retry_after
-                .and_then(|date| date.duration_since(SystemTime::now()).ok())
-                .map_or(DEFAULT_RETRY_BACKOFF, |backoff| {
-                    if backoff > MAX_RETRY_BACKOFF {
-                        MAX_RETRY_BACKOFF
-                    } else {
-                        backoff
-                    }
-                });
+            let backoff = backoff_from_retry_after(retry_after);
             tokio::time::sleep(backoff).await;
             header.nonce = self.get_nonce().await?;
         }
-        Err(last_error.into())
+        Err(last_error)
     }
 
     pub fn get_directory(&self) -> &Directory {
@@ -218,7 +206,7 @@ impl AcmeClient {
     pub async fn register_account(
         &self,
         options: AccountRegisterOptions,
-    ) -> anyhow::Result<(JsonWebKey, Url, Account)> {
+    ) -> ProtocolResult<(JsonWebKey, Url, Account)> {
         let jwk = JsonWebKey::new(options.key);
         let target_url = &self.get_directory().new_account;
         let payload = AccountRequest {
@@ -227,36 +215,31 @@ impl AcmeClient {
             external_account_binding: None,
         };
         let response = self.post_with_retry(target_url, &jwk, Some(&payload)).await?;
-        let account_url = response.location.ok_or(anyhow!(
-            "ACME server did not provide an account URL for created account"
+        let account_url = response.location.ok_or(Error::ProtocolViolation(
+            "ACME server did not provide an account URL for created account",
         ))?;
         let created_account = response.body;
         let account_key = jwk.into_existing(account_url.clone());
         Ok((account_key, account_url, created_account))
     }
 
-    pub async fn new_order(&self, account_key: &JsonWebKey, request: &NewOrderRequest) -> anyhow::Result<(Url, Order)> {
+    pub async fn new_order(&self, account_key: &JsonWebKey, request: &NewOrderRequest) -> ProtocolResult<(Url, Order)> {
         let target_url = &self.get_directory().new_order;
         let response = self.post_with_retry(target_url, account_key, Some(request)).await?;
-        let order_url = response
-            .location
-            .ok_or(anyhow!("ACME server did not provide an order URL for created order"))?;
+        let order_url = response.location.ok_or(Error::ProtocolViolation(
+            "ACME server did not provide an order URL for created order",
+        ))?;
         let order = response.body;
         Ok((order_url, order))
     }
 
-    pub async fn get_order(&self, account_key: &JsonWebKey, order_url: &Url) -> anyhow::Result<Order> {
+    pub async fn get_order(&self, account_key: &JsonWebKey, order_url: &Url) -> ProtocolResult<Order> {
         let response = self.post_with_retry(order_url, account_key, EMPTY_PAYLOAD).await?;
         Ok(response.body)
     }
 
-    pub async fn get_authorization(&self, account_key: &JsonWebKey, authz_url: &Url) -> anyhow::Result<Authorization> {
+    pub async fn get_authorization(&self, account_key: &JsonWebKey, authz_url: &Url) -> ProtocolResult<Authorization> {
         let response = self.post_with_retry(authz_url, account_key, EMPTY_PAYLOAD).await?;
-        Ok(response.body)
-    }
-
-    pub async fn get_challenge(&self, account_key: &JsonWebKey, challenge_url: &Url) -> anyhow::Result<Challenge> {
-        let response = self.post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD).await?;
         Ok(response.body)
     }
 
@@ -264,13 +247,10 @@ impl AcmeClient {
         &self,
         account_key: &JsonWebKey,
         certificate_url: &Url,
-    ) -> anyhow::Result<DownloadedCertificate> {
+    ) -> ProtocolResult<DownloadedCertificate> {
         let response = self
             .post_with_retry(certificate_url, account_key, EMPTY_PAYLOAD)
             .await?;
-        if !response.status.is_success() {
-            return Err(anyhow!("downloading certificate failed"));
-        }
         let alternate_chains = response
             .links
             .into_iter()
@@ -281,13 +261,15 @@ impl AcmeClient {
         Ok(DownloadedCertificate { pem, alternate_chains })
     }
 
-    pub async fn validate_challenge(&self, account_key: &JsonWebKey, challenge_url: &Url) -> anyhow::Result<Challenge> {
+    pub async fn validate_challenge(&self, account_key: &JsonWebKey, challenge_url: &Url) -> ProtocolResult<Challenge> {
         // TODO: if already valid, returns error
         let response = self
             .post_with_retry(challenge_url, account_key, Some(&EmptyObject {}))
             .await?;
+        let mut retry_after = response.retry_after;
         let mut challenge: Challenge = response.body;
         let deadline = Instant::now() + MAX_POLL_DURATION;
+        let mut last_error = None;
         while Instant::now() < deadline {
             match challenge.status {
                 ChallengeStatus::Pending => {
@@ -295,9 +277,10 @@ impl AcmeClient {
                 }
                 ChallengeStatus::Processing => {
                     if let Some(err) = challenge.error {
-                        // TODO: Some ACME servers retry challenges - both automatically
-                        // and client-initiated. How to handle this?
-                        // return Err(anyhow!(err));
+                        // If the ACME server reports processing and an error,
+                        // it is still retrying. Remember the error in case we give up,
+                        // but keep polling to see if the server-initiated retry works.
+                        last_error = Some(err.into());
                     }
                 }
                 ChallengeStatus::Valid => {
@@ -305,19 +288,23 @@ impl AcmeClient {
                 }
                 ChallengeStatus::Invalid => {
                     return if let Some(err) = challenge.error {
-                        // TODO: Error types
-                        Err(anyhow!(err))
+                        Err(err.into())
                     } else {
-                        Err(anyhow!("Generic error"))
+                        Err(Error::ProtocolViolation(
+                            "challenge is invalid, but CA did not provide an error message why",
+                        ))
                     };
                 }
             }
-            tokio::time::sleep(DEFAULT_RETRY_BACKOFF).await;
-            challenge = self.get_challenge(account_key, challenge_url).await?;
+            // TODO: ACME servers can suggest an interval with Retry-After here. We need to somehow move that up here?
+            let backoff = backoff_from_retry_after(retry_after);
+            tokio::time::sleep(backoff).await;
+            let response = self.post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD).await?;
+            challenge = response.body;
+            retry_after = response.retry_after;
         }
         // Challenge never reached acceptable state
-        // TODO: Err or Ok?
-        Ok(challenge)
+        Err(last_error.unwrap_or_else(|| Error::TimedOut("Timed out waiting for challenge validation")))
     }
 
     pub async fn finalize_order(
@@ -325,16 +312,19 @@ impl AcmeClient {
         account_key: &JsonWebKey,
         order: &Order,
         csr: &CertificateSigningRequest,
-    ) -> anyhow::Result<Order> {
+    ) -> ProtocolResult<Order> {
         let request = FinalizeRequest {
             csr: BASE64_URL_SAFE_NO_PAD.encode(csr.der()),
         };
         let response = self
             .post_with_retry(&order.finalize, account_key, Some(&request))
             .await?;
-        let order_url = response
-            .location
-            .ok_or(anyhow!("Server did not provide an order URL upon finalizing"))?;
+        let order_url = response.location.ok_or(Error::ProtocolViolation(
+            "Server did not provide an order URL upon finalizing",
+        ))?;
+        let retry_after = response.retry_after;
+        let backoff = backoff_from_retry_after(retry_after);
+        tokio::time::sleep(backoff).await;
         self.poll_order(account_key, response.body, &order_url).await
     }
 
@@ -343,35 +333,58 @@ impl AcmeClient {
         account_key: &JsonWebKey,
         mut order: Order,
         order_url: &Url,
-    ) -> anyhow::Result<Order> {
+    ) -> ProtocolResult<Order> {
         let deadline = Instant::now() + MAX_POLL_DURATION;
         while Instant::now() < deadline {
             match order.status {
                 OrderStatus::Pending => {
-                    // TODO: Not all authorizations fulfilled
+                    return Err(Error::ProtocolViolation(
+                        "BUG: Requested finalized order polling but CA reported order is still pending",
+                    ));
                 }
                 OrderStatus::Ready => {
-                    // Makes no sense after submitting the CSR, but wait anyway
+                    return Err(Error::ProtocolViolation(
+                        "BUG: Requested finalized order polling but CA reported order has not been finalized yet",
+                    ));
                 }
                 OrderStatus::Processing => {
                     // Just wait
+                    tokio::time::sleep(DEFAULT_RETRY_BACKOFF).await;
+                    order = self.get_order(account_key, order_url).await?;
                 }
                 OrderStatus::Valid => {
                     return Ok(order);
                 }
                 OrderStatus::Invalid => {
                     return if let Some(err) = order.error {
-                        // TODO: Error types
-                        Err(anyhow!(err))
+                        Err(err.into())
                     } else {
-                        Err(anyhow!("Generic error"))
+                        Err(Error::ProtocolViolation(
+                            "Order is invalid, but CA did not provide an error message",
+                        ))
                     };
                 }
             }
-            tokio::time::sleep(DEFAULT_RETRY_BACKOFF).await;
-            order = self.get_order(account_key, order_url).await?;
         }
-        Ok(order)
+        Err(Error::TimedOut("Timed out waiting for order finalization"))
+    }
+
+    pub async fn deactivate_account(&self, account_key: &JsonWebKey, account_url: &Url) -> ProtocolResult<Account> {
+        let response = self
+            .post_with_retry(account_url, account_key, Some(&Deactivation::new()))
+            .await?;
+        Ok(response.body)
+    }
+
+    pub async fn deactivate_authorization(
+        &self,
+        account_key: &JsonWebKey,
+        authz_url: &Url,
+    ) -> ProtocolResult<Authorization> {
+        let response = self
+            .post_with_retry(authz_url, account_key, Some(&Deactivation::new()))
+            .await?;
+        Ok(response.body)
     }
 }
 
@@ -380,6 +393,7 @@ pub struct AcmeResponse<T: DeserializeOwned> {
     pub status: StatusCode,
     pub location: Option<Url>,
     pub links: Vec<RelationLink>,
+    pub retry_after: Option<SystemTime>,
     pub body: T,
 }
 
@@ -394,6 +408,18 @@ pub struct AccountRegisterOptions {
 pub struct DownloadedCertificate {
     pub pem: PassthroughBytes,
     pub alternate_chains: Vec<Url>,
+}
+
+fn backoff_from_retry_after(retry_after: Option<SystemTime>) -> Duration {
+    retry_after
+        .and_then(|date| date.duration_since(SystemTime::now()).ok())
+        .map_or(DEFAULT_RETRY_BACKOFF, |backoff| {
+            if backoff > MAX_RETRY_BACKOFF {
+                MAX_RETRY_BACKOFF
+            } else {
+                backoff
+            }
+        })
 }
 
 #[cfg(test)]
@@ -482,7 +508,10 @@ mod tests {
         );
         let client = build_acme_client(&server).await;
         let err = client.get_nonce().await.unwrap_err();
-        assert_eq!(err.to_string(), "error: HTTP error: 429 Too Many Requests");
+        assert_eq!(
+            err.to_string(),
+            "The CA reported a problem: HTTP error: 429 Too Many Requests"
+        );
     }
 
     // TODO: Other methods

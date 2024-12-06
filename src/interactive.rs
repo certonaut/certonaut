@@ -4,7 +4,8 @@ use crate::config::CertificateAuthorityConfiguration;
 use crate::crypto::signing::{Curve, KeyType};
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::{
-    new_acme_client, AccountChoice, AcmeAccount, AcmeIssuer, Authorizer, CaChoice, Certonaut, IssueCommand, NewAccountOptions, CRATE_NAME,
+    new_acme_client, AccountChoice, AcmeAccount, AcmeIssuer, Authorizer, CaChoice, Certonaut, IssueCommand,
+    NewAccountOptions, CRATE_NAME,
 };
 use anyhow::{bail, Context, Error};
 use crossterm::style::Stylize;
@@ -25,7 +26,10 @@ impl InteractiveClient {
     }
 
     pub async fn interactive_issuance(&mut self, issue_cmd: IssueCommand) -> Result<(), Error> {
-        println!("{}", format!("{CRATE_NAME} guided certificate issuance").green().on_black());
+        println!(
+            "{}",
+            format!("{CRATE_NAME} guided certificate issuance").green().on_black()
+        );
         let (client, account) = self.user_select_ca_and_account(&issue_cmd).await?;
         let mut issuer = AcmeIssuer::new(Arc::new(client), account);
         println!("Trying to issue a certificate for test.com now");
@@ -34,12 +38,18 @@ impl InteractiveClient {
             identifier: Identifier::from_str("test.com")?,
             solver: Box::new(ChallengeTestHttpSolver::default()),
         };
-        let _cert = issuer.issue(&cert_key, None, vec![authorizer]).await.context("Issuing certificate")?;
+        let _cert = issuer
+            .issue(&cert_key, None, vec![authorizer])
+            .await
+            .context("Issuing certificate")?;
         println!("Got a certificate!");
         Ok(())
     }
 
-    async fn user_select_ca_and_account(&mut self, issue_cmd: &IssueCommand) -> Result<(AcmeClient, AcmeAccount), Error> {
+    async fn user_select_ca_and_account(
+        &mut self,
+        issue_cmd: &IssueCommand,
+    ) -> Result<(AcmeClient, AcmeAccount), Error> {
         let (ca_choice, account_choice) = self.client.select_ca_and_account(
             &issue_cmd.ca,
             &issue_cmd.account,
@@ -55,14 +65,21 @@ impl InteractiveClient {
             }
         };
         let account = match account_choice {
-            AccountChoice::ExistingAccount(ac) => AcmeAccount::load_existing(ac).context("Error loading ACME account")?,
+            AccountChoice::ExistingAccount(ac) => {
+                AcmeAccount::load_existing(ac).context("Error loading ACME account")?
+            }
             AccountChoice::NewAccount => {
-                let new_account = Self::user_create_account(&ca).await.context("Error while creating new account")?;
-                self.client.save_new_account(&ca.identifier, new_account.config.clone())?;
+                let new_account = Self::user_create_account(&ca)
+                    .await
+                    .context("Error while creating new account")?;
+                self.client
+                    .save_new_account(&ca.identifier, new_account.config.clone())?;
                 new_account
             }
         };
-        let acme_client = new_acme_client(&ca).await.context("Establishing connection to CA failed")?;
+        let acme_client = new_acme_client(&ca)
+            .await
+            .context("Establishing connection to CA failed")?;
         Ok((acme_client, account))
     }
 
@@ -71,7 +88,11 @@ impl InteractiveClient {
         if configured_ca.is_empty() {
             return Ok(CaChoice::NewCa);
         }
-        let mut choices = configured_ca.iter().map(Clone::clone).map(CaChoice::ExistingCa).collect::<Vec<_>>();
+        let mut choices = configured_ca
+            .iter()
+            .map(Clone::clone)
+            .map(CaChoice::ExistingCa)
+            .collect::<Vec<_>>();
         choices.push(CaChoice::NewCa);
         let default_ca = choices
             .iter()
@@ -88,7 +109,9 @@ impl InteractiveClient {
             let help_text = format!("{default_help}, ESC to use default ({default_ca_name})");
             ca_choice.help_message = Some(&help_text);
             ca_choice.starting_cursor = default_index;
-            ca_choice.prompt_skippable().map(|user_choice| user_choice.unwrap_or(default_ca))
+            ca_choice
+                .prompt_skippable()
+                .map(|user_choice| user_choice.unwrap_or(default_ca))
         } else {
             ca_choice.prompt()
         }
@@ -98,7 +121,9 @@ impl InteractiveClient {
 
     async fn user_create_ca(client: &mut Certonaut) -> Result<CertificateAuthorityConfiguration, Error> {
         println!("Add new CA");
-        let ca_name = Text::new("Name for the new CA:").prompt().context("No answer for CA name")?;
+        let ca_name = Text::new("Name for the new CA:")
+            .prompt()
+            .context("No answer for CA name")?;
         let ca_id = client.choose_ca_id_from_name(&ca_name);
         let acme_url = Text::new("ACME directory URL for new CA:")
             .with_validator(|candidate: &str| {
@@ -191,7 +216,10 @@ impl InteractiveClient {
         if let Some(meta) = &directory.meta {
             println!("Before we start account creation, some prerequisites to verify:");
             if let Some(website) = &meta.website {
-                println!("If this is your first time using {}, you may want to review this website:", ca_name);
+                println!(
+                    "If this is your first time using {}, you may want to review this website:",
+                    ca_name
+                );
                 println!("{}", website.as_str().green().on_black());
             }
             if let Some(tos) = &meta.terms_of_service {
@@ -220,7 +248,9 @@ You may need to create an account at the CA's website first.",
                     "EAB_KID".dark_green().on_black(),
                     "EAB_HMAC_KEY".dark_green().on_black()
                 ))
-                .with_help_message("If not, please review the CA's website to find these. They are required to proceed.")
+                .with_help_message(
+                    "If not, please review the CA's website to find these. They are required to proceed.",
+                )
                 .with_default(false)
                 .prompt()
                 .context("No answer to EAB check-question")?;
@@ -251,10 +281,14 @@ of email addresses below, or leave the field empty to not provide any contact ad
                         }
                         let parts = address.split('@').collect::<Vec<_>>();
                         if parts.len() != 2 {
-                            return Validation::Invalid((address.to_string() + " does not look like an email address").into());
+                            return Validation::Invalid(
+                                (address.to_string() + " does not look like an email address").into(),
+                            );
                         }
                         if !parts[1].contains(".") {
-                            return Validation::Invalid((address.to_string() + " does not look like an email address").into());
+                            return Validation::Invalid(
+                                (address.to_string() + " does not look like an email address").into(),
+                            );
                         }
                         // There are still lots of possible invalid addresses here, but we don't know exactly
                         // what the CA will accept anyway.
@@ -292,6 +326,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
                 name: account_name,
                 identifier: account_id,
                 contacts,
+                // TODO: We could try EdDSA keys first, check for a badSignatureError, and then retry with P256?
                 key_type: KeyType::Ecdsa(Curve::P256),
                 terms_of_service_agreed: tos_status,
             },

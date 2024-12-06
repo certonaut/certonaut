@@ -1,6 +1,7 @@
-use crate::acme::error::{Problem, ProtocolError};
+use crate::acme::error::{Error, Problem};
 use crate::util::serde_helper::optional_offset_date_time;
 use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
 use std::cmp::PartialEq;
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
@@ -48,21 +49,21 @@ impl Nonce {
 }
 
 impl TryFrom<String> for Nonce {
-    type Error = ProtocolError;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         for char in value.chars() {
             if char.is_ascii_alphanumeric() || char == '_' || char == '-' {
                 continue;
             }
-            return Err(ProtocolError::ProtocolViolation("Invalid nonce value"));
+            return Err(Error::ProtocolViolation("Invalid nonce value"));
         }
         Ok(Self(value))
     }
 }
 
 impl FromStr for Nonce {
-    type Err = ProtocolError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Nonce::try_from(s.to_string())
@@ -80,21 +81,21 @@ impl Display for Nonce {
 pub struct Token(String);
 
 impl TryFrom<String> for Token {
-    type Error = ProtocolError;
+    type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         for char in value.chars() {
             if char.is_ascii_alphanumeric() || char == '_' || char == '-' {
                 continue;
             }
-            return Err(ProtocolError::ProtocolViolation("Invalid token value"));
+            return Err(Error::ProtocolViolation("Invalid token value"));
         }
         Ok(Self(value))
     }
 }
 
 impl FromStr for Token {
-    type Err = ProtocolError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Token::try_from(s.to_string())
@@ -167,18 +168,22 @@ impl FromStr for Identifier {
 
 impl From<Identifier> for String {
     fn from(value: Identifier) -> Self {
-        match value {
-            Identifier::Dns { value } => value,
-            _ => String::new(),
-        }
+        value.to_string()
     }
 }
 
 impl Display for Identifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value: &str = self.borrow();
+        write!(f, "{value}")
+    }
+}
+
+impl Borrow<str> for Identifier {
+    fn borrow(&self) -> &str {
         match self {
-            Identifier::Dns { value } => write!(f, "dns:{value}"),
-            Identifier::Unknown => write!(f, "unknown"),
+            Identifier::Dns { value } => value.as_str(),
+            Identifier::Unknown => "unknown",
         }
     }
 }
@@ -311,12 +316,31 @@ pub struct AlpnChallenge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::module_name_repetitions)]
 pub struct EmptyObject {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinalizeRequest {
     pub csr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Deactivation {
+    pub status: &'static str,
+}
+
+impl Deactivation {
+    pub fn new() -> Self {
+        Self { status: "deactivated" }
+    }
+}
+
+impl Default for Deactivation {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -334,7 +358,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_directory_invalid(#[files("testdata/deserialize_invalid_test_directory_*.json")] testfile: PathBuf) {
+    fn test_deserialize_directory_invalid(
+        #[files("testdata/deserialize_invalid_test_directory_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Directory> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
@@ -347,7 +373,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_metadata_invalid(#[files("testdata/deserialize_invalid_test_metadata_*.json")] testfile: PathBuf) {
+    fn test_deserialize_metadata_invalid(
+        #[files("testdata/deserialize_invalid_test_metadata_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Metadata> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
@@ -386,7 +414,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_account_invalid(#[files("testdata/deserialize_invalid_test_account_*.json")] testfile: PathBuf) {
+    fn test_deserialize_account_invalid(
+        #[files("testdata/deserialize_invalid_test_account_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Account> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
@@ -412,7 +442,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_authorization_invalid(#[files("testdata/deserialize_invalid_test_authz_*.json")] testfile: PathBuf) {
+    fn test_deserialize_authorization_invalid(
+        #[files("testdata/deserialize_invalid_test_authz_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Authorization> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
@@ -425,7 +457,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_challenge_invalid(#[files("testdata/deserialize_invalid_test_challenge_*.json")] testfile: PathBuf) {
+    fn test_deserialize_challenge_invalid(
+        #[files("testdata/deserialize_invalid_test_challenge_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Challenge> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
@@ -544,11 +578,6 @@ mod tests {
             not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
         }, r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#)]
     fn test_serialize_new_order_request(#[case] request: NewOrderRequest, #[case] expected: &str) {
-        let t = NewOrderRequest {
-            identifiers: vec![Identifier::from_str("example.com").unwrap()],
-            not_before: None,
-            not_after: None,
-        };
         let serialized = serde_json::to_string(&request).expect("serialization must not fail");
         assert_eq!(serialized, expected);
     }
@@ -557,7 +586,7 @@ mod tests {
     fn test_serialize_empty_object() {
         let empty = EmptyObject {};
         let serialized = serde_json::to_string(&empty).expect("serialization must not fail");
-        assert_eq!(serialized, r#"{}"#);
+        assert_eq!(serialized, r"{}");
     }
 
     #[rstest]
@@ -574,6 +603,12 @@ mod tests {
     fn test_serialize_token(#[case] token: Token, #[case] expected: &str) {
         let serialized = serde_json::to_string(&token).expect("serialization must not fail");
         assert_eq!(serialized, expected);
+    }
+
+    #[test]
+    fn test_serialize_deactivated() {
+        let serialized = serde_json::to_string(&Deactivation::new()).expect("serialization must not fail");
+        assert_eq!(serialized, r#"{"status":"deactivated"}"#);
     }
 
     // TODO: Add RFC tests where provided

@@ -1,15 +1,16 @@
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
-use crate::acme::object::{AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus, Token};
-use crate::challenge_solver::{ChallengeSolver, NullSolver};
+use crate::acme::object::{
+    AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus,
+};
+use crate::challenge_solver::{ChallengeSolver, KeyAuthorization};
 use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration};
 use crate::crypto::jws::JsonWebKey;
 use crate::crypto::signing;
 use crate::crypto::signing::KeyType;
 use crate::pebble::pebble_root;
 use anyhow::{anyhow, bail, Context, Error};
-use async_trait::async_trait;
 use clap::Args;
 use rcgen::CertificateSigningRequest;
 use std::fmt::Display;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use time::error::ConversionRange;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 pub mod acme;
@@ -98,9 +99,12 @@ fn current_time_truncated() -> time::OffsetDateTime {
 }
 
 // TODO: must-staple option
-fn create_and_sign_csr(cert_key: &rcgen::KeyPair, identifiers: Vec<Identifier>) -> Result<CertificateSigningRequest, Error> {
-    let cert_params =
-        rcgen::CertificateParams::new(identifiers.into_iter().map(Into::into).collect::<Vec<String>>()).context("CSR generation failed")?;
+fn create_and_sign_csr(
+    cert_key: &rcgen::KeyPair,
+    identifiers: Vec<Identifier>,
+) -> Result<CertificateSigningRequest, Error> {
+    let cert_params = rcgen::CertificateParams::new(identifiers.into_iter().map(Into::into).collect::<Vec<String>>())
+        .context("CSR generation failed")?;
     let csr = cert_params.serialize_request(cert_key).context("Signing CSR failed")?;
     Ok(csr)
 }
@@ -132,14 +136,16 @@ impl Certonaut {
         let keypair = signing::new_key(options.key_type).context("Generating new account key")?;
         let mut account_name = options.name;
         if account_name.is_empty() {
-            account_name = options.identifier.clone();
+            account_name.clone_from(&options.identifier);
         }
         let account_id = options.identifier;
         // TODO: Configurable key directory
         let key_path = format!("{account_id}.key");
         let key_path = Path::new(&key_path);
         let account_file = File::create_new(key_path).context("Saving account key to file")?;
-        keypair.save_to_disk(account_file).context("Saving account key to file")?;
+        keypair
+            .save_to_disk(account_file)
+            .context("Saving account key to file")?;
         let key_path = key_path.canonicalize().context("Saving account key to file")?;
 
         let options = AccountRegisterOptions {
@@ -147,7 +153,11 @@ impl Certonaut {
             contact: options.contacts,
             terms_of_service_agreed: options.terms_of_service_agreed,
         };
-        let (jwk, url, _account) = match client.register_account(options).await.context("Registering account at CA failed") {
+        let (jwk, url, _account) = match client
+            .register_account(options)
+            .await
+            .context("Registering account at CA failed")
+        {
             Ok((jwk, url, account)) => (jwk, url, account),
             Err(err) => {
                 // Remove the account key we just created to avoid a conflict if the user retries
@@ -177,7 +187,10 @@ impl Certonaut {
         FAccSelect: FnOnce(&mut Self, &CertificateAuthorityConfiguration) -> Result<AccountChoice, Error>,
     {
         let ca = if let Some(ca_id) = preselected_ca {
-            CaChoice::ExistingCa(self.find_ca_by_id(ca_id).ok_or(anyhow::anyhow!("CA {ca_id} not found"))?)
+            CaChoice::ExistingCa(
+                self.find_ca_by_id(ca_id)
+                    .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?,
+            )
         } else {
             fallback_ca_selection(self)?
         };
@@ -203,14 +216,16 @@ impl Certonaut {
     }
 
     pub fn save_new_account(&mut self, ca_id: &String, new_account: AccountConfiguration) -> Result<(), Error> {
-        let ca = self.find_ca_by_id_mut(ca_id).ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
+        let ca = self
+            .find_ca_by_id_mut(ca_id)
+            .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
         ca.accounts.push(new_account);
         config::save(&self.config, CONFIG_FILE.get().unwrap()).context("Saving new configuration")?;
         Ok(())
     }
 
     pub fn choose_ca_id_from_name(&self, friendly_name: &str) -> String {
-        let mut ca_id = friendly_name.trim().to_lowercase().replace(" ", "-");
+        let mut ca_id = friendly_name.trim().to_lowercase().replace(' ', "-");
         ca_id.retain(|c| c.is_ascii_alphanumeric());
         let mut ca_num = self.config.ca_list.len();
         if ca_id.is_empty() {
@@ -234,7 +249,9 @@ pub enum CaChoice {
 impl PartialEq for CaChoice {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (CaChoice::ExistingCa(self_ca), CaChoice::ExistingCa(other_ca)) => self_ca.identifier == other_ca.identifier,
+            (CaChoice::ExistingCa(self_ca), CaChoice::ExistingCa(other_ca)) => {
+                self_ca.identifier == other_ca.identifier
+            }
             _ => false,
         }
     }
@@ -247,7 +264,7 @@ impl Display for CaChoice {
                 let name = &ca.name;
                 write!(f, "{name}")?;
                 if ca.testing {
-                    write!(f, " (Testing)")?
+                    write!(f, " (Testing)")?;
                 };
             }
             CaChoice::NewCa => write!(f, "Add new CA")?,
@@ -309,13 +326,17 @@ impl AcmeIssuer {
     }
 
     pub async fn issue(
-        // TODO: Do we need &mut?
         &mut self,
         cert_key: &rcgen::KeyPair,
         cert_lifetime: Option<Duration>,
-        mut authorizers: Vec<Authorizer>,
+        authorizers: Vec<Authorizer>,
     ) -> Result<DownloadedCertificate, Error> {
-        let identifiers: Vec<Identifier> = authorizers.iter().map(|authorizer| authorizer.identifier.clone()).collect();
+        let identifiers: Vec<Identifier> = authorizers
+            .iter()
+            .map(|authorizer| authorizer.identifier.clone())
+            .collect();
+        let names = identifiers.join(", ");
+        info!("Issuing certificate for {names}");
         let csr = create_and_sign_csr(cert_key, identifiers.clone())?;
         let (not_before, not_after) = match cert_lifetime {
             Some(lifetime) => {
@@ -332,92 +353,205 @@ impl AcmeIssuer {
             not_before,
             not_after,
         };
+        self.order_and_authorize(csr, request, authorizers).await
+    }
+
+    async fn order_and_authorize(
+        &self,
+        csr: CertificateSigningRequest,
+        request: NewOrderRequest,
+        authorizers: Vec<Authorizer>,
+    ) -> Result<DownloadedCertificate, Error> {
         let (order_url, mut order) = self
             .client
             .new_order(&self.account.jwk, &request)
             .await
-            .context("Creating new order")?;
+            .context("Error creating new order")?;
         debug!("Order URL: {}", order_url);
-        // TODO: Deadline issuance process
-        loop {
-            match order.status {
-                OrderStatus::Valid => {
-                    return self.get_cert_from_finalized_order(order).await;
-                }
-                OrderStatus::Processing => {
-                    let final_order = self.client.poll_order(&self.account.jwk, order, &order_url).await?;
-                    return self.get_cert_from_finalized_order(final_order).await;
-                }
-                OrderStatus::Ready => {
-                    let final_order = self.client.finalize_order(&self.account.jwk, &order, &csr).await?;
-                    return self.get_cert_from_finalized_order(final_order).await;
-                }
-                OrderStatus::Invalid => bail!("New order has unacceptable status (invalid)"),
-                OrderStatus::Pending => {
-                    // Go authorize
-                }
+        match order.status {
+            OrderStatus::Valid => {
+                debug!("New order is already valid, downloading certificate");
+                return self.get_cert_from_finalized_order(order).await;
             }
-            for authz_url in order.authorizations {
-                let authz = self.client.get_authorization(&self.account.jwk, &authz_url).await?;
-                match authz.status {
-                    AuthorizationStatus::Valid => {
-                        // Skip
+            OrderStatus::Processing => {
+                debug!("New order is already processing, polling order and downloading certificate");
+                let final_order = self
+                    .client
+                    .poll_order(&self.account.jwk, order, &order_url)
+                    .await
+                    .context("Polling finalized order")?;
+                return self.get_cert_from_finalized_order(final_order).await;
+            }
+            OrderStatus::Ready => {
+                debug!("New order is already ready, finalizing order");
+                let final_order = self
+                    .client
+                    .finalize_order(&self.account.jwk, &order, &csr)
+                    .await
+                    .context("Error finalizing order")?;
+                return self.get_cert_from_finalized_order(final_order).await;
+            }
+            OrderStatus::Invalid => {
+                if let Some(error) = order.error {
+                    bail!(error);
+                }
+                bail!("New order has unacceptable status (invalid)")
+            }
+            OrderStatus::Pending => {
+                if let Err(e) = self
+                    .authorize(order, authorizers)
+                    .await
+                    .context("Error authorizing certificate issuance")
+                {
+                    if let Err(deactivate_err) = self.deactivate_order_authorizations(&order_url).await {
+                        warn!("Error deactivating leftover authorizations: {deactivate_err}");
                     }
-                    AuthorizationStatus::Pending => {
-                        let id = authz.identifier;
-                        let mut challenge_solver =
-                            authorizers.swap_remove(authorizers.iter().position(|authorizer| authorizer.identifier == id).ok_or(
-                                anyhow!(
+                    return Err(e);
+                }
+                debug!("Finished authorizing all identifiers");
+            }
+        }
+        debug!("Re-fetching fully authorized order ({order_url})");
+        order = self
+            .client
+            .get_order(&self.account.jwk, &order_url)
+            .await
+            .context("Re-fetching fully authorized order")?;
+        match order.status {
+            OrderStatus::Valid => {
+                debug!("CA claims order is already valid, downloading certificate");
+                self.get_cert_from_finalized_order(order).await
+            }
+            OrderStatus::Processing => {
+                debug!("CA claims order is already processing, polling order and downloading certificate");
+                let final_order = self
+                    .client
+                    .poll_order(&self.account.jwk, order, &order_url)
+                    .await
+                    .context("Polling finalized order")?;
+                self.get_cert_from_finalized_order(final_order).await
+            }
+            OrderStatus::Ready => {
+                debug!("Finalizing order");
+                let final_order = self
+                    .client
+                    .finalize_order(&self.account.jwk, &order, &csr)
+                    .await
+                    .context("Error finalizing order")?;
+                self.get_cert_from_finalized_order(final_order).await
+            }
+            OrderStatus::Pending => {
+                if let Some(error) = order.error {
+                    bail!(error);
+                }
+                bail!("Order is still pending after having authorized all identifiers");
+            }
+            OrderStatus::Invalid => {
+                if let Some(error) = order.error {
+                    bail!(error);
+                }
+                bail!("Order has invalid status (no error reported by CA)");
+            }
+        }
+    }
+
+    async fn authorize(&self, order: Order, mut authorizers: Vec<Authorizer>) -> Result<(), Error> {
+        for authz_url in order.authorizations {
+            debug!("Checking authorization @ {authz_url}");
+            let authz = self.client.get_authorization(&self.account.jwk, &authz_url).await?;
+            match authz.status {
+                AuthorizationStatus::Valid => {
+                    debug!("Authorization already valid");
+                    // Skip
+                }
+                AuthorizationStatus::Pending => {
+                    let id = authz.identifier;
+                    debug!("Found pending authorization for {id}, trying to authorize");
+                    let mut challenge_solver =
+                        authorizers.swap_remove(authorizers.iter().position(|authorizer| authorizer.identifier == id).ok_or(
+                            anyhow!(
                                 "Order contains pending authorization for {id}, but this identifier was not part of our requested order"
                             ),
-                            )?);
-                        let chosen_challenge = authz
-                            .challenges
-                            .into_iter()
-                            .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
-                            .filter(|challenge| !matches!(challenge.inner_challenge, InnerChallenge::Unknown))
-                            .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
-                            // TODO: Describe solver in error message
-                            .ok_or(anyhow!(
-                                "Authorization for {id} did not contain any pending challenge supported by solver"
-                            ))?;
+                        )?);
+                    let solver_name = challenge_solver.solver.name();
+                    let chosen_challenge = authz
+                        .challenges
+                        .into_iter()
+                        .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
+                        .filter(|challenge| !matches!(challenge.inner_challenge, InnerChallenge::Unknown))
+                        .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
+                        .ok_or(anyhow!(
+                            "Authorization for {id} did not contain any pending challenge supported by {solver_name}"
+                        ))?;
+                    debug!(
+                        "{solver_name} selected {} challenge @ {}",
+                        chosen_challenge.inner_challenge.get_type(),
+                        chosen_challenge.url
+                    );
 
-                        // TODO: Timeout solver
+                    // TODO: Timeout solver?
 
-                        // Setup
-                        challenge_solver
-                            .solver
-                            .deploy_challenge(&self.account.jwk, &id, chosen_challenge.inner_challenge)
-                            .await
-                            .context(format!("Setting up challenge solver for {id}"))?;
+                    // Setup
+                    challenge_solver
+                        .solver
+                        .deploy_challenge(&self.account.jwk, &id, chosen_challenge.inner_challenge)
+                        .await
+                        .context(format!("Setting up challenge solver {solver_name} for {id}"))?;
 
-                        // Validation
-                        self.client.validate_challenge(&self.account.jwk, &chosen_challenge.url).await?;
+                    debug!("{solver_name} reported successful challenge deployment, attempting validation now");
 
-                        // Cleanup
-                        if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
-                            warn!("Challenge solver for {id} encountered an error during cleanup: {e:#}");
-                        }
-                    }
-                    AuthorizationStatus::Invalid => {
-                        let id = &authz.identifier;
-                        let problems: Vec<Problem> = authz.challenges.into_iter().filter_map(|challenge| challenge.error).collect();
-                        let mut problem_string = String::new();
-                        problems.into_iter().for_each(|problem| {
-                            problem_string.push('\n');
-                            problem_string.push_str(&problem.to_string())
-                        });
-                        bail!("Failed to authorize {id}. The CA reported these problems: {problem_string}")
-                    }
-                    AuthorizationStatus::Deactivated | AuthorizationStatus::Expired | AuthorizationStatus::Revoked => {
-                        let id = &authz.identifier;
-                        bail!("Authorization for {id} is in an invalid status (deactivated, expired, or revoked)")
+                    // TODO: Preflight checks? By us or by solver?
+
+                    // Validation
+                    self.client
+                        .validate_challenge(&self.account.jwk, &chosen_challenge.url)
+                        .await
+                        .context(format!(
+                            "Error validating challenge for {id} with challenge solver {solver_name}"
+                        ))?;
+
+                    debug!("Successfully validated challenge for {id}");
+
+                    // Cleanup
+                    if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
+                        warn!("Challenge solver {solver_name} for {id} encountered an error during cleanup: {e:#}");
                     }
                 }
+                AuthorizationStatus::Invalid => {
+                    let id = &authz.identifier;
+                    let problems: Vec<Problem> = authz
+                        .challenges
+                        .into_iter()
+                        .filter_map(|challenge| challenge.error)
+                        .collect();
+                    let mut problem_string = String::new();
+                    for problem in problems {
+                        problem_string.push('\n');
+                        problem_string.push_str(&problem.to_string());
+                    }
+                    bail!("Failed to authorize {id}. The CA reported these problems: {problem_string}")
+                }
+                AuthorizationStatus::Deactivated | AuthorizationStatus::Expired | AuthorizationStatus::Revoked => {
+                    let id = &authz.identifier;
+                    bail!("Authorization for {id} is in an invalid status (deactivated, expired, or revoked)")
+                }
             }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            order = self.client.get_order(&self.account.jwk, &order_url).await?
         }
+        Ok(())
+    }
+
+    async fn deactivate_order_authorizations(&self, order_url: &Url) -> Result<(), Error> {
+        let order = self.client.get_order(&self.account.jwk, order_url).await?;
+        for authz_url in order.authorizations {
+            // The order object unfortunately doesn't tell us the current status of the authz.
+            // To avoid roundtrips, we just deactivate all authzs, even the ones that can't be deactivated.
+            // Therefore, do not bail on errors here - just continue trying to deactivate as many as we can.
+            self.client
+                .deactivate_authorization(&self.account.jwk, &authz_url)
+                .await
+                .ok();
+        }
+        Ok(())
     }
 }
 

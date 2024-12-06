@@ -8,12 +8,7 @@ use std::path::PathBuf;
 #[command(version, about, long_about = "")]
 struct CommandLineArguments {
     /// Path to configuration file
-    #[arg(
-        short,
-        long,
-        env = "CERTONAUT_CONFIG",
-        default_value = "certonaut.toml"
-    )]
+    #[arg(short, long, env = "CERTONAUT_CONFIG", default_value = "certonaut.toml")]
     config: PathBuf,
     #[command(subcommand)]
     command: Option<Commands>,
@@ -34,11 +29,10 @@ fn is_interactive() -> bool {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let interactive = is_interactive();
     let cli = CommandLineArguments::parse();
-    CONFIG_FILE
-        .set(cli.config.clone())
-        .expect("Config file already set");
+    CONFIG_FILE.set(cli.config.clone()).expect("Config file already set");
     let config = config::load(cli.config)?;
     let client = Certonaut::new(config);
 

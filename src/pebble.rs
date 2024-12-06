@@ -42,11 +42,20 @@ pub struct ChallengeTestHttpSolver {
 
 #[async_trait]
 impl ChallengeSolver for ChallengeTestHttpSolver {
+    fn name(&self) -> &'static str {
+        "pebble-challtestsrv http solver"
+    }
+
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {
         matches!(challenge, InnerChallenge::Http(_))
     }
 
-    async fn deploy_challenge(&mut self, jwk: &JsonWebKey, _identifier: &Identifier, challenge: InnerChallenge) -> Result<(), Error> {
+    async fn deploy_challenge(
+        &mut self,
+        jwk: &JsonWebKey,
+        _identifier: &Identifier,
+        challenge: InnerChallenge,
+    ) -> Result<(), Error> {
         let token = challenge.get_token();
         let authorization = challenge.get_key_authorization(jwk);
         let response = self
