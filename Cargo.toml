@@ -6,6 +6,9 @@ license = "MIT"
 edition = "2021"
 rust-version = "1.80.1"
 
+[features]
+magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
+
 [dependencies]
 anyhow = "1.0.94"
 async-trait = "0.1.83"
@@ -23,22 +26,36 @@ rcgen = { version = "0.13.1", default-features = false, features = ["crypto", "p
 # TODO: Use rustls since that's probably what tonic also uses? However, in order to avoid reqwest depending on
 # ring in that case, we need to build the TLS client ourselves, which may involve bringing in rustls directly
 # HTTP/2 support is also possibly broken as native-tls needs an extra ALPN feature. This is also much better on rustls.
-reqwest = { version = "0.12.9", default-features = false, features = ["json", "charset", "http2", "native-tls"] }
+reqwest = { version = "0.12.9", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
 serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 time = { version = "0.3.36", features = ["serde", "formatting", "parsing"] }
 # TODO: Narrow features
 tokio = { version = "1.42.0", features = ["full"] }
+tokio-util = "0.7.13"
 toml_edit = { version = "0.22.22", features = ["serde", "display"] }
 tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = { version = "2.5.4", features = ["serde"] }
 x509-parser = "0.16.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+caps = { version = "0.5.5" }
+libbpf-rs = { version = "0.24.8", optional = true }
+http = { version = "1.2.0", optional = true }
+http-body-util = { version = "0.1.2", optional = true }
+hyper = { version = "1.5.1", features = ["client", "server"], optional = true }
+hyper-util = { version = "0.1.10", optional = true }
+
 [build-dependencies]
 toml = "0.8.19"
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+libbpf-cargo = { version = "0.24.8", optional = true }
+vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94", optional = true }
 
 [dev-dependencies]
 httptest = "0.16.1"
 rstest = "0.23.0"
 tempfile = "3.14.0"
+

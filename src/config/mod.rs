@@ -3,7 +3,6 @@ use crate::config::default::DefaultConfig;
 use crate::config::toml::TomlConfiguration;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use url::Url;
 
 mod default;

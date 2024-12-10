@@ -108,6 +108,12 @@ impl Display for Token {
     }
 }
 
+impl Token {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountRequest {

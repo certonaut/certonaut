@@ -42,6 +42,7 @@ fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
 #[async_trait]
 pub trait ChallengeSolver {
     fn name(&self) -> &'static str;
+    // TODO: Preference sorting in case a solver supports multiple?
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
     async fn deploy_challenge(
         &mut self,
@@ -77,4 +78,11 @@ impl ChallengeSolver for NullSolver {
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpChallengeParameters {
+    pub token: Token,
+    pub key_authorization: String,
+    pub challenge_port: u16,
 }

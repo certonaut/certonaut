@@ -43,7 +43,7 @@ pub struct ChallengeTestHttpSolver {
 #[async_trait]
 impl ChallengeSolver for ChallengeTestHttpSolver {
     fn name(&self) -> &'static str {
-        "pebble-challtestsrv http solver"
+        "pebble-challtestsrv http-01 solver"
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

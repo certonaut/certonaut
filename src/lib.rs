@@ -27,6 +27,7 @@ pub mod challenge_solver;
 pub mod config;
 pub mod crypto;
 pub mod interactive;
+pub mod magic;
 pub mod pebble;
 pub mod util;
 
@@ -558,4 +559,13 @@ impl AcmeIssuer {
 pub struct Authorizer {
     identifier: Identifier,
     solver: Box<dyn ChallengeSolver>,
+}
+
+impl Authorizer {
+    pub fn new(identifier: Identifier, solver: impl ChallengeSolver + 'static) -> Self {
+        Self {
+            identifier,
+            solver: Box::new(solver),
+        }
+    }
 }

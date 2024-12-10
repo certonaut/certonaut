@@ -3,6 +3,8 @@ use certonaut::{config, Certonaut, IssueCommand, CONFIG_FILE};
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 use std::path::PathBuf;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]
@@ -29,7 +31,10 @@ fn is_interactive() -> bool {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    let filter = EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| EnvFilter::new("info")); // Fallback to global info level
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let sup = certonaut::magic::is_supported();
+    info!("BPF supported: {sup}");
     let interactive = is_interactive();
     let cli = CommandLineArguments::parse();
     CONFIG_FILE.set(cli.config.clone()).expect("Config file already set");
