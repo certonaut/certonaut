@@ -147,7 +147,7 @@ pub enum AccountStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum Identifier {
@@ -191,6 +191,12 @@ impl Borrow<str> for Identifier {
             Identifier::Dns { value } => value.as_str(),
             Identifier::Unknown => "unknown",
         }
+    }
+}
+
+impl Identifier {
+    pub fn as_str(&self) -> &str {
+        self.borrow()
     }
 }
 

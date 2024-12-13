@@ -1,5 +1,6 @@
 use crate::acme::object::{Identifier, InnerChallenge};
 use crate::challenge_solver::{ChallengeSolver, HttpChallengeParameters, KeyAuthorization};
+use crate::config::{MagicHttpSolverConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
 use anyhow::{bail, Error};
 use async_trait::async_trait;
@@ -29,6 +30,10 @@ impl MagicHttpSolver {
             inner: None,
         }
     }
+
+    pub fn from_config(_config: MagicHttpSolverConfiguration) -> Box<Self> {
+        Box::new(MagicHttpSolver::default())
+    }
 }
 
 impl Default for MagicHttpSolver {
@@ -45,8 +50,16 @@ struct MagicHttpSolverChallengeData {
 
 #[async_trait]
 impl ChallengeSolver for MagicHttpSolver {
-    fn name(&self) -> &'static str {
-        "magic HTTP solver"
+    fn long_name(&self) -> &'static str {
+        "magic HTTP-01 solver"
+    }
+
+    fn short_name(&self) -> &'static str {
+        "magic-http"
+    }
+
+    fn config(&self) -> SolverConfiguration {
+        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {})
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

@@ -10,10 +10,8 @@ pub(crate) mod serde_helper {
         use time::serde::rfc3339;
         use time::OffsetDateTime;
 
-        pub fn serialize<S>(
-            input: &Option<OffsetDateTime>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error>
+        #[allow(clippy::ref_option)]
+        pub fn serialize<S>(input: &Option<OffsetDateTime>, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
@@ -91,13 +89,9 @@ mod tests {
     #[rstest]
     #[case("\"1985-04-12T23:20:50.52Z\"", Some(datetime!(1985-04-12 23:20:50.52 UTC)))]
     #[case("\"1996-12-19T16:39:57-08:00\"", Some(datetime!(1996-12-20 00:39:57 UTC)))]
-    fn test_deserialize_optional_rfc339(
-        #[case] test_value: &str,
-        #[case] expected: Option<OffsetDateTime>,
-    ) {
+    fn test_deserialize_optional_rfc339(#[case] test_value: &str, #[case] expected: Option<OffsetDateTime>) {
         let mut deserializer = serde_json::Deserializer::from_str(test_value);
-        let date_time: Option<OffsetDateTime> =
-            optional_offset_date_time::deserialize(&mut deserializer).unwrap();
+        let date_time: Option<OffsetDateTime> = optional_offset_date_time::deserialize(&mut deserializer).unwrap();
         assert_eq!(date_time, expected);
     }
 
@@ -105,10 +99,7 @@ mod tests {
     #[case(Some(datetime!(1985-04-12 23:20:50.52 UTC)), "\"1985-04-12T23:20:50.52Z\"")]
     #[case(Some(datetime!(1996-12-20 00:39:57 UTC)), "\"1996-12-20T00:39:57Z\"")]
     #[case(None, "null")]
-    fn test_serialize_optional_rfc339(
-        #[case] test_value: Option<OffsetDateTime>,
-        #[case] expected: &str,
-    ) {
+    fn test_serialize_optional_rfc339(#[case] test_value: Option<OffsetDateTime>, #[case] expected: &str) {
         let mut serialized = Vec::new();
         let mut serializer = serde_json::Serializer::new(&mut serialized);
         optional_offset_date_time::serialize(&test_value, &mut serializer).unwrap();

@@ -1,5 +1,6 @@
 use crate::acme::object::{Identifier, InnerChallenge, Token};
 use crate::challenge_solver::KeyAuthorization;
+use crate::config::{PebbleHttpSolverConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
 use crate::ChallengeSolver;
 use anyhow::{bail, Error};
@@ -40,10 +41,27 @@ pub struct ChallengeTestHttpSolver {
     challenge: Option<InnerChallenge>,
 }
 
+impl ChallengeTestHttpSolver {
+    pub fn from_config(_config: PebbleHttpSolverConfiguration) -> Box<Self> {
+        Box::new(Self {
+            http: Default::default(),
+            challenge: None,
+        })
+    }
+}
+
 #[async_trait]
 impl ChallengeSolver for ChallengeTestHttpSolver {
-    fn name(&self) -> &'static str {
+    fn long_name(&self) -> &'static str {
         "pebble-challtestsrv http-01 solver"
+    }
+
+    fn short_name(&self) -> &'static str {
+        "pebble-http"
+    }
+
+    fn config(&self) -> SolverConfiguration {
+        SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {})
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

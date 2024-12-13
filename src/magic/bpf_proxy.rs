@@ -1,4 +1,5 @@
 use crate::challenge_solver::HttpChallengeParameters;
+use crate::CRATE_NAME;
 use anyhow::{anyhow, Context};
 use caps::{CapSet, Capability};
 use futures::future;
@@ -93,7 +94,7 @@ async fn http_handler(
     if path.starts_with("/.well-known/acme-challenge/") && path.ends_with(params.token.as_str()) {
         Ok(Response::builder()
             .status(200)
-            .header(http::header::SERVER, "certonaut")
+            .header(http::header::SERVER, CRATE_NAME)
             .header(http::header::CONTENT_TYPE, "application/octet-stream")
             .body(Either::Left(Full::new(Bytes::from(
                 params.key_authorization.to_string(),
@@ -113,7 +114,7 @@ async fn http_handler(
                 warn!("Forwarding failed: {e}");
                 Ok(Response::builder()
                     .status(502)
-                    .header(http::header::SERVER, "certonaut")
+                    .header(http::header::SERVER, CRATE_NAME)
                     .header(http::header::CONTENT_TYPE, "text/plain")
                     .body(Either::Left(Full::new(Bytes::from(
                         "Unable to forward request to HTTP server",
@@ -244,6 +245,7 @@ pub async fn deploy_challenge(
                     }
                 }
                 () = cancellation_token.cancelled() => {
+                    // TODO: Drain the accept queue before leaving
                     break;
                 }
             };

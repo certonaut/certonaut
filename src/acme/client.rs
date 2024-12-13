@@ -426,11 +426,17 @@ fn backoff_from_retry_after(retry_after: Option<SystemTime>) -> Duration {
 mod tests {
     use super::super::http::test_helper::*;
     use super::*;
+    use bstr::ByteSlice;
     use httptest::matchers::request::method_path;
+    use httptest::matchers::{request, ExecutionContext, Matcher};
     use httptest::responders::{json_encoded, status_code};
-    use httptest::{cycle, Expectation, IntoTimes};
+    use httptest::{all_of, cycle, Expectation, IntoTimes};
+    use serde_json::json;
+    use std::fmt::Formatter;
+    use std::fs::File;
 
     const NONCE_VALUE: &str = "notActuallyRandom";
+    const ACCOUNT_URL: &str = "http://localhost/account-url";
 
     fn create_acme_server() -> Server {
         let server = SERVER_POOL.get_server();
@@ -446,6 +452,13 @@ mod tests {
         };
         server.expect(Expectation::matching(method_path("GET", "/")).respond_with(json_encoded(directory)));
         server
+    }
+
+    fn test_jwk() -> JsonWebKey {
+        JsonWebKey::new_existing(
+            KeyPair::load_from_disk(File::open("testdata/account.key").unwrap()).unwrap(),
+            ACCOUNT_URL.try_into().unwrap(),
+        )
     }
 
     fn setup_nonces<R>(server: &Server, num_nonces: R)
@@ -512,6 +525,88 @@ mod tests {
             err.to_string(),
             "The CA reported a problem: HTTP error: 429 Too Many Requests"
         );
+    }
+
+    #[tokio::test]
+    async fn test_post_with_retry_when_bad_nonce_retries() {
+        #[derive(Debug)]
+        struct NonceMatcher {
+            num: usize,
+        }
+
+        impl NonceMatcher {
+            fn __matches(&mut self, body: &[u8]) -> Option<bool> {
+                println!("{}", body.to_str_lossy());
+                let header: serde_json::Value = serde_json::from_slice(body).ok()?;
+                let header = header.as_object()?.get("protected")?.as_str()?;
+                println!("protected header {header}");
+                let header = BASE64_URL_SAFE_NO_PAD.decode(header).ok()?;
+                let body_json: serde_json::Value = serde_json::from_slice(&header).ok()?;
+                println!("got header {body_json}");
+                let request_nonce = body_json.as_object()?.get("nonce")?.as_str()?;
+                let num = self.num;
+                println!("Request nonce is {request_nonce}, request num is {num}");
+                let matches = match num {
+                    0 => request_nonce == NONCE_VALUE,
+                    1 => request_nonce == "ThisNonceIsNotValid",
+                    2 => request_nonce == "NonceIsNotValidEither-Sorry",
+                    3 => request_nonce == "ThisNonceIsValid",
+                    _ => false,
+                };
+                println!("Nonce valid: {matches}");
+                self.num += 1;
+                Some(matches)
+            }
+        }
+
+        impl Matcher<bstr::BStr> for NonceMatcher {
+            fn matches(&mut self, input: &bstr::BStr, _ctx: &mut ExecutionContext) -> bool {
+                self.__matches(input.as_bytes()).unwrap_or(false)
+            }
+
+            fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+                write!(f, "{self:?}")
+            }
+        }
+
+        let bad_nonce_error = json!({
+         "type": "urn:ietf:params:acme:error:badNonce",
+        })
+        .to_string();
+        let server = create_acme_server();
+        setup_nonces(&server, 1);
+        server.expect(
+            Expectation::matching(all_of!(
+                method_path("POST", "/retry-test"),
+                request::body(NonceMatcher { num: 0 })
+            ))
+            .times(4)
+            .respond_with(cycle!(
+                status_code(400)
+                    .append_header("Replay-Nonce", "ThisNonceIsNotValid")
+                    .append_header("Content-Type", "application/problem+json")
+                    .append_header("Retry-After", "1")
+                    .body(bad_nonce_error.clone()),
+                status_code(400)
+                    .append_header("Replay-Nonce", "NonceIsNotValidEither-Sorry")
+                    .append_header("Content-Type", "application/problem+json")
+                    .append_header("Retry-After", "1")
+                    .body(bad_nonce_error.clone()),
+                status_code(400)
+                    .append_header("Replay-Nonce", "ThisNonceIsValid")
+                    .append_header("Content-Type", "application/problem+json")
+                    .append_header("Retry-After", "1")
+                    .body(bad_nonce_error),
+                status_code(200).body(r"null")
+            )),
+        );
+        let client = build_acme_client(&server).await;
+        let jwk = test_jwk();
+        let response: AcmeResponse<()> = client
+            .post_with_retry(&uri_to_url(server.url("/retry-test")), &jwk, Option::<&()>::None)
+            .await
+            .unwrap();
+        assert_eq!(response.status, StatusCode::OK);
     }
 
     // TODO: Other methods

@@ -1,9 +1,11 @@
-use crate::config::{ConfigBackend, Configuration};
 use anyhow::Error;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::path::Path;
 use std::str::FromStr;
 use toml_edit::DocumentMut;
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Debug, Clone)]
 pub struct TomlConfiguration {
     document: DocumentMut,
@@ -26,11 +28,17 @@ impl TomlConfiguration {
         Ok(())
     }
 
-    fn into_configuration(self) -> Result<Configuration, Error> {
+    fn into_configuration<T>(self) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
         Ok(toml_edit::de::from_document(self.document)?)
     }
 
-    fn edit_toml(&mut self, config: &Configuration) -> Result<(), Error> {
+    fn edit_toml<T>(&mut self, config: &T) -> Result<(), Error>
+    where
+        T: Serialize,
+    {
         // TODO: Manually ensure that comments are kept by merging. For now, ignore.
         // Manually prettify by serializing and deserializing
         let pretty_string = toml_edit::ser::to_string_pretty(&config)?;
@@ -40,17 +48,21 @@ impl TomlConfiguration {
         self.document = document;
         Ok(())
     }
-}
 
-impl ConfigBackend for TomlConfiguration {
-    fn load<P: AsRef<Path>>(file: P) -> Result<Configuration, Error> {
+    pub fn load<P: AsRef<Path>, T>(file: P) -> Result<T, Error>
+    where
+        T: DeserializeOwned,
+    {
         let toml = Self::load_toml(file)?;
         toml.into_configuration()
     }
 
-    fn save<P: AsRef<Path>>(config: &Configuration, file: P) -> Result<(), Error> {
+    pub fn save<T, P: AsRef<Path>>(config: &T, file: P) -> Result<(), Error>
+    where
+        T: Serialize,
+    {
         let mut toml = Self::load_toml(&file).unwrap_or(TomlConfiguration {
-            document: Default::default(),
+            document: DocumentMut::default(),
         });
         toml.edit_toml(config)?;
         toml.write_toml(file)

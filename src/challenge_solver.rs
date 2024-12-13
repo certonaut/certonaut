@@ -1,4 +1,5 @@
 use crate::acme::object::{Identifier, InnerChallenge, Token};
+use crate::config::{NullSolverConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
 use anyhow::Error;
 use async_trait::async_trait;
@@ -41,7 +42,9 @@ fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
 
 #[async_trait]
 pub trait ChallengeSolver {
-    fn name(&self) -> &'static str;
+    fn long_name(&self) -> &'static str;
+    fn short_name(&self) -> &'static str;
+    fn config(&self) -> SolverConfiguration;
     // TODO: Preference sorting in case a solver supports multiple?
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
     async fn deploy_challenge(
@@ -56,10 +59,24 @@ pub trait ChallengeSolver {
 #[derive(Debug, Default, Clone)]
 pub struct NullSolver {}
 
+impl NullSolver {
+    pub fn from_config(_config: NullSolverConfiguration) -> Box<Self> {
+        Box::new(NullSolver {})
+    }
+}
+
 #[async_trait]
 impl ChallengeSolver for NullSolver {
-    fn name(&self) -> &'static str {
+    fn long_name(&self) -> &'static str {
         "null solver"
+    }
+
+    fn short_name(&self) -> &'static str {
+        "null"
+    }
+
+    fn config(&self) -> SolverConfiguration {
+        SolverConfiguration::Null(NullSolverConfiguration {})
     }
 
     fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
