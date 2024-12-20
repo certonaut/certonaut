@@ -6,16 +6,18 @@ use futures::StreamExt;
 use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{debug, info};
 
 #[allow(clippy::module_name_repetitions)]
 pub struct RenewService {
+    interactive: bool,
     client: Arc<Certonaut>,
 }
 
 impl RenewService {
-    pub fn new(client: Certonaut) -> Self {
+    pub fn new(client: Certonaut, interactive: bool) -> Self {
         Self {
+            interactive,
             client: Arc::new(client),
         }
     }
@@ -26,9 +28,9 @@ impl RenewService {
         for cert_name in certs.keys() {
             let cert_name = cert_name.to_owned();
             let client = self.client.clone();
-            renew_tasks.push(tokio::spawn(
-                async move { RenewTask::new(cert_name, client).run().await },
-            ));
+            renew_tasks.push(tokio::spawn(async move {
+                RenewTask::new(self.interactive, cert_name, client).run().await
+            }));
         }
 
         while let Some(renew_task) = renew_tasks.next().await {
@@ -40,20 +42,24 @@ impl RenewService {
 
 #[allow(clippy::module_name_repetitions)]
 pub struct RenewTask {
+    interactive: bool,
     cert_id: String,
     client: Arc<Certonaut>,
 }
 
 impl RenewTask {
-    pub fn new(cert_name: String, client: Arc<Certonaut>) -> Self {
+    pub fn new(interactive: bool, cert_name: String, client: Arc<Certonaut>) -> Self {
         Self {
+            interactive,
             cert_id: cert_name,
             client,
         }
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        // TODO: When non-interactively used, sleep for a random duration before doing anything
+        if !self.interactive {
+            // TODO: Sleep for a random duration
+        }
         let cert_id = self.cert_id;
         let cert_config = self
             .client
@@ -73,7 +79,9 @@ impl RenewTask {
                 info!("Certificate {cert_name} is not due for renewal for {renew_in:?}");
                 return Ok(());
             }
+            info!("Certificate {cert_name} will be renewed in {renew_in:?}");
             tokio::time::sleep(renew_in).await;
+            info!("Renewing certificate {cert_name} at CA {}", issuer.issuer.config.name);
             // TODO: Reuse key if requested
             let new_key = crypto::asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?;
             // TODO: Remember cert lifetime if set
@@ -87,22 +95,23 @@ impl RenewTask {
         Ok(())
     }
 
+    #[allow(clippy::unused_async)]
     async fn renew_in(issuer: &AcmeIssuerWithAccount<'_>, cert: &ParsedX509Certificate) -> Duration {
+        let cert_serial = &cert.serial;
         // TODO: Check ARI first, if available
         // Fallback to 2/3 parsing
         let now = OffsetDateTime::now_utc();
         let not_after = cert.validity.not_after.to_datetime();
         if now >= not_after {
+            debug!("Certificate with serial {cert_serial} expired, suggesting renewal now");
             Duration::ZERO
         } else {
             // TODO: Fix possible underflow panics
             let total_lifetime = not_after - cert.validity.not_before.to_datetime();
             let remaining_lifetime = not_after - now;
-            if (total_lifetime / 3) > remaining_lifetime {
-                Duration::ZERO
-            } else {
-                Duration::try_from((total_lifetime / 3) - remaining_lifetime).unwrap_or(Duration::ZERO)
-            }
+            let one_third_lifetime = total_lifetime / 3;
+            let time_until_renew = remaining_lifetime - one_third_lifetime;
+            Duration::try_from(time_until_renew).unwrap_or(Duration::ZERO)
         }
     }
 }

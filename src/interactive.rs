@@ -35,7 +35,7 @@ impl InteractiveService {
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let domains = Self::user_ask_cert_domains(&issue_cmd)?;
         let authorizers = Self::user_ask_authorizers(&issuer, &issue_cmd, domains)?;
-        let key_type = KeyType::Ecdsa(Curve::P256);
+        let key_type = issue_cmd.key_type.into();
         let cert_key = asymmetric::new_key(key_type)
             .and_then(asymmetric::KeyPair::to_rcgen_keypair)
             .context(format!("Could not generate certificate key with type {key_type}"))?;

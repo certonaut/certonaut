@@ -58,6 +58,13 @@ pub(crate) mod serde_helper {
             Ok(v.to_vec())
         }
 
+        fn visit_borrowed_bytes<E>(self, v: &'_ [u8]) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(v.to_vec())
+        }
+
         fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
         where
             E: Error,

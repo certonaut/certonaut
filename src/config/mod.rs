@@ -18,10 +18,22 @@ use x509_parser::nom::AsBytes;
 
 mod toml;
 
+#[cfg(target_os = "linux")]
+pub fn get_default_config_directory() -> PathBuf {
+    PathBuf::from("/etc/certonaut")
+}
+
+#[cfg(target_os = "windows")]
+pub fn get_default_config_directory() -> PathBuf {
+    let app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(app_data).join("certonaut")
+}
+
 pub static CONFIG_FILE: OnceLock<PathBuf> = OnceLock::<PathBuf>::new();
 
+#[allow(clippy::module_name_repetitions)]
 pub fn config_directory() -> &'static Path {
-    CONFIG_FILE.get().unwrap()
+    CONFIG_FILE.get_or_init(get_default_config_directory)
 }
 
 #[allow(clippy::module_name_repetitions)]

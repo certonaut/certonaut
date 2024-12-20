@@ -27,6 +27,14 @@ impl Display for KeyType {
     }
 }
 
+impl TryFrom<&str> for KeyType {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        todo!()
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Curve {
     #[serde(rename = "P-256")]

@@ -14,14 +14,16 @@ use crate::config::{
     SolverConfiguration,
 };
 use crate::crypto::asymmetric;
-use crate::crypto::asymmetric::KeyType;
+use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::JsonWebKey;
 use crate::pebble::pebble_root;
 use anyhow::{anyhow, bail, Context, Error};
-use clap::Args;
+use aws_lc_rs::rsa::KeySize;
+use clap::{Args, ValueEnum};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
@@ -62,7 +64,50 @@ pub struct IssueCommand {
     /// The display name of the new certificate
     #[clap(long)]
     cert_name: Option<String>,
+    /// Type of key for the certificate
+    #[clap(short, long, default_value_t = CommandLineKeyType::default())]
+    key_type: CommandLineKeyType,
 }
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum CommandLineKeyType {
+    /// ECDSA with NIST P-256
+    #[default]
+    P256,
+    /// ECDSA with NIST P-384
+    P384,
+    /// RSA (2048-bit key)
+    Rsa2048,
+    /// RSA (3072-bit key)
+    Rsa3072,
+    /// RSA (4096-bit key)
+    Rsa4096,
+    /// RSA (8192-bit key)
+    Rsa8192,
+}
+
+impl Display for CommandLineKeyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let enum_value = self.to_possible_value().unwrap(/* Infallible */);
+        write!(f, "{}", enum_value.get_name())
+    }
+}
+
+impl From<CommandLineKeyType> for KeyType {
+    fn from(key_type: CommandLineKeyType) -> Self {
+        match key_type {
+            CommandLineKeyType::P256 => KeyType::Ecdsa(Curve::P256),
+            CommandLineKeyType::P384 => KeyType::Ecdsa(Curve::P384),
+            CommandLineKeyType::Rsa2048 => KeyType::Rsa(KeySize::Rsa2048),
+            CommandLineKeyType::Rsa3072 => KeyType::Rsa(KeySize::Rsa3072),
+            CommandLineKeyType::Rsa4096 => KeyType::Rsa(KeySize::Rsa4096),
+            CommandLineKeyType::Rsa8192 => KeyType::Rsa(KeySize::Rsa8192),
+        }
+    }
+}
+
+#[derive(Debug, Args, Default)]
+pub struct RenewCommand {}
 
 fn current_time_truncated() -> time::OffsetDateTime {
     let now = time::OffsetDateTime::now_utc();
@@ -569,16 +614,9 @@ impl<'a> AcmeIssuerWithAccount<'a> {
                 bail!("New order has unacceptable status (invalid)")
             }
             OrderStatus::Pending => {
-                if let Err(e) = self
-                    .authorize(order, authorizers)
+                self.authorize(order, authorizers)
                     .await
-                    .context("Error authorizing certificate issuance")
-                {
-                    if let Err(deactivate_err) = self.deactivate_order_authorizations(&order_url).await {
-                        warn!("Error deactivating leftover authorizations: {deactivate_err}");
-                    }
-                    return Err(e);
-                }
+                    .context("Error authorizing certificate issuance")?;
                 info!("Finished authorizing all identifiers");
             }
         }
@@ -713,6 +751,7 @@ impl<'a> AcmeIssuerWithAccount<'a> {
     }
 
     // TODO: Move to AcmeClient?
+    #[deprecated(note = "Not needed for a normal issuance flow. Could become a troubleshooting helper")]
     async fn deactivate_order_authorizations(&self, order_url: &Url) -> Result<(), Error> {
         let client = self.client().await?;
         let order = client.get_order(&self.account.jwk, order_url).await?;
