@@ -1,18 +1,21 @@
+extern crate core;
+
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
 use crate::acme::object::{
     AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
+use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, KeyAuthorization};
 use crate::config::{
     config_directory, AccountConfiguration, CertificateAuthorityConfiguration,
     CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, Configuration, MainConfiguration,
     SolverConfiguration,
 };
+use crate::crypto::asymmetric;
+use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
-use crate::crypto::signing;
-use crate::crypto::signing::KeyType;
 use crate::pebble::pebble_root;
 use anyhow::{anyhow, bail, Context, Error};
 use clap::Args;
@@ -20,6 +23,8 @@ use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Seek};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use time::error::ConversionRange;
@@ -28,15 +33,20 @@ use tracing::{debug, info, warn};
 use url::Url;
 
 pub mod acme;
+pub mod cert;
 pub mod challenge_solver;
 pub mod config;
 pub mod crypto;
 pub mod interactive;
 pub mod magic;
 pub mod pebble;
+pub mod renew;
 pub mod util;
 
+/// The name of the application
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+/// The maximum number of certificates we will parse in a PEM-array of certificates by default
+const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
 
 #[derive(Debug, Args, Default)]
 pub struct IssueCommand {
@@ -49,15 +59,17 @@ pub struct IssueCommand {
     /// Domain names to include in the certificate
     #[clap(short, long, value_delimiter = ',', num_args = 1..)]
     domains: Option<Vec<String>>,
+    /// The display name of the new certificate
+    #[clap(long)]
+    cert_name: Option<String>,
 }
 
 fn current_time_truncated() -> time::OffsetDateTime {
     let now = time::OffsetDateTime::now_utc();
-    // unwrap is unreachable due to const valid nanosecond
-    now.replace_nanosecond(0).unwrap()
+    now.replace_nanosecond(0).unwrap(/* unreachable */)
 }
 
-// TODO: must-staple option
+// TODO: must-staple option (Note: LE has deprecated it, so not exactly motivated to give this high priority)
 fn create_and_sign_csr(
     cert_key: &rcgen::KeyPair,
     identifiers: Vec<Identifier>,
@@ -66,6 +78,42 @@ fn create_and_sign_csr(
         .context("CSR generation failed")?;
     let csr = cert_params.serialize_request(cert_key).context("Signing CSR failed")?;
     Ok(csr)
+}
+
+pub fn load_certificates_from_file<P: AsRef<Path>>(
+    cert_file: P,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let cert_file = cert_file.as_ref();
+    let cert_file_display = cert_file.display();
+    let cert_file = File::open(cert_file).context(format!("Opening {cert_file_display} failed"))?;
+    let reader = BufReader::new(cert_file);
+    load_certificates_from_reader(reader, limit).context(format!("Parsing certificate {cert_file_display} failed"))
+}
+
+pub fn load_certificates_from_memory<B: AsRef<[u8]>>(
+    pem_bytes: B,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let reader = Cursor::new(pem_bytes);
+    load_certificates_from_reader(reader, limit)
+}
+
+fn load_certificates_from_reader<R: BufRead + Seek>(
+    reader: R,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let mut certificates = Vec::new();
+    for pem in
+        x509_parser::pem::Pem::iter_from_reader(reader).take(limit.unwrap_or(DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH))
+    {
+        let pem = pem.context("Reading PEM block failed")?;
+        let parser_x509 = pem
+            .parse_x509()
+            .context("Reading X509 structure: Decoding DER failed")?;
+        certificates.push(parser_x509.into());
+    }
+    Ok(certificates)
 }
 
 pub struct Authorizer {
@@ -83,7 +131,12 @@ impl Authorizer {
     }
 }
 
-pub fn build_cert_config<'a, I>(issuer: &AcmeIssuerWithAccount, authorizers: I) -> CertificateConfiguration
+pub fn build_cert_config<'a, I>(
+    name: String,
+    key_type: KeyType,
+    issuer: &AcmeIssuerWithAccount,
+    authorizers: I,
+) -> CertificateConfiguration
 where
     I: Iterator<Item = &'a Authorizer>,
 {
@@ -100,16 +153,18 @@ where
             let mut solver_name = base_solver_name.clone();
             while solvers.contains_key(&solver_name) {
                 i += 1;
-                solver_name = base_solver_name.clone() + &format!("-{i}");
+                solver_name = format!("{base_solver_name}-{i}");
             }
             domains.insert(authorizer.identifier.to_string(), solver_name.clone());
             solvers.insert(solver_name, solver_config);
         }
     }
     CertificateConfiguration {
+        display_name: name,
         auto_renew: true,
         ca_identifier: issuer.issuer.config.identifier.clone(),
         account_identifier: issuer.account.config.identifier.clone(),
+        key_type,
         domains,
         solvers,
     }
@@ -126,6 +181,7 @@ pub fn authorizers_from_config(config: CertificateConfiguration) -> anyhow::Resu
         {
             bail!("Duplicate domain {id} in config");
         }
+
         let solver_config = config
             .solvers
             .get(&solver)
@@ -135,6 +191,19 @@ pub fn authorizers_from_config(config: CertificateConfiguration) -> anyhow::Resu
         authorizers.push(Authorizer::new_boxed(id, solver));
     }
     Ok(authorizers)
+}
+
+/// Note: This is not collision-free. Use `Certonaut::choose_cert_id_from_display_name` instead.
+fn cert_id_from_display_name(display_name: &str) -> String {
+    let mut id_str = String::new();
+    for char in display_name.chars() {
+        if char.is_ascii_alphanumeric() || char == '_' || char == '-' || char == '.' {
+            id_str.push(char);
+        } else {
+            id_str.push('_');
+        }
+    }
+    id_str
 }
 
 pub struct NewAccountOptions {
@@ -153,8 +222,9 @@ pub struct AcmeAccount {
 
 impl AcmeAccount {
     pub fn load_existing(config: AccountConfiguration) -> Result<Self, Error> {
-        let key_file = File::open(&config.key_file).context("Cannot find account key")?;
-        let keypair = signing::KeyPair::load_from_disk(key_file)?;
+        let key_path = &config.key_file;
+        let key_file = File::open(key_path).context(format!("Cannot read account key {}", key_path.display()))?;
+        let keypair = asymmetric::KeyPair::load_from_disk(key_file)?;
         let jwk = JsonWebKey::new_existing(keypair, config.url.clone());
         // TODO: Validate accounts at CA, retrieve metadata?
         Ok(Self { config, jwk })
@@ -204,12 +274,19 @@ impl Certonaut {
         })
     }
 
-    fn get_ca(&self, id: &str) -> Option<&AcmeIssuer> {
+    pub fn get_ca(&self, id: &str) -> Option<&AcmeIssuer> {
         self.issuers.get(id)
     }
 
-    fn get_ca_mut(&mut self, id: &str) -> Option<&mut AcmeIssuer> {
+    pub fn get_ca_mut(&mut self, id: &str) -> Option<&mut AcmeIssuer> {
         self.issuers.get_mut(id)
+    }
+
+    pub fn get_issuer_with_account(&self, issuer: &str, account: &str) -> anyhow::Result<AcmeIssuerWithAccount> {
+        self.get_ca(issuer)
+            .ok_or(anyhow!("CA {issuer} not found"))?
+            .with_account(account)
+            .ok_or(anyhow!("Account {account} not found"))
     }
 
     pub fn current_config(&self) -> Configuration {
@@ -222,7 +299,7 @@ impl Certonaut {
     }
 
     pub async fn create_account(client: &AcmeClient, options: NewAccountOptions) -> Result<AcmeAccount, Error> {
-        let keypair = signing::new_key(options.key_type).context("Generating new account key")?;
+        let keypair = asymmetric::new_key(options.key_type).context("Generating new account key")?;
         let mut account_name = options.name;
         if account_name.is_empty() {
             account_name.clone_from(&options.identifier);
@@ -300,6 +377,42 @@ impl Certonaut {
         }
         ca_id
     }
+
+    pub fn choose_cert_name_from_authorizers(&self, authorizers: &Vec<Authorizer>) -> String {
+        for authorizer in authorizers {
+            let name = authorizer.identifier.to_string();
+            let test_id = cert_id_from_display_name(&name);
+            if !self.cert_list.contains_key(&test_id) {
+                return name;
+            }
+        }
+        // No free name in authorizers, so try something else
+        let base_name = if let Some(authorizer) = authorizers.first() {
+            authorizer.identifier.to_string()
+        } else {
+            "default".to_string()
+        };
+        let mut i = 1;
+        let mut name = base_name.clone();
+        let mut test_id = cert_id_from_display_name(&name);
+        while self.cert_list.contains_key(&test_id) {
+            name = format!("{base_name}-{i}");
+            test_id = cert_id_from_display_name(&name);
+            i += 1;
+        }
+        name
+    }
+
+    pub fn choose_cert_id_from_display_name(&self, display_name: &str) -> String {
+        let cert_id_base = cert_id_from_display_name(display_name);
+        let mut cert_id = cert_id_base.clone();
+        let mut i = 0;
+        while self.cert_list.contains_key(&cert_id) {
+            i += 1;
+            cert_id = format!("{cert_id_base}-{i}");
+        }
+        cert_id
+    }
 }
 
 #[derive(Debug)]
@@ -374,12 +487,14 @@ impl<'a> AcmeIssuerWithAccount<'a> {
         let certificate_url = order
             .certificate
             .ok_or(anyhow!("CA did not provide a certificate URL for final order"))?;
+        debug!("Final certificate available @ {certificate_url}");
         let cert = self
             .client()
             .await?
             .download_certificate(&self.account.jwk, &certificate_url)
             .await
             .context("Downloading certificate")?;
+        info!("Successfully issued a certificate!");
         Ok(cert)
     }
 

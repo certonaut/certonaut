@@ -23,14 +23,12 @@ nom-rfc8288 = "0.2.3"
 parking_lot = "0.12.3"
 pem = "3.0.4"
 rcgen = { version = "0.13.1", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
-# TODO: Use rustls since that's probably what tonic also uses? However, in order to avoid reqwest depending on
-# ring in that case, we need to build the TLS client ourselves, which may involve bringing in rustls directly
-# HTTP/2 support is also possibly broken as native-tls needs an extra ALPN feature. This is also much better on rustls.
+# TODO: In order to avoid reqwest depending on ring, we (currently) need to build the TLS client ourselves,
+# which may involve bringing in rustls directly.
 reqwest = { version = "0.12.9", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
-serde = { version = "1.0.215", features = ["derive"] }
+serde = { version = "1.0.216", features = ["derive"] }
 serde_json = "1.0.133"
-time = { version = "0.3.36", features = ["serde", "formatting", "parsing"] }
-# TODO: Narrow features
+time = { version = "0.3.37", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-util = "0.7.13"
 toml_edit = { version = "0.22.22", features = ["serde", "display"] }
@@ -38,7 +36,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = { version = "2.5.4", features = ["serde"] }
 x509-parser = "0.16.0"
-itertools = "0.11.0"
+itertools = "0.13.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = { version = "0.5.5" }
@@ -61,3 +59,6 @@ httptest = "0.16.1"
 rstest = "0.23.0"
 tempfile = "3.14.0"
 
+[profile.release]
+# Makes linking really sloooow, but gives us a faster + smaller binary.
+lto = "fat"

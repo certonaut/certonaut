@@ -1,2 +1,10 @@
 pub mod jws;
-pub mod signing;
+pub mod asymmetric;
+
+pub const SHA256_LENGTH: usize = 32;
+pub fn sha256(input: &[u8]) -> [u8; SHA256_LENGTH] {
+    aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, input)
+        .as_ref()
+        .try_into()
+        .expect("SHA256 returned a hash with size != 32")
+}

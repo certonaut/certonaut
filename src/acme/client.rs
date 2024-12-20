@@ -6,8 +6,8 @@ use crate::acme::object::{
     Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Deactivation, Directory, EmptyObject,
     FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
 };
+use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
-use crate::crypto::signing::KeyPair;
 use crate::util::serde_helper::PassthroughBytes;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -135,6 +135,7 @@ impl AcmeClient {
             let links = HttpClient::extract_relation_links(&response);
             let location = HttpClient::extract_location(&response);
             let status = response.status();
+            // TODO: Size limit on all responses, for DoS safety?
             match status {
                 StatusCode::OK | StatusCode::CREATED => {
                     self.try_store_nonce(new_nonce);
@@ -142,7 +143,7 @@ impl AcmeClient {
                     // except when downloading a certificate. To avoid unnecessary redundancy, we always
                     // deserialize JSON here, except if the caller requests a PassthroughBytes
                     // struct, where we just pass the received bytes as-is.
-                    // This condition is resolved at compile-time, depending on the generic.
+                    // This condition is resolved at compile-time, depending on `R`.
                     let body: R = if TypeId::of::<R>() == TypeId::of::<PassthroughBytes>() {
                         let bytes = response.bytes().await?;
                         let deserializer = BytesDeserializer::<'_, serde::de::value::Error>::new(&bytes);
@@ -164,7 +165,7 @@ impl AcmeClient {
                     if let Error::AcmeProblem(problem) = &last_error {
                         if problem.is_bad_nonce() {
                             header.nonce = new_nonce.ok_or(Error::ProtocolViolation(
-                                "Server did not provide a Replay-Nonce on a badNonce error",
+                                "Server did not provide a (valid) Replay-Nonce on a badNonce error",
                             ))?;
                             retry += 1;
                             if retry > MAX_RETRIES {
@@ -176,6 +177,7 @@ impl AcmeClient {
                         self.try_store_nonce(new_nonce);
 
                         if problem.is_rate_limit() {
+                            // TODO: Retry without returning if the rate limit is lifted within a short time
                             return Err(RateLimitError {
                                 problem: problem.clone(),
                                 retry_after,
@@ -603,10 +605,30 @@ mod tests {
         let client = build_acme_client(&server).await;
         let jwk = test_jwk();
         let response: AcmeResponse<()> = client
-            .post_with_retry(&uri_to_url(server.url("/retry-test")), &jwk, Option::<&()>::None)
+            .post_with_retry(&uri_to_url(server.url("/retry-test")), &jwk, EMPTY_PAYLOAD)
             .await
             .unwrap();
         assert_eq!(response.status, StatusCode::OK);
+    }
+
+    #[test]
+    fn test_backoff_from_retry_after_future_time() {
+        let future = SystemTime::now() + Duration::from_secs(2);
+        let backoff = backoff_from_retry_after(Some(future));
+        assert!(backoff.as_secs_f64() >= 1.0);
+    }
+
+    #[test]
+    fn test_backoff_from_retry_after_nothing() {
+        let backoff = backoff_from_retry_after(None);
+        assert_eq!(backoff, DEFAULT_RETRY_BACKOFF);
+    }
+
+    #[test]
+    fn test_backoff_from_retry_after_past_time() {
+        let past = SystemTime::now() - Duration::from_secs(2);
+        let backoff = backoff_from_retry_after(Some(past));
+        assert_eq!(backoff, DEFAULT_RETRY_BACKOFF);
     }
 
     // TODO: Other methods

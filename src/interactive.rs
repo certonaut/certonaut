@@ -1,7 +1,8 @@
 use crate::acme::object::Identifier;
-use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration};
-use crate::crypto::signing::{Curve, KeyType};
-use crate::pebble::ChallengeTestHttpSolver;
+use crate::challenge_solver::{SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration, SolverConfiguration};
+use crate::crypto::asymmetric;
+use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::{
     build_cert_config, config, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut, IssueCommand,
     NewAccountOptions, CRATE_NAME,
@@ -18,32 +19,86 @@ use url::Url;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
-pub struct InteractiveClient {
+pub struct InteractiveService {
     client: Certonaut,
 }
 
-impl InteractiveClient {
+impl InteractiveService {
     pub fn new(client: Certonaut) -> Self {
         Self { client }
     }
 
     pub async fn interactive_issuance(&mut self, issue_cmd: IssueCommand) -> Result<(), Error> {
-        println!("{}", format!("{CRATE_NAME} guided certificate issuance").green());
-        let issuer = self.user_select_ca_and_account(&issue_cmd).await?;
+        println!("{}", format!("{CRATE_NAME} interactive certificate issuance").green());
+        let (issuer, account) = self.user_select_ca_and_account(&issue_cmd).await?;
+        let issuer = self.client.get_issuer_with_account(&issuer, &account)?;
+        // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let domains = Self::user_ask_cert_domains(&issue_cmd)?;
-        let cert_key = rcgen::KeyPair::generate().context("Generating new certificate key")?;
-        let mut authorizers = Vec::with_capacity(domains.len());
-        for domain in domains.into_iter().sorted() {
-            authorizers.push(Authorizer::new(domain, ChallengeTestHttpSolver::default()));
-        }
-        let cert_config = build_cert_config(&issuer, authorizers.iter());
+        let authorizers = Self::user_ask_authorizers(&issuer, &issue_cmd, domains)?;
+        let key_type = KeyType::Ecdsa(Curve::P256);
+        let cert_key = asymmetric::new_key(key_type)
+            .and_then(asymmetric::KeyPair::to_rcgen_keypair)
+            .context(format!("Could not generate certificate key with type {key_type}"))?;
+        let cert_display_name = self.user_ask_cert_name(&issue_cmd, &authorizers)?;
+        let cert_id = self.client.choose_cert_id_from_display_name(&cert_display_name);
+        let cert_config = build_cert_config(cert_display_name.clone(), key_type, &issuer, authorizers.iter());
         let cert = issuer
             .issue(&cert_key, None, authorizers)
             .await
             .context("Issuing certificate")?;
         println!("Got a certificate!");
-        config::save_certificate_and_config("my-cert", &cert_config, &cert_key, &cert)?;
+        config::save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         Ok(())
+    }
+
+    fn user_ask_authorizers(
+        issuer: &AcmeIssuerWithAccount,
+        issue_cmd: &IssueCommand,
+        domains: HashSet<Identifier>,
+    ) -> Result<Vec<Authorizer>, Error> {
+        let mut authorizers = Vec::with_capacity(domains.len());
+        println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
+There are several ways to do this, and the best method depends on your system and preferences.
+Currently, the following challenge \"solvers\" are available to prove control:".blue());
+        let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
+            .iter()
+            .filter(|builder| builder.supported())
+            .collect();
+        let multi_solver_builder: Box<dyn SolverConfigBuilder> = MultiSolverBuilder::new();
+        solver_options.push(&multi_solver_builder);
+        // TODO: Warn if wildcards are present
+        // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
+        let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
+            .prompt()
+            .context("No answer to solver prompt")?;
+        let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd)?;
+        for domain in domains.into_iter().sorted() {
+            authorizers.push(Authorizer::new_boxed(domain, solver_config.clone().to_solver()?));
+        }
+        Ok(authorizers)
+    }
+
+    fn user_ask_cert_name(&self, issue_cmd: &IssueCommand, authorizers: &Vec<Authorizer>) -> Result<String, Error> {
+        if let Some(cert_name) = &issue_cmd.cert_name {
+            return Ok(cert_name.clone());
+        }
+        let default_cert_name = self.client.choose_cert_name_from_authorizers(authorizers);
+        println!("If you want, you can give your new certificate a name to identify it later:");
+        let cert_name = Text::new("Name your certificate:")
+            .with_placeholder(&default_cert_name)
+            //.with_default(&default_cert_name)
+            .with_help_message(&format!("Press ESC or leave empty to use default {default_cert_name}"))
+            .prompt_skippable()
+            .context("No answer to cert name prompt")?
+            .map(|cert_name| {
+                if cert_name.trim().is_empty() {
+                    default_cert_name.clone()
+                } else {
+                    cert_name
+                }
+            })
+            .unwrap_or(default_cert_name);
+        Ok(cert_name)
     }
 
     fn user_ask_cert_domains(issue_cmd: &IssueCommand) -> Result<HashSet<Identifier>, Error> {
@@ -126,7 +181,7 @@ impl InteractiveClient {
         }
     }
 
-    async fn user_select_ca_and_account(&mut self, issue_cmd: &IssueCommand) -> Result<AcmeIssuerWithAccount, Error> {
+    async fn user_select_ca_and_account(&mut self, issue_cmd: &IssueCommand) -> Result<(String, String), Error> {
         let issuer = if let Some(preselected_ca) = &issue_cmd.ca {
             preselected_ca.clone()
         } else {
@@ -158,12 +213,7 @@ impl InteractiveClient {
                 }
             }
         };
-
-        self.client
-            .get_ca(&issuer)
-            .ok_or(anyhow!("CA {issuer} not found"))?
-            .with_account(&account)
-            .ok_or(anyhow!("Account {account} not found"))
+        Ok((issuer, account))
     }
 
     fn user_select_ca(client: &Certonaut) -> Result<CaChoice, Error> {
@@ -504,5 +554,110 @@ impl Display for AccountChoice {
             AccountChoice::NewAccount => write!(f, "Create new account")?,
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SolverChoice {
+    Solver {
+        id: String,
+        r#type: &'static str,
+        name: &'static str,
+        description: &'static str,
+    },
+}
+
+impl SolverChoice {
+    fn to_string(&self, selected: bool) -> String {
+        match self {
+            SolverChoice::Solver {
+                r#type,
+                name,
+                description,
+                ..
+            } => {
+                let description = if selected {
+                    description.cyan()
+                } else {
+                    description.reset()
+                };
+                format!("[{}] {} - {}", r#type.blue(), name.dark_green(), description)
+            }
+        }
+    }
+}
+
+impl Display for SolverChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolverChoice::Solver {
+                r#type,
+                name,
+                description,
+                ..
+            } => {
+                write!(f, "[{}] {} - {}", r#type.blue(), name.dark_green(), description.reset())?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Display for dyn SolverConfigBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] {} - {}",
+            self.category().to_string().blue(),
+            self.name().dark_green(),
+            self.description().reset()
+        )
+    }
+}
+
+struct MultiSolverBuilder {}
+
+impl SolverConfigBuilder for MultiSolverBuilder {
+    fn new() -> Box<Self>
+    where
+        Self: Sized,
+    {
+        Box::new(MultiSolverBuilder {})
+    }
+
+    fn name(&self) -> &'static str {
+        "Multiple solvers"
+    }
+
+    fn description(&self) -> &'static str {
+        "This option allows you to use different solvers for different identifiers"
+    }
+
+    fn category(&self) -> SolverCategory {
+        SolverCategory::Advanced
+    }
+
+    fn preference(&self) -> usize {
+        200
+    }
+
+    fn supported(&self) -> bool {
+        true
+    }
+
+    fn build_interactive(
+        &self,
+        issuer: &AcmeIssuerWithAccount,
+        issue_command: &IssueCommand,
+    ) -> anyhow::Result<SolverConfiguration> {
+        todo!("Implement multiple solvers via editor prompt")
+    }
+
+    fn build_noninteractive(
+        &self,
+        _issuer: &AcmeIssuerWithAccount,
+        _issue_command: &IssueCommand,
+    ) -> anyhow::Result<SolverConfiguration> {
+        panic!("The multi solver builder can only be used interactively")
     }
 }

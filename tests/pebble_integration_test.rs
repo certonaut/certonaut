@@ -3,7 +3,7 @@ use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::{ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, OrderStatus};
 use certonaut::config::AccountConfiguration;
-use certonaut::crypto::signing::KeyPair;
+use certonaut::crypto::asymmetric::KeyPair;
 use certonaut::magic::MagicHttpSolver;
 use certonaut::pebble::pebble_root;
 use certonaut::{AcmeAccount, AcmeIssuer, Authorizer};

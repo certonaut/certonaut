@@ -1,8 +1,10 @@
 use crate::acme::client::DownloadedCertificate;
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
+use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
+use crate::util::serde_helper::key_type_config_serializer;
 use crate::CRATE_NAME;
 use anyhow::Error;
 use rcgen::KeyPair;
@@ -138,6 +140,10 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         Ok(())
     }
 
+    pub fn certificate_storage(&self, id: &str) -> PathBuf {
+        self.backend.certificate_storage(id)
+    }
+
     pub fn save_certificate_config(&self, id: &str, config: &CertificateConfiguration) -> Result<(), Error> {
         self.backend.save_certificate(id, config)?;
         Ok(())
@@ -206,16 +212,20 @@ pub struct AccountConfiguration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CertificateConfiguration {
+    #[serde(rename = "name")]
+    pub display_name: String,
     pub auto_renew: bool,
     #[serde(rename = "ca")]
     pub ca_identifier: String,
     #[serde(rename = "account")]
     pub account_identifier: String,
+    #[serde(with = "key_type_config_serializer")]
+    pub key_type: KeyType,
     pub domains: HashMap<String, String>,
     #[serde(rename = "solver")]
     pub solvers: HashMap<String, SolverConfiguration>,
     // TODO: installer configuration
-    // TODO: disable renewal flag
+    // TODO: Reuse key
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,7 +251,10 @@ pub struct NullSolverConfiguration {}
 pub struct PebbleHttpSolverConfiguration {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MagicHttpSolverConfiguration {}
+pub struct MagicHttpSolverConfiguration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) validation_port: Option<u16>,
+}
 
 impl SolverConfiguration {
     pub fn to_solver(self) -> Result<Box<dyn ChallengeSolver>, Error> {
@@ -271,6 +284,12 @@ pub fn save(config: &Configuration) -> Result<(), Error> {
     let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
     manager.save(config)?;
     Ok(())
+}
+
+pub fn certificate_directory(cert_id: &str) -> PathBuf {
+    let directory = config_directory();
+    let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
+    manager.certificate_storage(cert_id)
 }
 
 #[allow(clippy::module_name_repetitions)]

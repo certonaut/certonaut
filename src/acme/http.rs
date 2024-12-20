@@ -53,6 +53,8 @@ impl HttpClient {
             .connect_timeout(CONNECT_TIMEOUT)
             .read_timeout(READ_TIMEOUT)
             .default_headers(headers)
+            .http1_title_case_headers()
+            .use_rustls_tls()
             // Make TRACE logs available for test or debug builds (still needs to be enabled separately)
             .connection_verbose(cfg!(any(test, debug_assertions)));
         Ok(Self {

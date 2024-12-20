@@ -2,7 +2,7 @@ use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonW
 use anyhow::{anyhow, bail, Context};
 use aws_lc_rs::encoding::AsBigEndian;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING};
-use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa::KeySize, signature, signature::RSA_PKCS1_SHA256};
+use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa, signature};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
 use pem::Pem;
@@ -15,7 +15,16 @@ use std::io::{Read, Write};
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum KeyType {
     Ecdsa(Curve),
-    Rsa(KeySize),
+    Rsa(rsa::KeySize),
+}
+
+impl Display for KeyType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            KeyType::Ecdsa(curve) => write!(f, "ECDSA with {curve}"),
+            KeyType::Rsa(size) => write!(f, "RSA-{}", size.len()),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,7 +36,7 @@ pub enum Curve {
 }
 
 impl Curve {
-    pub fn get_signing_algorithm(&self) -> &'static signature::EcdsaSigningAlgorithm {
+    pub fn get_jws_signing_algorithm(&self) -> &'static signature::EcdsaSigningAlgorithm {
         // Fixed signing means to return PKCS#11 signatures (raw r+s values, no encoding)
         // instead of DSS signatures (DER encoded r+s). JOSE uses the former, so use them here too.
         match self {
@@ -71,7 +80,7 @@ pub enum KeyPair {
 impl KeyPair {
     pub fn save_to_disk(&self, file: File) -> anyhow::Result<()> {
         let pem = self.to_pem()?;
-        save_key_to_file(pem, file)
+        save_key_to_file(&pem, file)
     }
 
     pub fn load_from_disk(file: File) -> anyhow::Result<Self> {
@@ -112,6 +121,11 @@ impl KeyPair {
             _ => bail!("unsupported algorithm in PEM"),
         })
     }
+
+    pub fn to_rcgen_keypair(self) -> anyhow::Result<rcgen::KeyPair> {
+        let pem = self.to_pem()?;
+        Ok(rcgen::KeyPair::from_pem(&pem.to_string())?)
+    }
 }
 
 impl EcdsaKeyPair {
@@ -137,6 +151,7 @@ impl RsaKeyPair {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub trait AsymmetricKeyOperation
 where
     Self: Sized,
@@ -217,7 +232,7 @@ impl AsymmetricKeyOperation for EcdsaKeyPair {
 
 impl EcdsaKeyPair {
     fn from_pkcs8(curve: Curve, der: &[u8]) -> anyhow::Result<Self> {
-        let algorithm = curve.get_signing_algorithm();
+        let algorithm = curve.get_jws_signing_algorithm();
         let keypair = signature::EcdsaKeyPair::from_pkcs8(algorithm, der)
             .map_err(|_| anyhow!("ECDSA private key file is corrupted or invalid"))?;
         Ok(Self::new(curve, keypair))
@@ -230,7 +245,7 @@ impl AsymmetricKeyOperation for RsaKeyPair {
         let sig_len = self.keypair.public_modulus_len();
         let mut signature = vec![0; sig_len];
         self.keypair
-            .sign(&RSA_PKCS1_SHA256, &random, message, &mut signature)
+            .sign(&signature::RSA_PKCS1_SHA256, &random, message, &mut signature)
             .map_err(|_| SignatureError::SignatureGeneration("RSA signing failed"))?;
         Ok(signature)
     }
@@ -262,14 +277,18 @@ impl RsaKeyPair {
     }
 }
 
-fn save_key_to_file(pem: Pem, mut file: File) -> anyhow::Result<()> {
+fn save_key_to_file(pem: &Pem, mut file: File) -> anyhow::Result<()> {
     file.write_all(pem.to_string().as_bytes())
         .context("writing private key to file failed")?;
     Ok(())
 }
 
 fn load_file(mut file: File) -> anyhow::Result<String> {
-    let size_hint = file.metadata().map(|m| m.len() as usize).ok().unwrap_or(0);
+    let size_hint = file
+        .metadata()
+        .ok()
+        .and_then(|m| usize::try_from(m.len()).ok())
+        .unwrap_or(0);
     let mut contents = String::with_capacity(size_hint);
     file.read_to_string(&mut contents)?;
     Ok(contents)
@@ -278,7 +297,7 @@ fn load_file(mut file: File) -> anyhow::Result<String> {
 pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
     Ok(match typ {
         KeyType::Ecdsa(curve) => {
-            let algorithm = curve.get_signing_algorithm();
+            let algorithm = curve.get_jws_signing_algorithm();
             let keypair =
                 signature::EcdsaKeyPair::generate(algorithm).map_err(|_| anyhow!("Could not generate key"))?;
             KeyPair::Ecdsa(EcdsaKeyPair::new(curve, keypair))
@@ -301,8 +320,7 @@ impl Error for SignatureError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self {
             SignatureError::Serialization(ser) => ser.source(),
-            SignatureError::SignatureGeneration(_) => None,
-            SignatureError::EncodingFailed(_) => None,
+            SignatureError::EncodingFailed(_) | SignatureError::SignatureGeneration(_) => None,
         }
     }
 }
@@ -310,9 +328,8 @@ impl Error for SignatureError {
 impl Display for SignatureError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
-            SignatureError::Serialization(e) => write!(f, "JSON encoding failed: {}", e),
-            SignatureError::SignatureGeneration(msg) => write!(f, "{msg}"),
-            SignatureError::EncodingFailed(msg) => write!(f, "{msg}"),
+            SignatureError::Serialization(e) => write!(f, "JSON encoding failed: {e}"),
+            SignatureError::EncodingFailed(msg) | SignatureError::SignatureGeneration(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -325,8 +342,8 @@ impl From<serde_json::Error> for SignatureError {
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::asymmetric::{new_key, AsymmetricKeyOperation, Curve, KeyPair, KeyType};
     use crate::crypto::jws::{JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
-    use crate::crypto::signing::{new_key, AsymmetricKeyOperation, Curve, KeyPair, KeyType};
     use aws_lc_rs::rsa::KeySize;
     use rstest::*;
     use std::fs::File;

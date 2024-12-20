@@ -1,5 +1,5 @@
 use crate::acme::object::Nonce;
-use crate::crypto::signing::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
+use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
 use aws_lc_rs::digest::{digest, SHA256};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -209,7 +209,7 @@ mod tests {
     use crate::crypto::jws::{
         Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters, ProtectedHeader,
     };
-    use crate::crypto::signing::Curve;
+    use crate::crypto::asymmetric::Curve;
     use rstest::rstest;
     use url::Url;
 

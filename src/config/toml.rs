@@ -1,4 +1,4 @@
-use anyhow::Error;
+use anyhow::{Context, Error};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::Path;
@@ -13,18 +13,22 @@ pub struct TomlConfiguration {
 
 impl TomlConfiguration {
     fn load_toml<P: AsRef<Path>>(file: P) -> Result<Self, Error> {
-        let document = std::fs::read_to_string(file)?;
-        let document = toml_edit::DocumentMut::from_str(&document)?;
+        let file = file.as_ref();
+        let document =
+            std::fs::read_to_string(file).context(format!("Reading configuration file {}", file.display()))?;
+        let document = toml_edit::DocumentMut::from_str(&document)
+            .context(format!("Parsing configuration file {}", file.display()))?;
         Ok(Self { document })
     }
 
     fn write_toml<P: AsRef<Path>>(&mut self, file: P) -> Result<(), Error> {
+        let file = file.as_ref();
         // This is a bit annoying, but apparently we cannot directly pretty-serialize
         let toml = &self.document.to_string();
-        if let Some(parent) = file.as_ref().parent() {
-            std::fs::create_dir_all(parent)?;
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).context(format!("Creating directory {}", parent.display()))?;
         }
-        std::fs::write(file, toml)?;
+        std::fs::write(file, toml).context(format!("Saving configuration file {}", file.display()))?;
         Ok(())
     }
 
@@ -53,8 +57,10 @@ impl TomlConfiguration {
     where
         T: DeserializeOwned,
     {
-        let toml = Self::load_toml(file)?;
+        let filename = file.as_ref();
+        let toml = Self::load_toml(filename)?;
         toml.into_configuration()
+            .context(format!("Parsing configuration file {}", filename.display()))
     }
 
     pub fn save<T, P: AsRef<Path>>(config: &T, file: P) -> Result<(), Error>

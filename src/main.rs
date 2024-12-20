@@ -1,6 +1,6 @@
 use anyhow::Context;
 use certonaut::config::CONFIG_FILE;
-use certonaut::interactive::InteractiveClient;
+use certonaut::interactive::InteractiveService;
 use certonaut::{config, Certonaut, IssueCommand};
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
@@ -15,7 +15,7 @@ fn get_default_config_directory() -> PathBuf {
 
 #[cfg(target_os = "windows")]
 fn get_default_config_directory() -> PathBuf {
-    let app_data = std::env::var("LOCALAPPDATA").expect("No APP_DATA directory");
+    let app_data = std::env::var("LOCALAPPDATA").expect("No LOCALAPPDATA directory");
     PathBuf::from(app_data).join("certonaut")
 }
 
@@ -68,7 +68,7 @@ async fn main() -> anyhow::Result<()> {
             }
             Some(Commands::Issue(issue_cmd)) => {
                 if interactive {
-                    let mut interactive_client = InteractiveClient::new(client);
+                    let mut interactive_client = InteractiveService::new(client);
                     interactive_client.interactive_issuance(issue_cmd).await
                 } else {
                     todo!("Non-interactive issuance")

@@ -31,8 +31,13 @@ impl MagicHttpSolver {
         }
     }
 
-    pub fn from_config(_config: MagicHttpSolverConfiguration) -> Box<Self> {
-        Box::new(MagicHttpSolver::default())
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn from_config(config: MagicHttpSolverConfiguration) -> Box<Self> {
+        Box::new(if let Some(port) = config.validation_port {
+            MagicHttpSolver::new(port)
+        } else {
+            MagicHttpSolver::default()
+        })
     }
 }
 
@@ -59,7 +64,12 @@ impl ChallengeSolver for MagicHttpSolver {
     }
 
     fn config(&self) -> SolverConfiguration {
-        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {})
+        let port = if self.challenge_port == DEFAULT_CHALLENGE_PORT {
+            None
+        } else {
+            Some(self.challenge_port)
+        };
+        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port: port })
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {
