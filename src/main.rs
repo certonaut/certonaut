@@ -9,7 +9,6 @@ use inquire::Select;
 use std::fmt::Display;
 use std::io::IsTerminal;
 use std::path::PathBuf;
-use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]
@@ -22,6 +21,7 @@ struct CommandLineArguments {
     command: Option<Commands>,
 }
 
+// TODO: structure commands like <bin> cert <action>, <bin> ca <action>, <bin> account <action>...? Also shorthands for common stuff?
 #[derive(Debug, Subcommand)]
 enum Commands {
     /// Issue a new certificate
@@ -51,9 +51,6 @@ async fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_env("CERTONAUT_LOG")
         .unwrap_or_else(|_| EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| EnvFilter::new("info")));
     tracing_subscriber::fmt().with_env_filter(filter).init();
-    // TODO: Refactor
-    let sup = certonaut::magic::is_supported();
-    info!("Magic supported: {sup}");
     let interactive = is_interactive();
     let mut cli = CommandLineArguments::parse();
     CONFIG_FILE.set(cli.config).expect("Config file already set");

@@ -119,8 +119,11 @@ fn create_and_sign_csr(
     cert_key: &rcgen::KeyPair,
     identifiers: Vec<Identifier>,
 ) -> Result<CertificateSigningRequest, Error> {
-    let cert_params = rcgen::CertificateParams::new(identifiers.into_iter().map(Into::into).collect::<Vec<String>>())
-        .context("CSR generation failed")?;
+    let mut cert_params =
+        rcgen::CertificateParams::new(identifiers.into_iter().map(Into::into).collect::<Vec<String>>())
+            .context("CSR generation failed")?;
+    // Ensure the DN is empty
+    cert_params.distinguished_name = rcgen::DistinguishedName::default();
     let csr = cert_params.serialize_request(cert_key).context("Signing CSR failed")?;
     Ok(csr)
 }
@@ -554,7 +557,7 @@ impl<'a> AcmeIssuerWithAccount<'a> {
             .map(|authorizer| authorizer.identifier.clone())
             .collect();
         let names = identifiers.join(", ");
-        info!("Issuing certificate for {names}");
+        info!("Issuing certificate for {names} at CA {}", self.issuer.config.name);
         let csr = create_and_sign_csr(cert_key, identifiers.clone())?;
         let (not_before, not_after) = match cert_lifetime {
             Some(lifetime) => {
@@ -691,9 +694,9 @@ impl<'a> AcmeIssuerWithAccount<'a> {
                         .ok_or(anyhow!(
                             "Authorization for {id} did not contain any pending challenge supported by {solver_name_long}"
                         ))?;
+                    let challenge_type = chosen_challenge.inner_challenge.get_type().to_string();
                     debug!(
-                        "{solver_name_short} selected {} challenge @ {}",
-                        chosen_challenge.inner_challenge.get_type(),
+                        "{solver_name_short} selected {challenge_type} challenge @ {}",
                         chosen_challenge.url
                     );
 
@@ -715,7 +718,7 @@ impl<'a> AcmeIssuerWithAccount<'a> {
                         .validate_challenge(&self.account.jwk, &chosen_challenge.url)
                         .await
                         .context(format!(
-                            "Error validating challenge for {id} with challenge solver {solver_name_long}"
+                            "Error validating {challenge_type} challenge for {id} with challenge solver {solver_name_long}"
                         ))?;
 
                     info!("Successfully validated challenge for {id}");

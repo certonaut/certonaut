@@ -3,12 +3,13 @@ use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration, SolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
-use crate::{magic, AcmeIssuerWithAccount, IssueCommand};
+use crate::{magic, AcmeIssuerWithAccount, Authorizer, IssueCommand};
 use anyhow::Error;
 use async_trait::async_trait;
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
 use inquire::CustomType;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
 
@@ -137,17 +138,36 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn description(&self) -> &'static str;
     fn category(&self) -> SolverCategory;
     fn preference(&self) -> usize;
-    fn supported(&self) -> bool;
+    fn supported(&self, domains: &HashSet<Identifier>) -> bool;
     fn build_interactive(
         &self,
         issuer: &AcmeIssuerWithAccount,
         issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration>;
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration>;
     fn build_noninteractive(
         &self,
         issuer: &AcmeIssuerWithAccount,
         issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration>;
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration>;
+}
+
+pub enum BuiltSolverConfiguration {
+    SingleConfig((HashSet<Identifier>, SolverConfiguration)),
+    MultipleConfigs(Vec<Authorizer>),
+}
+
+impl From<(HashSet<Identifier>, SolverConfiguration)> for BuiltSolverConfiguration {
+    fn from(value: (HashSet<Identifier>, SolverConfiguration)) -> Self {
+        Self::SingleConfig(value)
+    }
+}
+
+impl From<Vec<Authorizer>> for BuiltSolverConfiguration {
+    fn from(value: Vec<Authorizer>) -> Self {
+        Self::MultipleConfigs(value)
+    }
 }
 
 struct NullSolverBuilder;
@@ -174,7 +194,7 @@ with the CA. Will cause failures otherwise."
         100
     }
 
-    fn supported(&self) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         true
     }
 
@@ -182,16 +202,18 @@ with the CA. Will cause failures otherwise."
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        Ok(SolverConfiguration::Null(NullSolverConfiguration {}))
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        Ok((domains, SolverConfiguration::Null(NullSolverConfiguration {})).into())
     }
 
     fn build_noninteractive(
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        Ok(SolverConfiguration::Null(NullSolverConfiguration {}))
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        Ok((domains, SolverConfiguration::Null(NullSolverConfiguration {})).into())
     }
 }
 
@@ -218,7 +240,7 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         90
     }
 
-    fn supported(&self) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         cfg!(debug_assertions)
     }
 
@@ -226,16 +248,26 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        Ok(SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}))
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        Ok((
+            domains,
+            SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+        )
+            .into())
     }
 
     fn build_noninteractive(
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        Ok(SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}))
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        Ok((
+            domains,
+            SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+        )
+            .into())
     }
 }
 
@@ -262,7 +294,7 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         5
     }
 
-    fn supported(&self) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         magic::is_supported()
     }
 
@@ -270,7 +302,8 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         &self,
         issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
         let custom_port = if issuer.issuer.config.public {
             // Public CA's always adhere to RFC8555 and validate on port 80
             None
@@ -290,19 +323,26 @@ impl SolverConfigBuilder for MagicHttpBuilder {
                 .with_help_message("Enter the port number, or press ESC to use the default")
                 .prompt_skippable()?
         };
-        Ok(SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
-            validation_port: custom_port,
-        }))
+        Ok((
+            domains,
+            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
+                validation_port: custom_port,
+            }),
+        )
+            .into())
     }
 
     fn build_noninteractive(
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        Ok(SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
-            validation_port: None,
-        }))
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        Ok((
+            domains,
+            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port: None }),
+        )
+            .into())
     }
 }
 

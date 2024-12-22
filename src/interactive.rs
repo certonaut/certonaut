@@ -1,6 +1,10 @@
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
-use crate::config::{AccountConfiguration, CertificateAuthorityConfiguration, SolverConfiguration};
+use crate::challenge_solver::{
+    BuiltSolverConfiguration, SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY,
+};
+use crate::config::{
+    AccountConfiguration, CertificateAuthorityConfiguration, IdentifierConfiguration, SolverConfiguration,
+};
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::{
@@ -10,11 +14,13 @@ use crate::{
 use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
-use inquire::{Confirm, Select, Text};
+use inquire::{Confirm, Editor, Select, Text};
 use itertools::Itertools;
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::str::FromStr;
+use toml_edit::DocumentMut;
 use url::Url;
 
 #[allow(clippy::module_name_repetitions)]
@@ -32,6 +38,7 @@ impl InteractiveService {
         println!("{}", format!("{CRATE_NAME} interactive certificate issuance").green());
         let (issuer, account) = self.user_select_ca_and_account(&issue_cmd).await?;
         let issuer = self.client.get_issuer_with_account(&issuer, &account)?;
+        let ca_name = issuer.issuer.config.name.to_string();
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let domains = Self::user_ask_cert_domains(&issue_cmd)?;
         let authorizers = Self::user_ask_authorizers(&issuer, &issue_cmd, domains)?;
@@ -45,7 +52,7 @@ impl InteractiveService {
         let cert = issuer
             .issue(&cert_key, None, authorizers)
             .await
-            .context("Issuing certificate")?;
+            .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!("Got a certificate!");
         config::save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         Ok(())
@@ -56,25 +63,34 @@ impl InteractiveService {
         issue_cmd: &IssueCommand,
         domains: HashSet<Identifier>,
     ) -> Result<Vec<Authorizer>, Error> {
-        let mut authorizers = Vec::with_capacity(domains.len());
         println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.
 Currently, the following challenge \"solvers\" are available to prove control:".blue());
         let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
             .iter()
-            .filter(|builder| builder.supported())
+            .filter(|builder| builder.supported(&domains))
             .collect();
         let multi_solver_builder: Box<dyn SolverConfigBuilder> = MultiSolverBuilder::new();
         solver_options.push(&multi_solver_builder);
         // TODO: Warn if wildcards are present
         // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
+        // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
         let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
             .prompt()
             .context("No answer to solver prompt")?;
-        let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd)?;
-        for domain in domains.into_iter().sorted() {
-            authorizers.push(Authorizer::new_boxed(domain, solver_config.clone().to_solver()?));
-        }
+        let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd, domains)?;
+
+        let mut authorizers = match solver_config {
+            BuiltSolverConfiguration::SingleConfig((domains, solver_config)) => {
+                let mut authorizers = Vec::with_capacity(domains.len());
+                for domain in domains.into_iter().sorted() {
+                    authorizers.push(Authorizer::new_boxed(domain, solver_config.clone().to_solver()?));
+                }
+                authorizers
+            }
+            BuiltSolverConfiguration::MultipleConfigs(authorizers) => authorizers,
+        };
+        authorizers.sort_by_key(|authorizer| authorizer.identifier.clone());
         Ok(authorizers)
     }
 
@@ -353,8 +369,8 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         let acme_client = ca.client().await?;
         let tos_status = Self::user_create_account_ca_specific_features(ca).await?;
         println!(
-            "You can provide one or more contact addresses to the CA. This is optional, but
-doing so may allow the CA to contact you in case of problems. Please provide a comma-separated list
+            "You can provide one or more contact addresses to the CA. This is optional, but \
+doing so may allow the CA to contact you in case of problems. Please provide a comma-separated list \
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
         );
         let email_prompt = Text::new("Email(s):")
@@ -447,9 +463,9 @@ of email addresses below, or leave the field empty to not provide any contact ad
             }
             if meta.external_account_required {
                 println!(
-                    "This CA indicates that you need a separate account, not managed by
-{CRATE_NAME}, to use it. If you have such an external account,
-{ca_name} will have given you instructions how to perform \"external account binding\" (EAB).
+                    "This CA indicates that you need a separate account, not managed by \
+{CRATE_NAME}, to use it. If you have such an external account, \
+{ca_name} will have given you instructions how to perform \"external account binding\" (EAB). \
 You may need to create an account at the CA's website first.",
                 );
                 let has_eab = Confirm::new(&format!(
@@ -557,52 +573,6 @@ impl Display for AccountChoice {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum SolverChoice {
-    Solver {
-        id: String,
-        r#type: &'static str,
-        name: &'static str,
-        description: &'static str,
-    },
-}
-
-impl SolverChoice {
-    fn to_string(&self, selected: bool) -> String {
-        match self {
-            SolverChoice::Solver {
-                r#type,
-                name,
-                description,
-                ..
-            } => {
-                let description = if selected {
-                    description.cyan()
-                } else {
-                    description.reset()
-                };
-                format!("[{}] {} - {}", r#type.blue(), name.dark_green(), description)
-            }
-        }
-    }
-}
-
-impl Display for SolverChoice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SolverChoice::Solver {
-                r#type,
-                name,
-                description,
-                ..
-            } => {
-                write!(f, "[{}] {} - {}", r#type.blue(), name.dark_green(), description.reset())?;
-            }
-        }
-        Ok(())
-    }
-}
-
 impl Display for dyn SolverConfigBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -641,23 +611,136 @@ impl SolverConfigBuilder for MultiSolverBuilder {
         200
     }
 
-    fn supported(&self) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         true
     }
 
     fn build_interactive(
         &self,
-        issuer: &AcmeIssuerWithAccount,
-        issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
-        todo!("Implement multiple solvers via editor prompt")
+        _issuer: &AcmeIssuerWithAccount,
+        _issue_command: &IssueCommand,
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
+        println!(
+            "Multiple solvers can be specified directly in TOML format. A temporary file will be opened containing \
+ a template that you can fill out. Please refer to the documentation at TODO for more information about the solvers."
+        );
+        let domain_template = domains
+            .iter()
+            .map(|id| format!("\"{id}\" = \"example-solver\""))
+            .join("\n");
+        let template = format!(
+            "[domains]
+# This section contains the domain names of your certificate.
+# Each line has the domain name (quoted) on the left hand side, and the name of a solver on the right hand side.
+# Every domain can have a different solver, or multiple domains can share a single solver configuration.
+{domain_template}
+
+# Every solver configuration is specified as solver.<solver-name>
+[solver.example-solver]
+# The solver is named \"example-solver\" and has the configuration as specified below
+# Refer to TODO for documentation on the available solver types
+type = \"webroot\"
+# Refer to TODO about the available configuration options per solver
+web_index = \"/var/www/html\""
+        );
+        let raw_toml = Editor::new("Solver configuration:")
+            .with_file_extension(".toml")
+            .with_predefined_text(&template)
+            .with_help_message(
+                "This prompt will open your default text editor to make changes to the provided template.",
+            )
+            .with_validator(move |content: &str| Ok(validate_solver_toml(&domains, content)))
+            .prompt()
+            .context("No answer to solver prompt")?;
+        let toml = toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
+        let domains_table = toml
+            .get("domains")
+            .and_then(|domains| domains.as_table())
+            .ok_or(anyhow!("No domains specified"))?;
+        let mut domains = vec![];
+        for (domain, solver) in domains_table {
+            let solver_identifier = solver
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or(anyhow!("Domain value for key {domain} must be a string"))?;
+            domains.push(IdentifierConfiguration {
+                domain: domain.to_string(),
+                solver_identifier,
+            });
+        }
+        let solvers_table = toml
+            .get("solver")
+            .and_then(|solvers| solvers.as_table())
+            .ok_or(anyhow!("No solvers specified"))?;
+        let mut solvers = HashMap::new();
+        for (solver, config) in solvers_table {
+            let solver_config = config
+                .as_table()
+                .map(|config| toml_edit::DocumentMut::from(config.clone()))
+                .ok_or(anyhow!("Solver {solver} is not a table"))?;
+            let solver_config: SolverConfiguration = toml_edit::de::from_document(solver_config)
+                .context(format!("Parsing solver configuration for {solver}"))?;
+            solvers.insert(solver.to_string(), solver_config);
+        }
+
+        let mut authorizers = Vec::new();
+        for identifier_config in domains {
+            let solver_name = identifier_config.solver_identifier.as_str();
+            let config = solvers
+                .get(solver_name)
+                .ok_or(anyhow!("Solver {solver_name} not found"))?;
+            let solver = config.clone().to_solver()?;
+            let authorizer = Authorizer::new_boxed(Identifier::from(identifier_config.domain), solver);
+            authorizers.push(authorizer);
+        }
+        Ok(authorizers.into())
     }
 
     fn build_noninteractive(
         &self,
         _issuer: &AcmeIssuerWithAccount,
         _issue_command: &IssueCommand,
-    ) -> anyhow::Result<SolverConfiguration> {
+        _domains: HashSet<Identifier>,
+    ) -> anyhow::Result<BuiltSolverConfiguration> {
         panic!("The multi solver builder can only be used interactively")
+    }
+}
+
+fn validate_solver_toml(domains: &HashSet<Identifier>, content: &str) -> Validation {
+    fn validate_err(domains: &HashSet<Identifier>, content: &str) -> Result<(), Validation> {
+        let parsed_toml = toml_edit::DocumentMut::from_str(content)
+            .map_err(|e| Validation::Invalid(format!("Invalid TOML syntax: {e}").into()))?;
+        let user_domains = parsed_toml
+            .get("domains")
+            .and_then(|domains| domains.as_table())
+            .ok_or(Validation::Invalid("Missing table \"domains\"".into()))?;
+        for domain in domains {
+            let solver_name = user_domains
+                .get(domain.as_str())
+                .and_then(|item| item.as_value())
+                .and_then(|value| value.as_str())
+                .ok_or(Validation::Invalid(
+                    format!("Missing or invalid entry for {domain} in domains").into(),
+                ))?;
+            let solver = parsed_toml
+                .get("solver")
+                .and_then(|solvers| solvers.get(solver_name))
+                .and_then(|solver| solver.as_table())
+                .ok_or(Validation::Invalid(
+                    format!("Missing or invalid table for {solver_name}").into(),
+                ))?;
+            let solver_document = DocumentMut::from(solver.clone());
+            let _test_config: SolverConfiguration =
+                toml_edit::de::from_document(solver_document).map_err(|toml_err| {
+                    Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
+                })?;
+        }
+        Ok(())
+    }
+
+    match validate_err(domains, content) {
+        Ok(()) => Validation::Valid,
+        Err(validation) => validation,
     }
 }

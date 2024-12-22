@@ -5,9 +5,10 @@ use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration,
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver};
-use certonaut::{AcmeAccount, Authorizer, Certonaut};
+use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 use url::Url;
 
 const PEBBLE_URL: &str = "https://localhost:14000/dir";
@@ -20,6 +21,8 @@ const PEBBLE_URL: &str = "https://localhost:14000/dir";
 async fn pebble_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let acme_url = Url::parse(PEBBLE_URL)?;
+    let temp_dir = TempDir::new()?;
+    config::CONFIG_FILE.set(temp_dir.into_path()).unwrap();
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
