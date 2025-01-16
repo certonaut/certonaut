@@ -58,6 +58,12 @@ impl InteractiveService {
         Ok(())
     }
 
+    pub fn interactive_add_ca(&mut self) -> Result<(), Error> {
+        let new_ca = Self::user_create_ca(&mut self.client)?;
+        self.client.add_new_ca(new_ca)?;
+        Ok(())
+    }
+
     fn user_ask_authorizers(
         issuer: &AcmeIssuerWithAccount,
         issue_cmd: &IssueCommand,

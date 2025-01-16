@@ -22,16 +22,8 @@ impl Display for KeyType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
             KeyType::Ecdsa(curve) => write!(f, "ECDSA with {curve}"),
-            KeyType::Rsa(size) => write!(f, "RSA-{}", size.len()),
+            KeyType::Rsa(size) => write!(f, "RSA-{}", size.len() * 8),
         }
-    }
-}
-
-impl TryFrom<&str> for KeyType {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        todo!()
     }
 }
 
@@ -45,8 +37,8 @@ pub enum Curve {
 
 impl Curve {
     pub fn get_jws_signing_algorithm(&self) -> &'static signature::EcdsaSigningAlgorithm {
-        // Fixed signing means to return PKCS#11 signatures (raw r+s values, no encoding)
-        // instead of DSS signatures (DER encoded r+s). JOSE uses the former, so use them here too.
+        // Fixed signing means to return PKCS#11 signatures (raw r+s values, fixed size)
+        // instead of ASN.1 signatures (DER encoded r+s). JOSE uses the former, so use them here too.
         match self {
             Curve::P256 => &ECDSA_P256_SHA256_FIXED_SIGNING,
             Curve::P384 => &ECDSA_P384_SHA384_FIXED_SIGNING,

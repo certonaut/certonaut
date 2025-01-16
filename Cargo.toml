@@ -10,9 +10,9 @@ rust-version = "1.80.1"
 magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
 
 [dependencies]
-anyhow = "1.0.94"
-async-trait = "0.1.83"
-aws-lc-rs = { version = "1.11.1", default-features = false, features = ["alloc", "aws-lc-sys", "prebuilt-nasm"] }
+anyhow = "1.0.95"
+async-trait = "0.1.84"
+aws-lc-rs = { version = "1.12.0", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.22.1"
 clap = { version = "4.5.23", features = ["derive", "env"] }
 crossterm = "0.28.1"
@@ -22,12 +22,12 @@ inquire = { version = "0.7.5", features = ["editor"] }
 nom-rfc8288 = "0.2.3"
 parking_lot = "0.12.3"
 pem = "3.0.4"
-rcgen = { version = "0.13.1", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+rcgen = { version = "0.13.2", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 # TODO: In order to avoid reqwest depending on ring, we (currently) need to build the TLS client ourselves,
 # which may involve bringing in rustls directly.
-reqwest = { version = "0.12.9", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
-serde = { version = "1.0.216", features = ["derive"] }
-serde_json = "1.0.133"
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
+serde = { version = "1.0.217", features = ["derive"] }
+serde_json = "1.0.134"
 time = { version = "0.3.37", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1.42.0", features = ["full"] }
 tokio-util = "0.7.13"
@@ -36,7 +36,7 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = { version = "2.5.4", features = ["serde"] }
 x509-parser = "0.16.0"
-itertools = "0.13.0"
+itertools = "0.14.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = { version = "0.5.5" }
@@ -54,10 +54,10 @@ libbpf-cargo = { version = "0.24.8", optional = true }
 vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94", optional = true }
 
 [dev-dependencies]
-bstr = "1.11.1"
+bstr = "1.11.3"
 httptest = "0.16.1"
-rstest = "0.23.0"
-tempfile = "3.14.0"
+rstest = "0.24.0"
+tempfile = "3.15.0"
 
 [profile.release]
 # Makes linking really sloooow, but gives us a faster + smaller binary.

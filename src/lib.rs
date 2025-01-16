@@ -461,6 +461,135 @@ impl Certonaut {
         }
         cert_id
     }
+
+    pub fn print_accounts(&self) {
+        let mut has_accounts = false;
+        for issuer in self.issuers.values().sorted_by_key(|issuer| issuer.config.name.clone()) {
+            if issuer.accounts.is_empty() {
+                continue;
+            }
+            has_accounts = true;
+            println!(
+                "=== CA: Name: {}, ID: {} ===",
+                issuer.config.name, issuer.config.identifier
+            );
+            for account in issuer
+                .accounts
+                .values()
+                .sorted_by_key(|account| account.config.name.clone())
+            {
+                println!("=== Account {} ===", account.config.name);
+                println!("ID: {}", account.config.identifier);
+                println!("Account Key: {}", account.config.key_file.display());
+                println!("Account URL: {}", account.config.url);
+            }
+            println!();
+        }
+
+        if !has_accounts {
+            let config_dir = config_directory();
+            println!("There are currently no ACME accounts configured within {CRATE_NAME}'s config");
+            println!(
+                "Hint: Either create a new account, or verify that the configuration file @ {} is correct",
+                config_dir.display()
+            );
+        }
+    }
+
+    pub fn print_issuers(&self) {
+        let has_issuers = !self.issuers.is_empty();
+        for issuer in self.issuers.values().sorted_by_key(|issuer| issuer.config.name.clone()) {
+            println!("=== {} ===", issuer.config.name);
+            println!("ID: {}", issuer.config.identifier);
+            println!("ACME directory URL: {}", issuer.config.acme_directory);
+            let flags = [
+                ("default", issuer.config.default),
+                ("testing", issuer.config.testing),
+                ("public", issuer.config.public),
+            ];
+            let flags = flags
+                .iter()
+                .filter(|(_, value)| *value)
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("Flags: {flags}");
+            println!();
+        }
+
+        if !has_issuers {
+            let config_dir = config_directory();
+            println!("There are currently no certificate authorities configured within {CRATE_NAME}'s config");
+            println!(
+                "Hint: Either add a new CA, or verify that the configuration file @ {} is correct",
+                config_dir.display()
+            );
+        }
+    }
+
+    pub fn print_certificates(&self) {
+        let has_certificates = !self.cert_list.is_empty();
+        for (cert_id, cert) in self
+            .cert_list
+            .clone()
+            .into_iter()
+            .sorted_by_key(|(_, cert)| cert.display_name.clone())
+        {
+            println!("=== {} ===", cert.display_name);
+            println!("ID: {cert_id}");
+            println!("Domains: {}", cert.domains.keys().sorted().join(", "));
+            let ca_name = self
+                .issuers
+                .get(&cert.ca_identifier)
+                .map_or("CA not found".to_string(), |ca| ca.config.name.clone());
+            println!("CA: {ca_name} (ID: {})", cert.ca_identifier);
+            println!("Account ID: {}", cert.account_identifier);
+            println!("Key Type: {}", cert.key_type);
+            println!("Renew disabled: {}", if cert.auto_renew { "no" } else { "yes" });
+
+            let mut cert_file = config::certificate_directory(&cert_id);
+            cert_file.push("fullchain.pem");
+            match load_certificates_from_file(&cert_file, Some(1)) {
+                Ok(x509_cert) => {
+                    if let Some(cert) = x509_cert.first() {
+                        let not_after = cert
+                            .validity
+                            .not_after
+                            .to_rfc2822()
+                            .unwrap_or(cert.validity.not_after.to_string());
+                        let time_until_expired = cert.validity.time_to_expiration();
+                        if let Some(time_until_expired) = time_until_expired {
+                            let time_until_expired = util::humanize_duration(time_until_expired);
+                            println!("Certificate is valid until: {not_after} (Expires in {time_until_expired})",);
+                        } else {
+                            let now = time::OffsetDateTime::now_utc();
+                            let expired_since = now - cert.validity.not_after.to_datetime();
+                            let expired_since = util::humanize_duration(expired_since);
+                            println!("Certificate is valid until: {not_after} (EXPIRED {expired_since} ago)");
+                        }
+                    } else {
+                        warn!(
+                            "Failed to load certificate {}: No certificate found in file",
+                            cert.display_name
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!("Failed to load certificate {}: {:#}", cert.display_name, error);
+                }
+            }
+            println!();
+        }
+
+        if !has_certificates {
+            let config_dir = config_directory();
+            println!("There are currently no certificates known within {CRATE_NAME}'s config");
+            println!(
+                "Hint: Either issue a new certificate, or verify that the configuration file @ {} is correct",
+                config_dir.display()
+            );
+        }
+    }
 }
 
 #[derive(Debug)]

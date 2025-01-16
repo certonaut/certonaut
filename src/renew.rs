@@ -1,11 +1,12 @@
 use crate::cert::ParsedX509Certificate;
-use crate::{authorizers_from_config, config, crypto, load_certificates_from_file, AcmeIssuerWithAccount, Certonaut};
+use crate::{
+    authorizers_from_config, config, crypto, load_certificates_from_file, util, AcmeIssuerWithAccount, Certonaut,
+};
 use anyhow::{anyhow, bail};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use std::sync::Arc;
-use std::time::Duration;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use tracing::{debug, info};
 
 #[allow(clippy::module_name_repetitions)]
@@ -75,12 +76,13 @@ impl RenewTask {
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         if let Some(leaf) = certificates.first() {
             let renew_in = Self::renew_in(&issuer, leaf).await;
-            if renew_in > Duration::from_secs(300) {
-                info!("Certificate {cert_name} is not due for renewal for {renew_in:?}");
+            let renew_in_humanized = util::humanize_duration(renew_in);
+            if renew_in > Duration::new(300, 0) {
+                info!("Certificate {cert_name} is not due for renewal for {renew_in_humanized}");
                 return Ok(());
             }
-            info!("Certificate {cert_name} will be renewed in {renew_in:?}");
-            tokio::time::sleep(renew_in).await;
+            info!("Certificate {cert_name} will be renewed in {renew_in_humanized}");
+            tokio::time::sleep(renew_in.try_into().unwrap_or(std::time::Duration::ZERO)).await;
             info!("Renewing certificate {cert_name} at CA {}", issuer.issuer.config.name);
             // TODO: Reuse key if requested
             let new_key = crypto::asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?;
@@ -111,7 +113,11 @@ impl RenewTask {
             let remaining_lifetime = not_after - now;
             let one_third_lifetime = total_lifetime / 3;
             let time_until_renew = remaining_lifetime - one_third_lifetime;
-            Duration::try_from(time_until_renew).unwrap_or(Duration::ZERO)
+            if time_until_renew < Duration::ZERO {
+                Duration::ZERO
+            } else {
+                time_until_renew
+            }
         }
     }
 }
