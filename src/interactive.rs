@@ -20,7 +20,9 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::Duration;
 use toml_edit::DocumentMut;
+use tracing::warn;
 use url::Url;
 
 #[allow(clippy::module_name_repetitions)]
@@ -62,6 +64,71 @@ impl InteractiveService {
         let new_ca = Self::user_create_ca(&mut self.client)?;
         self.client.add_new_ca(new_ca)?;
         Ok(())
+    }
+
+    pub async fn interactive_create_account(&mut self) -> Result<(), Error> {
+        let ca_id = self.interactive_select_ca(true)?;
+        let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
+        let new_account = Self::user_create_account(issuer).await?;
+        self.client.add_new_account(&ca_id, new_account)?;
+        Ok(())
+    }
+
+    pub async fn interactive_delete_account(&mut self) -> Result<(), Error> {
+        let ca_choice = Self::user_select_ca(&self.client, false)?;
+        let ca = if let CaChoice::ExistingCa(config) = ca_choice {
+            self.client.get_ca_mut(&config.identifier)
+        } else {
+            None
+        }
+        .ok_or(anyhow!("CA not found (are there any issuers configured?)"))?;
+        let account_choice = Self::user_select_account(ca, false)?;
+        let account = if let AccountChoice::ExistingAccount(config) = account_choice {
+            ca.with_account(&config.identifier)
+        } else {
+            None
+        }
+        .ok_or(anyhow!(
+            "No such account found at CA (are there any accounts for this CA?)"
+        ))?;
+        println!("You have selected the following account for {}", "deletion".red());
+        Certonaut::print_account(&account).await;
+        let delete = Confirm::new(
+            "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
+        )
+        .with_default(false)
+        .prompt()
+        .context("No answer to deletion prompt")?;
+        // TODO: Verify whether any certs reference this account ID
+        if delete {
+            // First, deactivate account at CA
+            if let Err(e) = account.deactivate_account().await {
+                warn!("Account deactivation at CA failed: {e:#}");
+                // TODO: Ask the user whether to proceed?
+            } else {
+                println!("Account deactivated.");
+            }
+
+            let issuer_id = account.issuer.config.identifier.clone();
+            let account_id = account.account.config.identifier.clone();
+            self.client.remove_account(&issuer_id, &account_id)?;
+            println!("Successfully removed account from configuration");
+        } else {
+            println!("Aborting deletion");
+        }
+        Ok(())
+    }
+
+    fn interactive_select_ca(&mut self, allow_creation: bool) -> Result<String, Error> {
+        Ok(match Self::user_select_ca(&self.client, allow_creation)? {
+            CaChoice::ExistingCa(ca) => ca.identifier,
+            CaChoice::NewCa => {
+                let new_ca = Self::user_create_ca(&mut self.client)?;
+                let id = new_ca.identifier.clone();
+                self.client.add_new_ca(new_ca)?;
+                id
+            }
+        })
     }
 
     fn user_ask_authorizers(
@@ -207,15 +274,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         let issuer = if let Some(preselected_ca) = &issue_cmd.ca {
             preselected_ca.clone()
         } else {
-            match Self::user_select_ca(&self.client)? {
-                CaChoice::ExistingCa(ca) => ca.identifier,
-                CaChoice::NewCa => {
-                    let new_ca = Self::user_create_ca(&mut self.client)?;
-                    let id = new_ca.identifier.clone();
-                    self.client.add_new_ca(new_ca)?;
-                    id
-                }
-            }
+            self.interactive_select_ca(true)?
         };
 
         let account = if let Some(preselected_account) = &issue_cmd.account {
@@ -223,7 +282,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         } else {
             let issuer = self.client.get_ca(&issuer).ok_or(anyhow!("CA {issuer} not found"))?;
             let ca_id = issuer.config.identifier.clone();
-            match Self::user_select_account(issuer)? {
+            match Self::user_select_account(issuer, true)? {
                 AccountChoice::ExistingAccount(ac) => ac.identifier,
                 AccountChoice::NewAccount => {
                     let new_account = Self::user_create_account(issuer)
@@ -238,10 +297,13 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok((issuer, account))
     }
 
-    fn user_select_ca(client: &Certonaut) -> Result<CaChoice, Error> {
+    fn user_select_ca(client: &Certonaut, allow_creation: bool) -> Result<CaChoice, Error> {
         let configured_ca_list = &client.issuers;
         if configured_ca_list.is_empty() {
-            return Ok(CaChoice::NewCa);
+            if allow_creation {
+                return Ok(CaChoice::NewCa);
+            }
+            bail!("No issuers configured");
         }
         let mut choices = configured_ca_list
             .values()
@@ -250,7 +312,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .map(CaChoice::ExistingCa)
             .collect::<Vec<_>>();
         choices.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-        choices.push(CaChoice::NewCa);
+        if allow_creation {
+            choices.push(CaChoice::NewCa);
+        }
         let default_ca = choices
             .iter()
             .enumerate()
@@ -342,10 +406,13 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         })
     }
 
-    fn user_select_account(ca: &AcmeIssuer) -> Result<AccountChoice, Error> {
+    fn user_select_account(ca: &AcmeIssuer, allow_creation: bool) -> Result<AccountChoice, Error> {
         let configured_accounts_list = &ca.accounts;
         if configured_accounts_list.is_empty() {
-            return Ok(AccountChoice::NewAccount);
+            if allow_creation {
+                return Ok(AccountChoice::NewAccount);
+            }
+            bail!("No accounts configured for CA {}", ca.config.name)
         }
         // If the user has only a single account, we select that by default
         // because that's a very common setup. The user can still request for new accounts to be
@@ -361,7 +428,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .cloned()
             .map(AccountChoice::ExistingAccount)
             .collect::<Vec<_>>();
-        choices.push(AccountChoice::NewAccount);
+        if allow_creation {
+            choices.push(AccountChoice::NewAccount);
+        }
         println!("You have multiple account configured for this CA");
         let user_choice = Select::new("Select the account you want to use", choices)
             .prompt()

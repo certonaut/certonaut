@@ -4,7 +4,8 @@ use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertific
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
 use crate::acme::object::{
-    AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order, OrderStatus,
+    AccountStatus, AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge, NewOrderRequest, Order,
+    OrderStatus,
 };
 use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, KeyAuthorization};
@@ -27,7 +28,6 @@ use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 use time::error::ConversionRange;
 use tokio::sync::OnceCell;
@@ -462,7 +462,22 @@ impl Certonaut {
         cert_id
     }
 
-    pub fn print_accounts(&self) {
+    pub fn remove_account(&mut self, issuer_id: &str, account_id: &str) -> Result<(), Error> {
+        let deleted_account = self
+            .get_ca_mut(issuer_id)
+            .and_then(|issuer| issuer.remove_account(account_id));
+        if let Some(deleted_account) = deleted_account {
+            config::save(&self.current_config()).context("Saving new configuration")?;
+            if let Err(e) = std::fs::remove_file(deleted_account.config.key_file) {
+                warn!("Failed to delete account key: {}", e);
+            }
+            Ok(())
+        } else {
+            bail!("Something went wrong while removing account from configuration");
+        }
+    }
+
+    pub async fn print_accounts(&self) {
         let mut has_accounts = false;
         for issuer in self.issuers.values().sorted_by_key(|issuer| issuer.config.name.clone()) {
             if issuer.accounts.is_empty() {
@@ -473,15 +488,15 @@ impl Certonaut {
                 "=== CA: Name: {}, ID: {} ===",
                 issuer.config.name, issuer.config.identifier
             );
-            for account in issuer
+            for account_id in issuer
                 .accounts
                 .values()
                 .sorted_by_key(|account| account.config.name.clone())
+                .map(|account| &account.config.identifier)
             {
-                println!("=== Account {} ===", account.config.name);
-                println!("ID: {}", account.config.identifier);
-                println!("Account Key: {}", account.config.key_file.display());
-                println!("Account URL: {}", account.config.url);
+                if let Some(account) = issuer.with_account(account_id) {
+                    Self::print_account(&account).await;
+                }
             }
             println!();
         }
@@ -496,24 +511,34 @@ impl Certonaut {
         }
     }
 
-    pub fn print_issuers(&self) {
+    pub async fn print_account<'a>(account: &'a AcmeIssuerWithAccount<'a>) {
+        let issuer = account.issuer;
+        let account = account.account;
+        println!("=== Account {} ===", account.config.name);
+        println!("ID: {}", account.config.identifier);
+        println!("Account Key: {}", account.config.key_file.display());
+        println!("Account URL: {}", account.config.url);
+
+        match issuer.client().await {
+            Ok(client) => match client.fetch_account(&account.jwk, &account.get_config().url).await {
+                Ok(account) => {
+                    println!("Status: {}", account.status);
+                    println!("Contact: {}", account.contact.into_iter().join(", "));
+                }
+                Err(e) => {
+                    warn!("Failed to retrieve account from CA: {e:#}");
+                }
+            },
+            Err(e) => {
+                warn!("Failed to retrieve account from CA: {e:#}");
+            }
+        }
+    }
+
+    pub async fn print_issuers(&self) {
         let has_issuers = !self.issuers.is_empty();
         for issuer in self.issuers.values().sorted_by_key(|issuer| issuer.config.name.clone()) {
-            println!("=== {} ===", issuer.config.name);
-            println!("ID: {}", issuer.config.identifier);
-            println!("ACME directory URL: {}", issuer.config.acme_directory);
-            let flags = [
-                ("default", issuer.config.default),
-                ("testing", issuer.config.testing),
-                ("public", issuer.config.public),
-            ];
-            let flags = flags
-                .iter()
-                .filter(|(_, value)| *value)
-                .map(|(name, _)| *name)
-                .collect::<Vec<_>>()
-                .join(", ");
-            println!("Flags: {flags}");
+            Self::print_issuer(issuer).await;
             println!();
         }
 
@@ -524,6 +549,49 @@ impl Certonaut {
                 "Hint: Either add a new CA, or verify that the configuration file @ {} is correct",
                 config_dir.display()
             );
+        }
+    }
+
+    pub async fn print_issuer(issuer: &AcmeIssuer) {
+        println!("=== {} ===", issuer.config.name);
+        println!("ID: {}", issuer.config.identifier);
+        println!("ACME directory URL: {}", issuer.config.acme_directory);
+        let flags = [
+            ("default", issuer.config.default),
+            ("testing", issuer.config.testing),
+            ("public", issuer.config.public),
+        ];
+        let flags = flags
+            .iter()
+            .filter(|(_, value)| *value)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("Flags: {flags}");
+
+        match issuer.client().await {
+            Ok(client) => {
+                let directory = client.get_directory();
+                if let Some(meta) = &directory.meta {
+                    if let Some(website) = &meta.website {
+                        println!("Website: {website}");
+                    }
+                    if let Some(tos) = &meta.terms_of_service {
+                        println!("Terms of Service: {tos}");
+                    }
+                    println!(
+                        "External account required: {}",
+                        if meta.external_account_required { "yes" } else { "no" }
+                    );
+                    let caa = meta.caa_identities.join(", ");
+                    if !caa.is_empty() {
+                        println!("Valid CAA names: {caa}");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to retrieve ACME directory: {e:#}");
+            }
         }
     }
 
@@ -595,13 +663,13 @@ impl Certonaut {
 #[derive(Debug)]
 pub struct AcmeIssuer {
     pub config: CertificateAuthorityConfiguration,
-    client: Arc<OnceCell<AcmeClient>>,
+    client: OnceCell<AcmeClient>,
     accounts: HashMap<String, AcmeAccount>,
 }
 
 impl AcmeIssuer {
     pub fn try_new(config: CertificateAuthorityConfigurationWithAccounts) -> anyhow::Result<Self> {
-        let client = Arc::new(OnceCell::new());
+        let client = OnceCell::new();
         let mut accounts = HashMap::new();
         for account_config in config.accounts {
             let account_id = account_config.identifier.clone();
@@ -897,5 +965,20 @@ impl<'a> AcmeIssuerWithAccount<'a> {
                 .ok();
         }
         Ok(())
+    }
+
+    pub async fn deactivate_account(&self) -> Result<(), Error> {
+        let client = self.client().await?;
+        let deactivated_account = client
+            .deactivate_account(&self.account.jwk, &self.account.config.url)
+            .await?;
+        if matches!(deactivated_account.status, AccountStatus::Deactivated) {
+            Ok(())
+        } else {
+            bail!(
+                "ACME account has invalid status {} after deactivation",
+                deactivated_account.status
+            )
+        }
     }
 }

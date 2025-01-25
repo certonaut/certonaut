@@ -225,6 +225,11 @@ impl AcmeClient {
         Ok((account_key, account_url, created_account))
     }
 
+    pub async fn fetch_account(&self, account_key: &JsonWebKey, account_url: &Url) -> ProtocolResult<Account> {
+        let response = self.post_with_retry(account_url, account_key, EMPTY_PAYLOAD).await?;
+        Ok(response.body)
+    }
+
     pub async fn new_order(&self, account_key: &JsonWebKey, request: &NewOrderRequest) -> ProtocolResult<(Url, Order)> {
         let target_url = &self.get_directory().new_order;
         let response = self.post_with_retry(target_url, account_key, Some(request)).await?;

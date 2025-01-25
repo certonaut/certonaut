@@ -147,6 +147,21 @@ pub enum AccountStatus {
     Unknown,
 }
 
+impl Display for AccountStatus {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AccountStatus::Valid => "valid",
+                AccountStatus::Deactivated => "deactivated",
+                AccountStatus::Revoked => "revoked",
+                AccountStatus::Unknown => "unknown",
+            }
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
