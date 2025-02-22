@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
+use std::time::Duration;
 use url::Url;
 use x509_parser::nom::AsBytes;
 
@@ -227,6 +228,7 @@ pub struct CertificateConfiguration {
     #[serde(rename = "name")]
     pub display_name: String,
     pub auto_renew: bool,
+    pub reuse_key: bool,
     #[serde(rename = "ca")]
     pub ca_identifier: String,
     #[serde(rename = "account")]
@@ -236,8 +238,7 @@ pub struct CertificateConfiguration {
     pub domains: HashMap<String, String>,
     #[serde(rename = "solver")]
     pub solvers: HashMap<String, SolverConfiguration>,
-    // TODO: installer configuration
-    // TODO: Reuse key
+    pub lifetime: Option<Duration>, // TODO: installer configuration
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,7 +332,7 @@ impl DefaultConfig {
                     CertificateAuthorityConfigurationWithAccounts {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt".to_string(),
-                            identifier: "letsencrypt".to_string(),
+                            identifier: "lets-encrypt".to_string(),
                             acme_directory: Url::from_str("https://acme-v02.api.letsencrypt.org/directory").unwrap(),
                             public: true,
                             testing: false,
@@ -342,7 +343,7 @@ impl DefaultConfig {
                     CertificateAuthorityConfigurationWithAccounts {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt Staging".to_string(),
-                            identifier: "letsencrypt-staging".to_string(),
+                            identifier: "lets-encrypt-staging".to_string(),
                             acme_directory: Url::from_str("https://acme-staging-v02.api.letsencrypt.org/directory")
                                 .unwrap(),
                             public: true,
