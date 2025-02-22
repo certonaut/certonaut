@@ -12,7 +12,7 @@ magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", 
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.84"
-aws-lc-rs = { version = "1.12.0", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
+aws-lc-rs = { version = "1.12.4", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.22.1"
 clap = { version = "4.5.23", features = ["derive", "env"] }
 crossterm = "0.28.1"
@@ -22,7 +22,7 @@ inquire = { version = "0.7.5", features = ["editor"] }
 nom-rfc8288 = "0.2.3"
 parking_lot = "0.12.3"
 pem = "3.0.4"
-rcgen = { version = "0.13.2", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
+rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 # TODO: In order to avoid reqwest depending on ring, we (currently) need to build the TLS client ourselves,
 # which may involve bringing in rustls directly.
 reqwest = { version = "0.12.12", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
@@ -35,8 +35,10 @@ toml_edit = { version = "0.22.22", features = ["serde", "display"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 url = { version = "2.5.4", features = ["serde"] }
-x509-parser = "0.16.0"
+x509-parser = "0.17.0"
 itertools = "0.14.0"
+cyborgtime = "2.1.1"
+strum = { version = "0.27.1", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = { version = "0.5.5" }
