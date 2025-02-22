@@ -130,11 +130,13 @@ impl AcmeClient {
         loop {
             let signed = key.sign(&header, payload)?;
             let response = self.http_client.post(target_url.clone(), &signed).await?;
+
             let retry_after = HttpClient::extract_backoff(&response);
             let new_nonce = HttpClient::extract_nonce(&response);
             let links = HttpClient::extract_relation_links(&response);
             let location = HttpClient::extract_location(&response);
             let status = response.status();
+
             // TODO: Size limit on all responses, for DoS safety?
             match status {
                 StatusCode::OK | StatusCode::CREATED => {
@@ -303,7 +305,6 @@ impl AcmeClient {
                     };
                 }
             }
-            // TODO: ACME servers can suggest an interval with Retry-After here. We need to somehow move that up here?
             let backoff = backoff_from_retry_after(retry_after);
             tokio::time::sleep(backoff).await;
             let response = self.post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD).await?;
@@ -367,7 +368,7 @@ impl AcmeClient {
                         Err(err.into())
                     } else {
                         Err(Error::ProtocolViolation(
-                            "Order is invalid, but CA did not provide an error message",
+                            "Order is invalid, but CA did not provide an error message why",
                         ))
                     };
                 }
@@ -543,16 +544,16 @@ mod tests {
 
         impl NonceMatcher {
             fn __matches(&mut self, body: &[u8]) -> Option<bool> {
-                println!("{}", body.to_str_lossy());
+                // println!("{}", body.to_str_lossy());
                 let header: serde_json::Value = serde_json::from_slice(body).ok()?;
                 let header = header.as_object()?.get("protected")?.as_str()?;
-                println!("protected header {header}");
+                // println!("protected header {header}");
                 let header = BASE64_URL_SAFE_NO_PAD.decode(header).ok()?;
                 let body_json: serde_json::Value = serde_json::from_slice(&header).ok()?;
-                println!("got header {body_json}");
+                // println!("got header {body_json}");
                 let request_nonce = body_json.as_object()?.get("nonce")?.as_str()?;
                 let num = self.num;
-                println!("Request nonce is {request_nonce}, request num is {num}");
+                // println!("Request nonce is {request_nonce}, request num is {num}");
                 let matches = match num {
                     0 => request_nonce == NONCE_VALUE,
                     1 => request_nonce == "ThisNonceIsNotValid",
@@ -560,7 +561,7 @@ mod tests {
                     3 => request_nonce == "ThisNonceIsValid",
                     _ => false,
                 };
-                println!("Nonce valid: {matches}");
+                // println!("Nonce valid: {matches}");
                 self.num += 1;
                 Some(matches)
             }
@@ -620,7 +621,7 @@ mod tests {
     fn test_backoff_from_retry_after_future_time() {
         let future = SystemTime::now() + Duration::from_secs(2);
         let backoff = backoff_from_retry_after(Some(future));
-        assert!(backoff.as_secs_f64() >= 1.0);
+        assert!(backoff.as_secs_f64() >= 1.0 && backoff.as_secs_f64() <= 2.0);
     }
 
     #[test]
