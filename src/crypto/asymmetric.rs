@@ -11,6 +11,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{Read, Write};
+use std::sync::OnceLock;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum KeyType {
@@ -130,7 +131,11 @@ impl KeyPair {
 
 impl EcdsaKeyPair {
     fn new(curve: Curve, keypair: signature::EcdsaKeyPair) -> Self {
-        Self { curve, keypair }
+        Self {
+            curve,
+            keypair,
+            parameters: OnceLock::new(),
+        }
     }
 }
 
@@ -138,6 +143,7 @@ impl EcdsaKeyPair {
 pub struct EcdsaKeyPair {
     curve: Curve,
     keypair: signature::EcdsaKeyPair,
+    parameters: OnceLock<JsonWebKeyParameters>,
 }
 
 #[derive(Debug)]
@@ -204,29 +210,33 @@ impl AsymmetricKeyOperation for EcdsaKeyPair {
         Ok(pem)
     }
 
-    // TODO: Consider caching (and then changing debug_assert to assert)
     fn to_jwk_parameters(&self) -> JsonWebKeyParameters {
-        // For JOSE, we need the x and y points of our public curve point.
-        // The most portable way to get them from our crypto library is to use X9.62 uncompressed curve
-        // points, which are just the x and y bytes concatenated, except the first byte that
-        // encodes some metadata.
-        let pub_key = signature::KeyPair::public_key(&self.keypair);
-        let pub_key_uncompressed_binary = AsBigEndian::<encoding::EcPublicKeyUncompressedBin>::as_be_bytes(pub_key)
-            // The internet says all engines we care about support this (in fact, this is the
-            // default representation for many engines).
-            .expect("BUG: Crypto engine failed to provide public key in uncompressed form");
-        let pub_key_bytes = pub_key_uncompressed_binary.as_ref();
-        // Uncompressed public key - both coordinates present
-        debug_assert_eq!(pub_key_bytes[0], 0x04);
-        let point_len = match self.curve {
-            Curve::P256 => 32,
-            Curve::P384 => 48,
-        };
-        let x = &pub_key_bytes[1..=point_len];
-        let y = &pub_key_bytes[(1 + point_len)..];
-        let x = BASE64_URL_SAFE_NO_PAD.encode(x);
-        let y = BASE64_URL_SAFE_NO_PAD.encode(y);
-        JsonWebKeyParameters::Ecdsa(JsonWebKeyEcdsa::new(self.curve, x, y))
+        self.parameters
+            .get_or_init(|| {
+                // For JOSE, we need the x and y points of our public curve point.
+                // The most portable way to get them from our crypto library is to use X9.62 uncompressed curve
+                // points, which are just the x and y bytes concatenated, except the first byte that
+                // encodes some metadata.
+                let pub_key = signature::KeyPair::public_key(&self.keypair);
+                let pub_key_uncompressed_binary =
+                    AsBigEndian::<encoding::EcPublicKeyUncompressedBin>::as_be_bytes(pub_key)
+                        // The internet says all engines we care about support this (in fact, this is the
+                        // default representation for many engines).
+                        .expect("BUG: Crypto engine failed to provide public key in uncompressed form");
+                let pub_key_bytes = pub_key_uncompressed_binary.as_ref();
+                // Uncompressed public key - both coordinates present
+                assert_eq!(pub_key_bytes[0], 0x04);
+                let point_len = match self.curve {
+                    Curve::P256 => 32,
+                    Curve::P384 => 48,
+                };
+                let x = &pub_key_bytes[1..=point_len];
+                let y = &pub_key_bytes[(1 + point_len)..];
+                let x = BASE64_URL_SAFE_NO_PAD.encode(x);
+                let y = BASE64_URL_SAFE_NO_PAD.encode(y);
+                JsonWebKeyParameters::Ecdsa(JsonWebKeyEcdsa::new(self.curve, x, y))
+            })
+            .clone()
     }
 }
 
