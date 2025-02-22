@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use std::ops::Neg;
 
 pub(crate) mod serde_helper {
@@ -237,10 +238,14 @@ pub fn humanize_duration(mut duration: time::Duration) -> String {
     components.join(", ")
 }
 
+pub fn format_hex_with_colon<T: AsRef<[u8]>>(bytes: T) -> String {
+    bytes.as_ref().iter().map(|b| format!("{b:02x}")).join(":")
+}
+
 #[cfg(test)]
 mod tests {
     use super::serde_helper::optional_offset_date_time;
-    use crate::util::humanize_duration;
+    use crate::util::{format_hex_with_colon, humanize_duration};
     use rstest::rstest;
     use time::macros::datetime;
     use time::OffsetDateTime;
@@ -279,5 +284,15 @@ mod tests {
     fn test_humanize_duration(#[case] test_value: time::Duration, #[case] expected: &str) {
         let humanized = humanize_duration(test_value);
         assert_eq!(humanized, expected);
+    }
+
+    #[rstest]
+    #[case(&[], "")]
+    #[case(&[0x00], "00")]
+    #[case(&[0x12, 0x34], "12:34")]
+    #[case(&[0xab, 0xcd, 0xef], "ab:cd:ef")]
+    #[case(&[0xff, 0xaa, 0xbb], "ff:aa:bb")]
+    fn test_format_hex_with_colon(#[case] input: &[u8], #[case] expected: &str) {
+        assert_eq!(format_hex_with_colon(input), expected);
     }
 }

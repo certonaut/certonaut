@@ -64,6 +64,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     let issuer = certonaut.get_issuer_with_account("pebble", "pebble-account")?;
     let authorizers = vec![Authorizer::new(
         Identifier::from("example.com".to_string()),
+        None,
         ChallengeTestHttpSolver::default(),
     )];
     issuer
@@ -116,6 +117,7 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new(
         Identifier::from_str("example.com")?,
+        None,
         MagicHttpSolver::new(5002),
     )];
     let _cert = issuer.issue(&new_key, None, authorizers).await?;

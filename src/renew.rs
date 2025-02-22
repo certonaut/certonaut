@@ -98,7 +98,7 @@ impl RenewTask {
     }
 
     #[allow(clippy::unused_async)]
-    async fn renew_in(issuer: &AcmeIssuerWithAccount<'_>, cert: &ParsedX509Certificate) -> Duration {
+    async fn renew_in(_issuer: &AcmeIssuerWithAccount<'_>, cert: &ParsedX509Certificate) -> Duration {
         let cert_serial = &cert.serial;
         // TODO: Check ARI first, if available
         // Fallback to 2/3 parsing

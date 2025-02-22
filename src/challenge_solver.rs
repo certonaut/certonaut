@@ -3,7 +3,7 @@ use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration, SolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
-use crate::{magic, AcmeIssuerWithAccount, Authorizer, IssueCommand};
+use crate::{magic, AcmeIssuerWithAccount, Authorizer};
 use anyhow::Error;
 use async_trait::async_trait;
 use crossterm::style::Stylize;
@@ -12,6 +12,7 @@ use inquire::CustomType;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
+use crate::cli::IssueCommand;
 
 pub trait KeyAuthorization {
     fn get_type(&self) -> &str;

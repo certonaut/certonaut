@@ -2,25 +2,28 @@ use crate::acme::object::Identifier;
 use crate::challenge_solver::{
     BuiltSolverConfiguration, SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY,
 };
+use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, CertificateAuthorityConfiguration, IdentifierConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::util::humanize_duration;
 use crate::{
-    build_cert_config, config, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut, IssueCommand,
-    NewAccountOptions, CRATE_NAME,
+    build_cert_config, config, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AdvancedIssueConfiguration, Authorizer,
+    Certonaut, NewAccountOptions, CRATE_NAME,
 };
 use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
-use inquire::{Confirm, Editor, Select, Text};
+use inquire::{Confirm, CustomType, Editor, Select, Text};
 use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::time::Duration;
+use strum::VariantArray;
 use toml_edit::DocumentMut;
 use tracing::warn;
 use url::Url;
@@ -44,15 +47,16 @@ impl InteractiveService {
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let domains = Self::user_ask_cert_domains(&issue_cmd)?;
         let authorizers = Self::user_ask_authorizers(&issuer, &issue_cmd, domains)?;
-        let key_type = issue_cmd.key_type.into();
+        let cert_display_name = self.user_ask_cert_name(&issue_cmd, &authorizers)?;
+        let cert_id = self.client.choose_cert_id_from_display_name(&cert_display_name);
+        let advanced_config = Self::user_ask_advanced_options(&issuer, &issue_cmd)?;
+        let cert_config = build_cert_config(cert_display_name, &advanced_config, &issuer, authorizers.iter());
+        let key_type = cert_config.key_type;
         let cert_key = asymmetric::new_key(key_type)
             .and_then(asymmetric::KeyPair::to_rcgen_keypair)
             .context(format!("Could not generate certificate key with type {key_type}"))?;
-        let cert_display_name = self.user_ask_cert_name(&issue_cmd, &authorizers)?;
-        let cert_id = self.client.choose_cert_id_from_display_name(&cert_display_name);
-        let cert_config = build_cert_config(cert_display_name.clone(), key_type, &issuer, authorizers.iter());
         let cert = issuer
-            .issue(&cert_key, None, authorizers)
+            .issue(&cert_key, cert_config.lifetime, authorizers)
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!("Got a certificate!");
@@ -60,9 +64,16 @@ impl InteractiveService {
         Ok(())
     }
 
-    pub fn interactive_add_ca(&mut self) -> Result<(), Error> {
+    pub async fn interactive_add_ca(&mut self) -> Result<(), Error> {
         let new_ca = Self::user_create_ca(&mut self.client)?;
+        let ca_id = new_ca.identifier.clone();
         self.client.add_new_ca(new_ca)?;
+        let issuer = self
+            .client
+            .get_ca(&ca_id)
+            .ok_or(anyhow!("Freshly created CA not found"))?;
+        Certonaut::print_issuer(issuer).await;
+        println!("Successfully added new certificate authority");
         Ok(())
     }
 
@@ -70,7 +81,30 @@ impl InteractiveService {
         let ca_id = self.interactive_select_ca(true)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
         let new_account = Self::user_create_account(issuer).await?;
+        let acc_id = new_account.config.identifier.clone();
         self.client.add_new_account(&ca_id, new_account)?;
+        let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
+        Certonaut::print_account(&account).await;
+        println!("Successfully added new account");
+        Ok(())
+    }
+
+    pub async fn interactive_remove_ca(&mut self) -> Result<(), Error> {
+        let ca_id = self.interactive_select_ca(false)?;
+        let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
+        println!("You have selected this CA for deletion:");
+        Certonaut::print_issuer(issuer).await;
+        let delete = Confirm::new("Are you sure you want to remove this CA from configuration?")
+            .with_default(false)
+            .prompt()
+            .context("No answer to deletion prompt")?;
+        // TODO: Check if there are existing accounts or certs referencing the CA
+        if delete {
+            self.client.remove_ca(&ca_id)?;
+            println!("Successfully removed CA from configuration");
+        } else {
+            println!("Aborting removal.");
+        }
         Ok(())
     }
 
@@ -131,6 +165,85 @@ impl InteractiveService {
         })
     }
 
+    fn user_ask_advanced_options(
+        issuer: &AcmeIssuerWithAccount,
+        issue_cmd: &IssueCommand,
+    ) -> Result<AdvancedIssueConfiguration, Error> {
+        let advanced = &issue_cmd.advanced;
+        // TODO: We need to decide how to skip interactive prompts if arguments are provided via CLI
+        println!("{CRATE_NAME} has several advanced features (key type, ACME profiles, ACME lifetime, key reuse) that you can configure.");
+        println!(
+            "However, they're geared towards advanced usage and do not need to be configured explicitly in many cases."
+        );
+        let configure_advanced = Confirm::new("Do you want to configure advanced features for this certificate?")
+            .with_default(false)
+            .prompt()
+            .context("No answer to advanced confirmation prompt")?;
+
+        if !configure_advanced {
+            return Ok(advanced.clone());
+        }
+
+        let key_type = if let Some(key_type) = advanced.key_type {
+            Some(key_type)
+        } else {
+            let default = CommandLineKeyType::default();
+            println!("The new certificate can use one of the following supported cryptographic algorithms.");
+            println!("Note that not all CAs may support all of the choices below - consult the CA documentation.");
+            println!(
+                "If you are unsure what to select, just select the default option. RSA is also a very common choice."
+            );
+            Select::new(
+                "Choose a key type for the new certificate",
+                CommandLineKeyType::VARIANTS.to_vec(),
+            )
+            .with_help_message(&format!("Press ESC to use default {default}"))
+            .prompt_skippable()
+            .context("No answer to key type prompt")?
+        };
+
+        let profile = if let Some(profile) = &advanced.profile {
+            Some(profile.clone())
+        } else {
+            // TODO: Check ACME profiles, if any, and ask user
+            None
+        };
+
+        let lifetime = if let Some(lifetime) = &issue_cmd.advanced.lifetime {
+            Some(*lifetime)
+        } else {
+            println!("Some CAs allow you to request a specific lifetime for the certificate (within a certain allowed range).");
+            println!("You can enter such a desired lifetime for the certificate here (in hours), or leave it blank to not request any particular lifetime for the certificate.");
+            println!("Note that if the CA does not support this feature, or the requested value, issuance will fail.");
+            println!("Consult the CA's documentation before using this feature.");
+            // TODO: Consider using crate::parse_duration here, instead of restricting to hours
+            CustomType::<u64>::new("Select a lifetime (in hours) for the certificate")
+                .with_validator(|&hours: &u64| {
+                    Ok(Duration::from_secs(hours * 60 * 60)
+                        .try_into()
+                        .map(|_: time::Duration| Validation::Valid)
+                        .unwrap_or(Validation::Invalid("Number too big".into())))
+                })
+                .with_formatter(&|hours| humanize_duration(Duration::from_secs(hours * 60 * 60).try_into().unwrap()))
+                .with_error_message("Please type a valid number (interpreted as hours)")
+                .with_default(0)
+                .with_help_message("Press ESC or enter 0 to not use this feature")
+                .prompt_skippable()
+                .context("No answer to cert lifetime prompt")?
+                .map(|hours| Duration::from_secs(hours * 60 * 60))
+                .and_then(|duration| if duration.is_zero() { None } else { Some(duration) })
+        };
+
+        // TODO: Reuse key
+
+        Ok(AdvancedIssueConfiguration {
+            key_type,
+            profile,
+            lifetime,
+            reuse_key: false,
+        })
+    }
+
     fn user_ask_authorizers(
         issuer: &AcmeIssuerWithAccount,
         issue_cmd: &IssueCommand,
@@ -157,7 +270,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             BuiltSolverConfiguration::SingleConfig((domains, solver_config)) => {
                 let mut authorizers = Vec::with_capacity(domains.len());
                 for domain in domains.into_iter().sorted() {
-                    authorizers.push(Authorizer::new_boxed(domain, solver_config.clone().to_solver()?));
+                    authorizers.push(Authorizer::new_boxed(domain, None, solver_config.clone().to_solver()?));
                 }
                 authorizers
             }
@@ -175,7 +288,6 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         println!("If you want, you can give your new certificate a name to identify it later:");
         let cert_name = Text::new("Name your certificate:")
             .with_placeholder(&default_cert_name)
-            //.with_default(&default_cert_name)
             .with_help_message(&format!("Press ESC or leave empty to use default {default_cert_name}"))
             .prompt_skippable()
             .context("No answer to cert name prompt")?
@@ -431,7 +543,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         if allow_creation {
             choices.push(AccountChoice::NewAccount);
         }
-        println!("You have multiple account configured for this CA");
+        println!("You have multiple accounts configured for this CA");
         let user_choice = Select::new("Select the account you want to use", choices)
             .prompt()
             .context("No account selected")?;
@@ -766,7 +878,11 @@ web_index = \"/var/www/html\""
                 .get(solver_name)
                 .ok_or(anyhow!("Solver {solver_name} not found"))?;
             let solver = config.clone().to_solver()?;
-            let authorizer = Authorizer::new_boxed(Identifier::from(identifier_config.domain), solver);
+            let authorizer = Authorizer::new_boxed(
+                Identifier::from(identifier_config.domain),
+                Some(solver_name.to_string()),
+                solver,
+            );
             authorizers.push(authorizer);
         }
         Ok(authorizers.into())
@@ -778,7 +894,7 @@ web_index = \"/var/www/html\""
         _issue_command: &IssueCommand,
         _domains: HashSet<Identifier>,
     ) -> anyhow::Result<BuiltSolverConfiguration> {
-        panic!("The multi solver builder can only be used interactively")
+        bail!("The multi solver builder can only be used interactively")
     }
 }
 

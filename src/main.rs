@@ -3,13 +3,14 @@ use certonaut::config::CONFIG_FILE;
 use certonaut::interactive::InteractiveService;
 use certonaut::renew::RenewService;
 use certonaut::CRATE_NAME;
-use certonaut::{config, Certonaut, IssueCommand, RenewCommand};
+use certonaut::{config, Certonaut};
 use clap::{Parser, Subcommand};
 use inquire::Select;
 use std::fmt::Display;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
+use certonaut::cli::{IssueCommand, RenewCommand};
 
 const ENV_FILTER_NAME: &str = "CERTONAUT_LOG";
 
@@ -28,7 +29,6 @@ struct CommandLineArguments {
     #[clap(long, action)]
     noninteractive: bool,
 }
-
 
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -76,7 +76,7 @@ enum AccountCommand {
     Import,
     /// Change settings of an existing account
     Modify,
-    /// Delete an account
+    /// Delete and deactivate an account
     Delete,
 }
 
@@ -118,6 +118,8 @@ enum IssuerCommand {
     List,
     /// Add a new CA
     Add,
+    /// Remove a CA
+    Remove,
 }
 
 impl Display for IssuerCommand {
@@ -125,6 +127,7 @@ impl Display for IssuerCommand {
         match &self {
             IssuerCommand::List => write!(f, "List CAs"),
             IssuerCommand::Add => write!(f, "Add CA"),
+            IssuerCommand::Remove => write!(f, "Remove CA"),
         }
     }
 }
@@ -163,7 +166,7 @@ async fn process_cli_command(mut cmd: Option<Command>, client: Certonaut, intera
             }
             Some(Command::InteractiveIssuer) => {
                 if interactive {
-                    let selectable_commands = vec![IssuerCommand::List, IssuerCommand::Add];
+                    let selectable_commands = vec![IssuerCommand::List, IssuerCommand::Add, IssuerCommand::Remove];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
                         .context("No action selected");
@@ -213,17 +216,17 @@ async fn process_cli_command(mut cmd: Option<Command>, client: Certonaut, intera
                 }
                 bail!("This command can only be used interactively (a non-interactive terminal was detected)");
             }
-            Some(Command::Issuer(issuer_cmd)) => {
-                break process_issuer_command(issuer_cmd, client, interactive).await;
-            }
-            Some(Command::Certificate(certificate_cmd)) => {
-                break process_certificate_command(certificate_cmd, client, interactive).await;
-            }
             Some(Command::Issue(issue_cmd)) => {
                 break process_certificate_command(CertificateCommand::Issue(issue_cmd), client, interactive).await;
             }
             Some(Command::Renew(renew_cmd)) => {
                 break process_certificate_command(CertificateCommand::Renew(renew_cmd), client, interactive).await;
+            }
+            Some(Command::Issuer(issuer_cmd)) => {
+                break process_issuer_command(issuer_cmd, client, interactive).await;
+            }
+            Some(Command::Certificate(certificate_cmd)) => {
+                break process_certificate_command(certificate_cmd, client, interactive).await;
             }
             Some(Command::Account(account_cmd)) => {
                 break process_account_command(account_cmd, client, interactive).await;
@@ -241,7 +244,14 @@ async fn process_issuer_command(cmd: IssuerCommand, client: Certonaut, interacti
         IssuerCommand::Add => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                return service.interactive_add_ca();
+                return service.interactive_add_ca().await;
+            }
+            todo!("Non-interactive config")
+        }
+        IssuerCommand::Remove => {
+            if interactive {
+                let mut service = InteractiveService::new(client);
+                return service.interactive_remove_ca().await;
             }
             todo!("Non-interactive config")
         }

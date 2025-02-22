@@ -9,22 +9,21 @@ use crate::acme::object::{
 };
 use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, KeyAuthorization};
+use crate::cli::AdvancedIssueConfiguration;
 use crate::config::{
     config_directory, AccountConfiguration, CertificateAuthorityConfiguration,
     CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, Configuration, MainConfiguration,
     SolverConfiguration,
 };
 use crate::crypto::asymmetric;
-use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
 use crate::pebble::pebble_root;
 use anyhow::{anyhow, bail, Context, Error};
-use aws_lc_rs::rsa::KeySize;
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
-use std::fmt::Display;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::path::Path;
@@ -33,10 +32,12 @@ use time::error::ConversionRange;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use url::Url;
+use x509_parser::nom::HexDisplay;
 
 pub mod acme;
 pub mod cert;
 pub mod challenge_solver;
+pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod interactive;
@@ -50,64 +51,9 @@ pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 /// The maximum number of certificates we will parse in a PEM-array of certificates by default
 const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
 
-#[derive(Debug, Args, Default)]
-pub struct IssueCommand {
-    /// ID of the CA to use
-    #[clap(short, long)]
-    ca: Option<String>,
-    /// ID of the account to use
-    #[clap(short, long)]
-    account: Option<String>,
-    /// Domain names to include in the certificate
-    #[clap(short, long, value_delimiter = ',', num_args = 1..)]
-    domains: Option<Vec<String>>,
-    /// The display name of the new certificate
-    #[clap(long)]
-    cert_name: Option<String>,
-    /// Type of key for the certificate
-    #[clap(short, long, default_value_t = CommandLineKeyType::default())]
-    key_type: CommandLineKeyType,
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    cyborgtime::parse_duration(s).map_err(|e| format!("Invalid duration: {e}"))
 }
-
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-enum CommandLineKeyType {
-    /// ECDSA with NIST P-256
-    #[default]
-    P256,
-    /// ECDSA with NIST P-384
-    P384,
-    /// RSA (2048-bit key)
-    Rsa2048,
-    /// RSA (3072-bit key)
-    Rsa3072,
-    /// RSA (4096-bit key)
-    Rsa4096,
-    /// RSA (8192-bit key)
-    Rsa8192,
-}
-
-impl Display for CommandLineKeyType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let enum_value = self.to_possible_value().unwrap(/* Infallible */);
-        write!(f, "{}", enum_value.get_name())
-    }
-}
-
-impl From<CommandLineKeyType> for KeyType {
-    fn from(key_type: CommandLineKeyType) -> Self {
-        match key_type {
-            CommandLineKeyType::P256 => KeyType::Ecdsa(Curve::P256),
-            CommandLineKeyType::P384 => KeyType::Ecdsa(Curve::P384),
-            CommandLineKeyType::Rsa2048 => KeyType::Rsa(KeySize::Rsa2048),
-            CommandLineKeyType::Rsa3072 => KeyType::Rsa(KeySize::Rsa3072),
-            CommandLineKeyType::Rsa4096 => KeyType::Rsa(KeySize::Rsa4096),
-            CommandLineKeyType::Rsa8192 => KeyType::Rsa(KeySize::Rsa8192),
-        }
-    }
-}
-
-#[derive(Debug, Args, Default)]
-pub struct RenewCommand {}
 
 fn current_time_truncated() -> time::OffsetDateTime {
     let now = time::OffsetDateTime::now_utc();
@@ -166,22 +112,27 @@ fn load_certificates_from_reader<R: BufRead + Seek>(
 
 pub struct Authorizer {
     identifier: Identifier,
+    solver_name: Option<String>,
     solver: Box<dyn ChallengeSolver>,
 }
 
 impl Authorizer {
-    pub fn new(identifier: Identifier, solver: impl ChallengeSolver + 'static) -> Self {
-        Self::new_boxed(identifier, Box::new(solver))
+    pub fn new(identifier: Identifier, name: Option<String>, solver: impl ChallengeSolver + 'static) -> Self {
+        Self::new_boxed(identifier, name, Box::new(solver))
     }
 
-    pub fn new_boxed(identifier: Identifier, solver: Box<dyn ChallengeSolver>) -> Self {
-        Self { identifier, solver }
+    pub fn new_boxed(identifier: Identifier, name: Option<String>, solver: Box<dyn ChallengeSolver>) -> Self {
+        Self {
+            identifier,
+            solver_name: name,
+            solver,
+        }
     }
 }
 
 pub fn build_cert_config<'a, I>(
     name: String,
-    key_type: KeyType,
+    advanced: &AdvancedIssueConfiguration,
     issuer: &AcmeIssuerWithAccount,
     authorizers: I,
 ) -> CertificateConfiguration
@@ -190,38 +141,50 @@ where
 {
     let size_hint = authorizers.size_hint().0;
     let mut domains = HashMap::with_capacity(size_hint);
-    let mut solvers: HashMap<String, SolverConfiguration> = HashMap::with_capacity(size_hint);
+    let mut solvers: HashMap<String, SolverConfiguration> = HashMap::with_capacity(1);
     for authorizer in authorizers {
         let solver_config = authorizer.solver.config();
-        if let Some((key, _)) = solvers.iter().find(|(_key, value)| **value == solver_config) {
-            domains.insert(authorizer.identifier.to_string(), key.to_string());
-        } else {
-            let base_solver_name = authorizer.solver.short_name().to_string();
-            let mut i = 0;
-            let mut solver_name = base_solver_name.clone();
-            while solvers.contains_key(&solver_name) {
-                i += 1;
-                solver_name = format!("{base_solver_name}-{i}");
+        match authorizer.solver_name {
+            Some(ref solver_name) => {
+                domains.insert(authorizer.identifier.to_string(), solver_name.clone());
+                if !solvers.contains_key(solver_name) {
+                    solvers.insert(solver_name.clone(), solver_config);
+                }
             }
-            domains.insert(authorizer.identifier.to_string(), solver_name.clone());
-            solvers.insert(solver_name, solver_config);
+            None => {
+                if let Some((key, _)) = solvers.iter().find(|(_key, value)| **value == solver_config) {
+                    domains.insert(authorizer.identifier.to_string(), key.to_string());
+                } else {
+                    let base_solver_name = authorizer.solver.short_name().to_string();
+                    let mut i = 0;
+                    let mut solver_name = base_solver_name.clone();
+                    while solvers.contains_key(&solver_name) {
+                        i += 1;
+                        solver_name = format!("{base_solver_name}-{i}");
+                    }
+                    domains.insert(authorizer.identifier.to_string(), solver_name.clone());
+                    solvers.insert(solver_name, solver_config);
+                }
+            }
         }
     }
     CertificateConfiguration {
         display_name: name,
         auto_renew: true,
+        reuse_key: advanced.reuse_key,
         ca_identifier: issuer.issuer.config.identifier.clone(),
         account_identifier: issuer.account.config.identifier.clone(),
-        key_type,
+        key_type: advanced.key_type.unwrap_or_default().into(),
         domains,
         solvers,
+        lifetime: advanced.lifetime,
     }
 }
 
 pub fn authorizers_from_config(config: CertificateConfiguration) -> anyhow::Result<Vec<Authorizer>> {
     let size = config.domains.len();
     let mut authorizers = Vec::with_capacity(size);
-    for (domain, solver) in config.domains.into_iter().sorted() {
+    for (domain, solver_name) in config.domains.into_iter().sorted() {
         let id = Identifier::from(domain);
         if authorizers
             .iter()
@@ -232,11 +195,11 @@ pub fn authorizers_from_config(config: CertificateConfiguration) -> anyhow::Resu
 
         let solver_config = config
             .solvers
-            .get(&solver)
+            .get(&solver_name)
             .cloned()
-            .ok_or(anyhow!("Solver {solver} not found"))?;
+            .ok_or(anyhow!("Solver {solver_name} not found"))?;
         let solver = solver_config.to_solver()?;
-        authorizers.push(Authorizer::new_boxed(id, solver));
+        authorizers.push(Authorizer::new_boxed(id, Some(solver_name), solver));
     }
     Ok(authorizers)
 }
@@ -340,7 +303,12 @@ impl Certonaut {
     pub fn current_config(&self) -> Configuration {
         Configuration {
             main: MainConfiguration {
-                ca_list: self.issuers.values().map(AcmeIssuer::current_config).collect(),
+                ca_list: self
+                    .issuers
+                    .values()
+                    .sorted_by_key(|issuer| issuer.config.name.clone())
+                    .map(AcmeIssuer::current_config)
+                    .collect(),
             },
             certificates: self.cert_list.clone(),
         }
@@ -413,7 +381,7 @@ impl Certonaut {
     pub fn choose_ca_id_from_name(&self, friendly_name: &str) -> String {
         // TODO: Append -test if a test CA and name conflicts?
         let mut ca_id = friendly_name.trim().to_lowercase().replace(' ', "-");
-        ca_id.retain(|c| c.is_ascii_alphanumeric());
+        ca_id.retain(|c| c.is_ascii_alphanumeric() || c == '-');
         let mut ca_num = self.issuers.len();
         if ca_id.is_empty() {
             ca_id = format!("ca-{ca_num}");
@@ -475,6 +443,14 @@ impl Certonaut {
         } else {
             bail!("Something went wrong while removing account from configuration");
         }
+    }
+
+    pub fn remove_ca(&mut self, issuer_id: &str) -> Result<(), Error> {
+        self.issuers
+            .remove(issuer_id)
+            .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;
+        config::save(&self.current_config()).context("Saving new configuration")?;
+        Ok(())
     }
 
     pub async fn print_accounts(&self) {
@@ -614,12 +590,18 @@ impl Certonaut {
             println!("Account ID: {}", cert.account_identifier);
             println!("Key Type: {}", cert.key_type);
             println!("Renew disabled: {}", if cert.auto_renew { "no" } else { "yes" });
+            println!("Key reuse: {}", if cert.reuse_key { "yes" } else { "no" });
 
             let mut cert_file = config::certificate_directory(&cert_id);
             cert_file.push("fullchain.pem");
             match load_certificates_from_file(&cert_file, Some(1)) {
                 Ok(x509_cert) => {
                     if let Some(cert) = x509_cert.first() {
+                        let serial = cert.serial.to_bytes_be();
+                        println!("Certificate Serial: {}", util::format_hex_with_colon(serial));
+                        let spki = cert.subject_public_key_sha256.to_hex(2);
+                        println!("Public Key Hash (SHA256): {}", util::format_hex_with_colon(spki));
+
                         let not_after = cert
                             .validity
                             .not_after
@@ -946,23 +928,6 @@ impl<'a> AcmeIssuerWithAccount<'a> {
                     bail!("Authorization for {id} is in an invalid status (deactivated, expired, or revoked)")
                 }
             }
-        }
-        Ok(())
-    }
-
-    // TODO: Move to AcmeClient?
-    #[deprecated(note = "Not needed for a normal issuance flow. Could become a troubleshooting helper")]
-    async fn deactivate_order_authorizations(&self, order_url: &Url) -> Result<(), Error> {
-        let client = self.client().await?;
-        let order = client.get_order(&self.account.jwk, order_url).await?;
-        for authz_url in order.authorizations {
-            // The order object unfortunately doesn't tell us the current status of the authz.
-            // To avoid roundtrips, we just deactivate all authzs, even the ones that can't be deactivated.
-            // Therefore, do not bail on errors here - just continue trying to deactivate as many as we can.
-            client
-                .deactivate_authorization(&self.account.jwk, &authz_url)
-                .await
-                .ok();
         }
         Ok(())
     }
