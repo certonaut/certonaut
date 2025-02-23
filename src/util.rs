@@ -190,12 +190,16 @@ pub(crate) mod serde_helper {
     }
 }
 
+pub fn humanize_duration_core(duration: core::time::Duration) -> Result<String, time::error::ConversionRange> {
+    Ok(humanize_duration(duration.try_into()?))
+}
+
 pub fn humanize_duration(mut duration: time::Duration) -> String {
     const SECONDS_IN_MINUTE: i64 = 60;
     const SECONDS_IN_HOUR: i64 = 3600;
     const SECONDS_IN_DAY: i64 = 86400;
-    const SECONDS_IN_MONTH: i64 = 2_592_000; // Approximation (30 days)
-    const SECONDS_IN_YEAR: i64 = 31_536_000; // Approximation (365 days)
+    const SECONDS_IN_MONTH: i64 = 2_630_016; // Approximation (30.44 days)
+    const SECONDS_IN_YEAR: i64 = 31_557_600; // Approximation (365.25 days)
 
     if duration.is_negative() {
         duration = duration.neg();
@@ -276,11 +280,11 @@ mod tests {
     #[case(std::time::Duration::from_secs(61).try_into().unwrap(), "1 minute, 1 second")]
     #[case(std::time::Duration::from_secs(60 * 60).try_into().unwrap(), "1 hour")]
     #[case(std::time::Duration::from_secs(60 * 60 * 24).try_into().unwrap(), "1 day")]
-    #[case(std::time::Duration::from_secs(60 * 60 * 24 * 30).try_into().unwrap(), "1 month")]
-    #[case(std::time::Duration::from_secs(60 * 60 * 24 * 365).try_into().unwrap(), "1 year")]
+    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 30.44).try_into().unwrap(), "1 month")]
+    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 365.25).try_into().unwrap(), "1 year")]
     #[case(std::time::Duration::from_nanos(1).try_into().unwrap(), "0 seconds")]
     #[case(std::time::Duration::from_secs_f64(62.321).try_into().unwrap(), "1 minute, 2 seconds")]
-    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 90f64 * 1.1111).try_into().unwrap(), "3 months, 9 days, 23 hours, 58 minutes, 33 seconds")]
+    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 90f64 * 1.1111).try_into().unwrap(), "3 months, 8 days, 16 hours, 17 minutes, 45 seconds")]
     fn test_humanize_duration(#[case] test_value: time::Duration, #[case] expected: &str) {
         let humanized = humanize_duration(test_value);
         assert_eq!(humanized, expected);

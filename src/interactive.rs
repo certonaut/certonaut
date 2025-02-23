@@ -8,10 +8,9 @@ use crate::config::{
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{Curve, KeyType};
-use crate::util::humanize_duration;
 use crate::{
     build_cert_config, config, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AdvancedIssueConfiguration, Authorizer,
-    Certonaut, NewAccountOptions, CRATE_NAME,
+    Certonaut, NewAccountOptions, ParsedDuration, CRATE_NAME,
 };
 use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
@@ -213,25 +212,17 @@ impl InteractiveService {
             Some(*lifetime)
         } else {
             println!("Some CAs allow you to request a specific lifetime for the certificate (within a certain allowed range).");
-            println!("You can enter such a desired lifetime for the certificate here (in hours), or leave it blank to not request any particular lifetime for the certificate.");
+            println!("You can enter such a desired lifetime for the certificate here, or leave it blank to not request any particular lifetime for the certificate.");
             println!("Note that if the CA does not support this feature, or the requested value, issuance will fail.");
             println!("Consult the CA's documentation before using this feature.");
             // TODO: Consider using crate::parse_duration here, instead of restricting to hours
-            CustomType::<u64>::new("Select a lifetime (in hours) for the certificate")
-                .with_validator(|&hours: &u64| {
-                    Ok(Duration::from_secs(hours * 60 * 60)
-                        .try_into()
-                        .map(|_: time::Duration| Validation::Valid)
-                        .unwrap_or(Validation::Invalid("Number too big".into())))
-                })
-                .with_formatter(&|hours| humanize_duration(Duration::from_secs(hours * 60 * 60).try_into().unwrap()))
-                .with_error_message("Please type a valid number (interpreted as hours)")
-                .with_default(0)
-                .with_help_message("Press ESC or enter 0 to not use this feature")
+            CustomType::<ParsedDuration>::new("Select a lifetime for the certificate")
+                .with_error_message("Please type a valid duration, like '15d 2 hours 37min'")
+                .with_default(Duration::ZERO.into())
+                .with_help_message("Press ESC or enter 0s to not use this feature")
                 .prompt_skippable()
                 .context("No answer to cert lifetime prompt")?
-                .map(|hours| Duration::from_secs(hours * 60 * 60))
-                .and_then(|duration| if duration.is_zero() { None } else { Some(duration) })
+                .and_then(|duration| if duration.is_zero() { None } else { Some(*duration) })
         };
 
         // TODO: Reuse key
@@ -249,22 +240,27 @@ impl InteractiveService {
         issue_cmd: &IssueCommand,
         domains: HashSet<Identifier>,
     ) -> Result<Vec<Authorizer>, Error> {
-        println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
+        let solver_config = if let Some(solver_config) = &issue_cmd.solver {
+            let solver_config: SolverConfiguration = solver_config.clone().into();
+            (domains, solver_config).into()
+        } else {
+            println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.
 Currently, the following challenge \"solvers\" are available to prove control:".blue());
-        let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
-            .iter()
-            .filter(|builder| builder.supported(&domains))
-            .collect();
-        let multi_solver_builder: Box<dyn SolverConfigBuilder> = MultiSolverBuilder::new();
-        solver_options.push(&multi_solver_builder);
-        // TODO: Warn if wildcards are present
-        // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
-        // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
-        let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
-            .prompt()
-            .context("No answer to solver prompt")?;
-        let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd, domains)?;
+            let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
+                .iter()
+                .filter(|builder| builder.supported(&domains))
+                .collect();
+            let multi_solver_builder: Box<dyn SolverConfigBuilder> = MultiSolverBuilder::new();
+            solver_options.push(&multi_solver_builder);
+            // TODO: Warn if wildcards are present
+            // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
+            // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
+            let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
+                .prompt()
+                .context("No answer to solver prompt")?;
+            single_solver_choice.build_interactive(issuer, issue_cmd, domains)?
+        };
 
         let mut authorizers = match solver_config {
             BuiltSolverConfiguration::SingleConfig((domains, solver_config)) => {

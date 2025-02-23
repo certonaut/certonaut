@@ -1,3 +1,4 @@
+use crate::config::{NullSolverConfiguration, PebbleHttpSolverConfiguration, SolverConfiguration};
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::parse_duration;
 use aws_lc_rs::rsa::KeySize;
@@ -88,6 +89,15 @@ pub enum CommandLineSolverConfiguration {
     /// Talks to a pebble-challtestsrv to solve HTTP-01 challenges. Only works with the Pebble Test CA.
     #[clap(name = "pebble-http")]
     Pebble,
+}
+
+impl From<CommandLineSolverConfiguration> for SolverConfiguration {
+    fn from(value: CommandLineSolverConfiguration) -> Self {
+        match value {
+            CommandLineSolverConfiguration::Nothing => SolverConfiguration::Null(NullSolverConfiguration {}),
+            CommandLineSolverConfiguration::Pebble => SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+        }
+    }
 }
 
 #[derive(Debug, Args, Default)]

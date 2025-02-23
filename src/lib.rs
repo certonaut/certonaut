@@ -19,14 +19,18 @@ use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
 use crate::pebble::pebble_root;
+use crate::util::humanize_duration_core;
 use anyhow::{anyhow, bail, Context, Error};
 use clap::{Args, Subcommand, ValueEnum};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
+use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
+use std::ops::Deref;
 use std::path::Path;
+use std::str::FromStr;
 use std::time::Duration;
 use time::error::ConversionRange;
 use tokio::sync::OnceCell;
@@ -51,11 +55,46 @@ pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 /// The maximum number of certificates we will parse in a PEM-array of certificates by default
 const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
 
-fn parse_duration(s: &str) -> Result<Duration, String> {
+pub fn parse_duration(s: &str) -> Result<Duration, String> {
     cyborgtime::parse_duration(s).map_err(|e| format!("Invalid duration: {e}"))
 }
 
-fn current_time_truncated() -> time::OffsetDateTime {
+#[derive(Clone)]
+pub struct ParsedDuration {
+    inner: Duration,
+}
+
+impl From<Duration> for ParsedDuration {
+    fn from(inner: Duration) -> Self {
+        ParsedDuration { inner }
+    }
+}
+
+impl Deref for ParsedDuration {
+    type Target = Duration;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl FromStr for ParsedDuration {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_duration(s).map(ParsedDuration::from)
+    }
+}
+
+impl Display for ParsedDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match humanize_duration_core(**self) {
+            Ok(duration) => write!(f, "{duration}"),
+            Err(_) => write!(f, "Time too long to display"),
+        }
+    }
+}
+
+pub fn current_time_truncated() -> time::OffsetDateTime {
     let now = time::OffsetDateTime::now_utc();
     now.replace_nanosecond(0).unwrap(/* unreachable */)
 }
