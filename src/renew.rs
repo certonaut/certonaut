@@ -1,10 +1,12 @@
 use crate::cert::ParsedX509Certificate;
+use crate::config::CertificateConfiguration;
 use crate::{
     authorizers_from_config, config, crypto, load_certificates_from_file, util, AcmeIssuerWithAccount, Certonaut,
 };
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use std::fs::File;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tracing::{debug, info};
@@ -30,12 +32,27 @@ impl RenewService {
             let cert_name = cert_name.to_owned();
             let client = self.client.clone();
             renew_tasks.push(tokio::spawn(async move {
-                RenewTask::new(self.interactive, cert_name, client).run().await
+                RenewTask::new(self.interactive, cert_name.clone(), client)
+                    .run()
+                    .await
+                    .context(format!("Renewing certificate {cert_name}"))
             }));
         }
 
+        let mut errors = 0;
         while let Some(renew_task) = renew_tasks.next().await {
-            renew_task??;
+            if let Err(e) = renew_task.context("Renew task panicked").and_then(|e| e) {
+                errors += 1;
+                eprintln!("Error: {e:?}");
+                eprintln!();
+            }
+        }
+
+        if errors > 0 {
+            if errors == 1 {
+                bail!("1 attempted renewal failed. See the error message above for details.");
+            }
+            bail!("{errors} attempted renewals failed. See the error messages above for details.");
         }
         Ok(())
     }
@@ -83,13 +100,7 @@ impl RenewTask {
             }
             info!("Certificate {cert_name} will be renewed in {renew_in_humanized}");
             tokio::time::sleep(renew_in.try_into().unwrap_or(std::time::Duration::ZERO)).await;
-            info!("Renewing certificate {cert_name} at CA {}", issuer.issuer.config.name);
-            // TODO: Reuse key if requested
-            let new_key = crypto::asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?;
-            // TODO: Remember cert lifetime if set
-            let authorizers = authorizers_from_config(cert_config.clone())?;
-            let renewed = issuer.issue(&new_key, None, authorizers).await?;
-            config::save_certificate_and_config(&cert_id, cert_config, &new_key, &renewed)?;
+            Self::renew_certificate(cert_id.as_str(), cert_config, &issuer).await?;
         } else {
             // TODO: Gracefully handle
             bail!("Certificate {cert_name} fullchain.pem does not contain any X.509 certificate");
@@ -119,5 +130,28 @@ impl RenewTask {
                 time_until_renew
             }
         }
+    }
+
+    async fn renew_certificate(
+        cert_id: &str,
+        cert_config: &CertificateConfiguration,
+        issuer: &AcmeIssuerWithAccount<'_>,
+    ) -> anyhow::Result<()> {
+        let cert_name = &cert_config.display_name;
+        info!("Renewing certificate {cert_name} at CA {}", issuer.issuer.config.name);
+        let cert_key = if cert_config.reuse_key {
+            let key_file = config::certificate_directory(cert_id).join("key.pem");
+            crypto::asymmetric::KeyPair::load_from_disk(
+                File::open(key_file).context("Opening existing certificate private key file")?,
+            )
+            .context("Loading existing certificate private key file")?
+            .to_rcgen_keypair()?
+        } else {
+            crypto::asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?
+        };
+        let authorizers = authorizers_from_config(cert_config.clone())?;
+        let renewed = issuer.issue(&cert_key, cert_config.lifetime, authorizers).await?;
+        config::save_certificate_and_config(cert_id, cert_config, &cert_key, &renewed)?;
+        Ok(())
     }
 }
