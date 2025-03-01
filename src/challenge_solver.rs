@@ -1,4 +1,5 @@
 use crate::acme::object::{Identifier, InnerChallenge, Token};
+use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration, SolverConfiguration,
 };
@@ -6,13 +7,14 @@ use crate::crypto::jws::JsonWebKey;
 use crate::{magic, AcmeIssuerWithAccount, Authorizer};
 use anyhow::Error;
 use async_trait::async_trait;
+use clap::{value_parser, Arg, Command};
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
 use inquire::CustomType;
+use itertools::Itertools;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
-use crate::cli::IssueCommand;
 
 pub trait KeyAuthorization {
     fn get_type(&self) -> &str;
@@ -146,14 +148,14 @@ pub trait SolverConfigBuilder: Send + Sync {
         issue_command: &IssueCommand,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<BuiltSolverConfiguration>;
-    fn build_noninteractive(
+    fn build_from_command_line(
         &self,
-        issuer: &AcmeIssuerWithAccount,
-        issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
+        cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<BuiltSolverConfiguration>;
+    fn get_command_line(&self) -> Command;
 }
 
+#[derive(Debug)]
 pub enum BuiltSolverConfiguration {
     SingleConfig((HashSet<Identifier>, SolverConfiguration)),
     MultipleConfigs(Vec<Authorizer>),
@@ -168,6 +170,23 @@ impl From<(HashSet<Identifier>, SolverConfiguration)> for BuiltSolverConfigurati
 impl From<Vec<Authorizer>> for BuiltSolverConfiguration {
     fn from(value: Vec<Authorizer>) -> Self {
         Self::MultipleConfigs(value)
+    }
+}
+
+impl TryInto<Vec<Authorizer>> for BuiltSolverConfiguration {
+    type Error = Error;
+
+    fn try_into(self) -> Result<Vec<Authorizer>, Self::Error> {
+        Ok(match self {
+            BuiltSolverConfiguration::SingleConfig((domains, config)) => {
+                let mut authorizers = Vec::with_capacity(domains.len());
+                for domain in domains.into_iter().sorted() {
+                    authorizers.push(Authorizer::new_boxed(domain, None, config.clone().to_solver()?));
+                }
+                authorizers
+            }
+            BuiltSolverConfiguration::MultipleConfigs(authorizer) => authorizer,
+        })
     }
 }
 
@@ -208,13 +227,19 @@ with the CA. Will cause failures otherwise."
         Ok((domains, SolverConfiguration::Null(NullSolverConfiguration {})).into())
     }
 
-    fn build_noninteractive(
+    fn build_from_command_line(
         &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
+        cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<BuiltSolverConfiguration> {
-        Ok((domains, SolverConfiguration::Null(NullSolverConfiguration {})).into())
+        Ok((
+            cmd_line_config.base.domains.into_iter().collect(),
+            SolverConfiguration::Null(NullSolverConfiguration {}),
+        )
+            .into())
+    }
+
+    fn get_command_line(&self) -> Command {
+        Command::new("nothing").about(self.description())
     }
 }
 
@@ -258,17 +283,19 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
             .into())
     }
 
-    fn build_noninteractive(
+    fn build_from_command_line(
         &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
+        cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<BuiltSolverConfiguration> {
         Ok((
-            domains,
+            cmd_line_config.base.domains.into_iter().collect(),
             SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
         )
             .into())
+    }
+
+    fn get_command_line(&self) -> Command {
+        Command::new("pebble-http").about(self.description())
     }
 }
 
@@ -333,17 +360,28 @@ impl SolverConfigBuilder for MagicHttpBuilder {
             .into())
     }
 
-    fn build_noninteractive(
+    fn build_from_command_line(
         &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
+        cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<BuiltSolverConfiguration> {
+        let validation_port = cmd_line_config
+            .matches
+            .get_one::<u16>("validation_port")
+            .map(|port| *port);
         Ok((
-            domains,
-            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port: None }),
+            cmd_line_config.base.domains.into_iter().collect(),
+            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port }),
         )
             .into())
+    }
+
+    fn get_command_line(&self) -> Command {
+        Command::new("auto").about(self.description()).arg(
+            Arg::new("validation_port")
+                .short('p')
+                .long("validation-port")
+                .value_parser(value_parser!(u16)),
+        )
     }
 }
 

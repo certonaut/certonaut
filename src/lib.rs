@@ -169,6 +169,16 @@ impl Authorizer {
     }
 }
 
+impl Debug for Authorizer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Authorizer")
+            .field("identifier", &self.identifier)
+            .field("solver_name", &self.solver_name)
+            .field("solver", &self.solver.short_name())
+            .finish()
+    }
+}
+
 pub fn build_cert_config<'a, I>(
     name: String,
     advanced: &AdvancedIssueConfiguration,
@@ -634,18 +644,18 @@ impl Certonaut {
             let mut cert_file = config::certificate_directory(&cert_id);
             cert_file.push("fullchain.pem");
             match load_certificates_from_file(&cert_file, Some(1)) {
-                Ok(x509_cert) => {
-                    if let Some(cert) = x509_cert.first() {
+                Ok(x509_certs) => {
+                    if let Some(cert) = x509_certs.first() {
                         let serial = cert.serial.to_bytes_be();
                         println!("Certificate Serial: {}", util::format_hex_with_colon(serial));
-                        let spki = cert.subject_public_key_sha256.to_hex(2);
+                        let spki = &cert.subject_public_key_sha256;
                         println!("Public Key Hash (SHA256): {}", util::format_hex_with_colon(spki));
 
                         let not_after = cert
                             .validity
                             .not_after
                             .to_rfc2822()
-                            .unwrap_or(cert.validity.not_after.to_string());
+                            .unwrap_or_else(|_| cert.validity.not_after.to_string());
                         let time_until_expired = cert.validity.time_to_expiration();
                         if let Some(time_until_expired) = time_until_expired {
                             let time_until_expired = util::humanize_duration(time_until_expired);

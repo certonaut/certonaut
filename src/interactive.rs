@@ -2,7 +2,7 @@ use crate::acme::object::Identifier;
 use crate::challenge_solver::{
     BuiltSolverConfiguration, SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY,
 };
-use crate::cli::{CommandLineKeyType, IssueCommand};
+use crate::cli::{CommandLineKeyType, CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
     AccountConfiguration, CertificateAuthorityConfiguration, IdentifierConfiguration, SolverConfiguration,
 };
@@ -13,6 +13,7 @@ use crate::{
     Certonaut, NewAccountOptions, ParsedDuration, CRATE_NAME,
 };
 use anyhow::{anyhow, bail, Context, Error};
+use clap::Command;
 use crossterm::style::Stylize;
 use inquire::validator::Validation;
 use inquire::{Confirm, CustomType, Editor, Select, Text};
@@ -217,7 +218,7 @@ impl InteractiveService {
             println!("Consult the CA's documentation before using this feature.");
             // TODO: Consider using crate::parse_duration here, instead of restricting to hours
             CustomType::<ParsedDuration>::new("Select a lifetime for the certificate")
-                .with_error_message("Please type a valid duration, like '15d 2 hours 37min'")
+                .with_error_message("Please type a valid duration, like '90 days' or '15d 2 hours 37min'")
                 .with_default(Duration::ZERO.into())
                 .with_help_message("Press ESC or enter 0s to not use this feature")
                 .prompt_skippable()
@@ -240,10 +241,7 @@ impl InteractiveService {
         issue_cmd: &IssueCommand,
         domains: HashSet<Identifier>,
     ) -> Result<Vec<Authorizer>, Error> {
-        let solver_config = if let Some(solver_config) = &issue_cmd.solver {
-            let solver_config: SolverConfiguration = solver_config.clone().into();
-            (domains, solver_config).into()
-        } else {
+        let mut authorizers = if issue_cmd.solver_configuration.is_empty() {
             println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.
 Currently, the following challenge \"solvers\" are available to prove control:".blue());
@@ -259,19 +257,30 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
                 .prompt()
                 .context("No answer to solver prompt")?;
-            single_solver_choice.build_interactive(issuer, issue_cmd, domains)?
+            let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd, domains)?;
+
+            solver_config.try_into()?
+        } else {
+            let mut all_domains = HashSet::new();
+            let mut all_authorizers: Vec<Authorizer> = Vec::new();
+            for solver_config in &issue_cmd.solver_configuration {
+                let mut authorizers: Vec<Authorizer> = solver_config
+                    .solver
+                    .build_from_command_line(solver_config.clone())?
+                    .try_into()?;
+                for authorizer in &authorizers {
+                    if !all_domains.insert(authorizer.identifier.clone()) {
+                        return Err(anyhow!(
+                            "Identifier {} appears multiple times (on command line)",
+                            authorizer.identifier
+                        ));
+                    }
+                }
+                all_authorizers.append(&mut authorizers);
+            }
+            all_authorizers
         };
 
-        let mut authorizers = match solver_config {
-            BuiltSolverConfiguration::SingleConfig((domains, solver_config)) => {
-                let mut authorizers = Vec::with_capacity(domains.len());
-                for domain in domains.into_iter().sorted() {
-                    authorizers.push(Authorizer::new_boxed(domain, None, solver_config.clone().to_solver()?));
-                }
-                authorizers
-            }
-            BuiltSolverConfiguration::MultipleConfigs(authorizers) => authorizers,
-        };
         authorizers.sort_by_key(|authorizer| authorizer.identifier.clone());
         Ok(authorizers)
     }
@@ -305,6 +314,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 .map(|domain| Identifier::from(domain.trim().to_string()))
                 .sorted()
                 .collect());
+        }
+        // Domains are given per-solver
+        if !issue_cmd.solver_configuration.is_empty() {
+            return Ok(HashSet::new());
         }
         loop {
             let domains_string = Text::new("Enter the domain name(s) for the new certificate:")
@@ -884,13 +897,15 @@ web_index = \"/var/www/html\""
         Ok(authorizers.into())
     }
 
-    fn build_noninteractive(
+    fn build_from_command_line(
         &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        _domains: HashSet<Identifier>,
+        _cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<BuiltSolverConfiguration> {
-        bail!("The multi solver builder can only be used interactively")
+        unimplemented!("Not supported by interactive multi-solver builder")
+    }
+
+    fn get_command_line(&self) -> Command {
+        unimplemented!("Not supported by interactive multi-solver builder")
     }
 }
 
