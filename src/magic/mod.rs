@@ -32,12 +32,16 @@ impl MagicHttpSolver {
     }
 
     #[allow(clippy::needless_pass_by_value)]
-    pub fn from_config(config: MagicHttpSolverConfiguration) -> Box<Self> {
-        Box::new(if let Some(port) = config.validation_port {
+    pub fn try_from_config(config: MagicHttpSolverConfiguration) -> anyhow::Result<Box<Self>> {
+        if !is_supported() {
+            bail!("MagicHttpSolver is not supported on this system");
+        }
+
+        Ok(Box::new(if let Some(port) = config.validation_port {
             MagicHttpSolver::new(port)
         } else {
             MagicHttpSolver::default()
-        })
+        }))
     }
 }
 
@@ -111,6 +115,8 @@ impl ChallengeSolver for MagicHttpSolver {
     }
 }
 
+// TODO: Cache result
+// TODO: Also show reason why not
 pub fn is_supported() -> bool {
     imp::is_supported()
 }

@@ -1,20 +1,20 @@
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{
-    BuiltSolverConfiguration, SolverCategory, SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY,
-};
-use crate::cli::{CommandLineKeyType, CommandLineSolverConfiguration, IssueCommand};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration, IdentifierConfiguration, SolverConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration, IdentifierConfiguration,
+    SolverConfiguration,
 };
-use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
+use crate::util::humanize_duration;
 use crate::{
-    build_cert_config, config, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AdvancedIssueConfiguration, Authorizer,
-    Certonaut, NewAccountOptions, ParsedDuration, CRATE_NAME,
+    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut, DomainSolverMap,
+    NewAccountOptions, ParsedDuration, CRATE_NAME,
 };
 use anyhow::{anyhow, bail, Context, Error};
-use clap::Command;
 use crossterm::style::Stylize;
+use futures::FutureExt;
 use inquire::validator::Validation;
 use inquire::{Confirm, CustomType, Editor, Select, Text};
 use itertools::Itertools;
@@ -22,11 +22,15 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
+use std::sync::Mutex;
 use std::time::Duration;
 use strum::VariantArray;
+use tokio::sync::RwLock;
 use toml_edit::DocumentMut;
 use tracing::warn;
 use url::Url;
+
+mod editor;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
@@ -41,27 +45,33 @@ impl InteractiveService {
 
     pub async fn interactive_issuance(&mut self, issue_cmd: IssueCommand) -> Result<(), Error> {
         println!("{}", format!("{CRATE_NAME} interactive certificate issuance").green());
-        let (issuer, account) = self.user_select_ca_and_account(&issue_cmd).await?;
-        let issuer = self.client.get_issuer_with_account(&issuer, &account)?;
-        let ca_name = issuer.issuer.config.name.to_string();
+        let (initial_issuer, initial_account) = self.user_select_ca_and_account(&issue_cmd).await?;
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
-        let domains = Self::user_ask_cert_domains(&issue_cmd)?;
-        let authorizers = Self::user_ask_authorizers(&issuer, &issue_cmd, domains)?;
-        let cert_display_name = self.user_ask_cert_name(&issue_cmd, &authorizers)?;
-        let cert_id = self.client.choose_cert_id_from_display_name(&cert_display_name);
-        let advanced_config = Self::user_ask_advanced_options(&issuer, &issue_cmd)?;
-        let cert_config = build_cert_config(cert_display_name, &advanced_config, &issuer, authorizers.iter());
-        let key_type = cert_config.key_type;
-        let cert_key = asymmetric::new_key(key_type)
-            .and_then(asymmetric::KeyPair::to_rcgen_keypair)
-            .context(format!("Could not generate certificate key with type {key_type}"))?;
-        let cert = issuer
-            .issue(&cert_key, cert_config.lifetime, authorizers)
-            .await
-            .context(format!("Issuing certificate with CA {ca_name}"))?;
-        println!("Got a certificate!");
-        config::save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
-        Ok(())
+        let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
+        let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains)?;
+        let domains = domain_solver_map.domains;
+        let solvers = domain_solver_map.solvers;
+        let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
+            cert_name.to_string()
+        } else {
+            self.client.choose_cert_name_from_domains(domains.keys())
+        };
+        let initial_config = CertificateConfiguration {
+            display_name: cert_name,
+            auto_renew: true,
+            reuse_key: issue_cmd.advanced.reuse_key,
+            ca_identifier: initial_issuer,
+            account_identifier: initial_account,
+            key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
+            domains: domains
+                .into_iter()
+                .map(|(id, solver)| (id.to_string(), solver))
+                .collect(),
+            solvers,
+            lifetime: issue_cmd.advanced.lifetime,
+        };
+        let cert_config = self.interactive_edit_cert_configuration(initial_config).await?;
+        self.client.issue_new(cert_config).await
     }
 
     pub async fn interactive_add_ca(&mut self) -> Result<(), Error> {
@@ -165,149 +175,283 @@ impl InteractiveService {
         })
     }
 
-    fn user_ask_advanced_options(
-        issuer: &AcmeIssuerWithAccount,
-        issue_cmd: &IssueCommand,
-    ) -> Result<AdvancedIssueConfiguration, Error> {
-        let advanced = &issue_cmd.advanced;
-        // TODO: We need to decide how to skip interactive prompts if arguments are provided via CLI
-        println!("{CRATE_NAME} has several advanced features (key type, ACME profiles, ACME lifetime, key reuse) that you can configure.");
-        println!(
-            "However, they're geared towards advanced usage and do not need to be configured explicitly in many cases."
-        );
-        let configure_advanced = Confirm::new("Do you want to configure advanced features for this certificate?")
-            .with_default(false)
-            .prompt()
-            .context("No answer to advanced confirmation prompt")?;
-
-        if !configure_advanced {
-            return Ok(advanced.clone());
-        }
-
-        let key_type = if let Some(key_type) = advanced.key_type {
-            Some(key_type)
-        } else {
-            let default = CommandLineKeyType::default();
-            println!("The new certificate can use one of the following supported cryptographic algorithms.");
-            println!("Note that not all CAs may support all of the choices below - consult the CA documentation.");
-            println!(
-                "If you are unsure what to select, just select the default option. RSA is also a very common choice."
-            );
-            Select::new(
-                "Choose a key type for the new certificate",
-                CommandLineKeyType::VARIANTS.to_vec(),
-            )
-            .with_help_message(&format!("Press ESC to use default {default}"))
-            .prompt_skippable()
-            .context("No answer to key type prompt")?
-        };
-
-        let profile = if let Some(profile) = &advanced.profile {
-            Some(profile.clone())
-        } else {
-            // TODO: Check ACME profiles, if any, and ask user
-            None
-        };
-
-        let lifetime = if let Some(lifetime) = &issue_cmd.advanced.lifetime {
-            Some(*lifetime)
-        } else {
-            println!("Some CAs allow you to request a specific lifetime for the certificate (within a certain allowed range).");
-            println!("You can enter such a desired lifetime for the certificate here, or leave it blank to not request any particular lifetime for the certificate.");
-            println!("Note that if the CA does not support this feature, or the requested value, issuance will fail.");
-            println!("Consult the CA's documentation before using this feature.");
-            // TODO: Consider using crate::parse_duration here, instead of restricting to hours
-            CustomType::<ParsedDuration>::new("Select a lifetime for the certificate")
-                .with_error_message("Please type a valid duration, like '90 days' or '15d 2 hours 37min'")
-                .with_default(Duration::ZERO.into())
-                .with_help_message("Press ESC or enter 0s to not use this feature")
-                .prompt_skippable()
-                .context("No answer to cert lifetime prompt")?
-                .and_then(|duration| if duration.is_zero() { None } else { Some(*duration) })
-        };
-
-        // TODO: Reuse key
-
-        Ok(AdvancedIssueConfiguration {
-            key_type,
-            profile,
-            lifetime,
-            reuse_key: false,
-        })
-    }
-
-    fn user_ask_authorizers(
-        issuer: &AcmeIssuerWithAccount,
-        issue_cmd: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> Result<Vec<Authorizer>, Error> {
-        let mut authorizers = if issue_cmd.solver_configuration.is_empty() {
-            println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
-There are several ways to do this, and the best method depends on your system and preferences.
-Currently, the following challenge \"solvers\" are available to prove control:".blue());
-            let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
-                .iter()
-                .filter(|builder| builder.supported(&domains))
-                .collect();
-            let multi_solver_builder: Box<dyn SolverConfigBuilder> = MultiSolverBuilder::new();
-            solver_options.push(&multi_solver_builder);
-            // TODO: Warn if wildcards are present
-            // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
-            // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
-            let single_solver_choice = Select::new("Select a solver to authenticate all identifiers:", solver_options)
-                .prompt()
-                .context("No answer to solver prompt")?;
-            let solver_config = single_solver_choice.build_interactive(issuer, issue_cmd, domains)?;
-
-            solver_config.try_into()?
-        } else {
-            let mut all_domains = HashSet::new();
-            let mut all_authorizers: Vec<Authorizer> = Vec::new();
-            for solver_config in &issue_cmd.solver_configuration {
-                let mut authorizers: Vec<Authorizer> = solver_config
-                    .solver
-                    .build_from_command_line(solver_config.clone())?
-                    .try_into()?;
-                for authorizer in &authorizers {
-                    if !all_domains.insert(authorizer.identifier.clone()) {
-                        return Err(anyhow!(
-                            "Identifier {} appears multiple times (on command line)",
-                            authorizer.identifier
-                        ));
+    async fn interactive_edit_cert_configuration(
+        &mut self,
+        config: CertificateConfiguration,
+    ) -> Result<CertificateConfiguration, Error> {
+        let self_locked = RwLock::new(self);
+        let ca_display_updater = async |config: &CertificateConfiguration| {
+            let lock = self_locked.read().await;
+            match lock.client.get_ca(&config.ca_identifier) {
+                None => "CA not found".into(),
+                Some(ca) => {
+                    let ca_name = ca.config.name.clone();
+                    if ca.accounts.len() > 1 {
+                        let account_name = match ca.get_account(&config.account_identifier) {
+                            None => "Account not found",
+                            Some(account) => &account.config.name,
+                        };
+                        format!("{ca_name} ({account_name})")
+                    } else {
+                        ca_name
                     }
                 }
-                all_authorizers.append(&mut authorizers);
             }
-            all_authorizers
         };
-
-        authorizers.sort_by_key(|authorizer| authorizer.identifier.clone());
-        Ok(authorizers)
+        let ca_display: Mutex<String> = Mutex::new(ca_display_updater(&config).await);
+        println!("{}", "Certificate Configuration:".dark_green());
+        println!("Select an option to view or edit");
+        let final_config = InteractiveConfigEditor::new(
+            "Select an option to change it",
+            config,
+            Self::cert_edit_basic_editors(&self_locked)
+                .chain(
+                    [ClosureEditor::new(
+                        "Certificate Authority",
+                        &|_config: &CertificateConfiguration| ca_display.lock().unwrap().clone().into(),
+                        |mut config: CertificateConfiguration| {
+                            async {
+                                let mut lock = self_locked.write().await;
+                                let (ca, account) = lock.user_select_ca_and_account(&IssueCommand::default()).await?;
+                                config.ca_identifier = ca;
+                                config.account_identifier = account;
+                                drop(lock);
+                                let new_ca_display = ca_display_updater(&config).await;
+                                let mut ca_display = ca_display.lock().unwrap();
+                                *ca_display = new_ca_display;
+                                Ok(config)
+                            }
+                            .boxed()
+                        },
+                    )]
+                    .into_iter(),
+                )
+                .chain(Self::cert_edit_advanced_editors(&self_locked)),
+            |_c| async { Ok(true) }.boxed(),
+        )
+        .edit_config()
+        .await?;
+        Ok(final_config)
     }
 
-    fn user_ask_cert_name(&self, issue_cmd: &IssueCommand, authorizers: &Vec<Authorizer>) -> Result<String, Error> {
-        if let Some(cert_name) = &issue_cmd.cert_name {
-            return Ok(cert_name.clone());
+    fn cert_edit_basic_editors<'a>(
+        self_locked: &'a RwLock<&'a mut Self>,
+    ) -> impl Iterator<Item = ClosureEditor<'a, CertificateConfiguration>> {
+        [
+            ClosureEditor::new(
+                "Domains",
+                &|config: &CertificateConfiguration| config.domains.keys().sorted().join(", ").into(),
+                |mut config: CertificateConfiguration| {
+                    async {
+                        let new_domains = Self::user_ask_cert_domains(config.domains.keys().map_into())?;
+                        let lock = self_locked.read().await;
+                        let cert_name = lock.client.choose_cert_name_from_domains(new_domains.iter());
+                        config.display_name = cert_name;
+                        let new_authenticators = Self::user_ask_solvers(new_domains)?;
+                        config.domains = new_authenticators
+                            .domains
+                            .into_iter()
+                            .map(|(domain, solver)| (domain.to_string(), solver))
+                            .collect();
+                        config.solvers = new_authenticators.solvers;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Solvers",
+                &|config: &CertificateConfiguration| config.solvers.keys().sorted().join(", ").into(),
+                |mut config: CertificateConfiguration| {
+                    async {
+                        let domains = config
+                            .domains
+                            .keys()
+                            .map(|domain| Identifier::from(domain.clone()))
+                            .collect();
+                        let new_authenticators = Self::user_ask_solvers(domains)?;
+                        config.domains = new_authenticators
+                            .domains
+                            .into_iter()
+                            .map(|(domain, solver)| (domain.to_string(), solver))
+                            .collect();
+                        config.solvers = new_authenticators.solvers;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Name",
+                &|config: &CertificateConfiguration| (&config.display_name).into(),
+                |mut config: CertificateConfiguration| {
+                    async {
+                        config.display_name = Self::user_ask_cert_name(config.display_name)?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+        ]
+        .into_iter()
+    }
+
+    fn cert_edit_advanced_editors<'a>(
+        self_locked: &'a RwLock<&'a mut Self>,
+    ) -> impl Iterator<Item = ClosureEditor<'a, CertificateConfiguration>> {
+        [
+            ClosureEditor::new(
+                "Key Type",
+                &|config: &CertificateConfiguration| config.key_type.to_string().into(),
+                |mut config| {
+                    async {
+                        config.key_type = Self::user_ask_key_type(config.key_type)?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Requested Lifetime",
+                &|config: &CertificateConfiguration| match config.lifetime {
+                    None => "Not specified".into(),
+                    Some(lifetime) => humanize_duration(lifetime.try_into().unwrap_or(time::Duration::MAX)).into(),
+                },
+                |mut config| {
+                    async {
+                        config.lifetime = Self::user_ask_cert_lifetime(config.lifetime)?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Profile",
+                &|config: &CertificateConfiguration| (&config.ca_identifier).into(),
+                |config: CertificateConfiguration| {
+                    async {
+                        let lock = self_locked.read().await;
+                        let issuer = lock
+                            .client
+                            .get_issuer_with_account(&config.ca_identifier, &config.account_identifier)?;
+                        let _profile = Self::user_ask_cert_profile(&issuer, None).await?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+        ]
+        .into_iter()
+    }
+
+    fn user_ask_initial_solvers(
+        issue_cmd: &IssueCommand,
+        domains: HashSet<Identifier>,
+    ) -> Result<DomainSolverMap, Error> {
+        if issue_cmd.solver_configuration.is_empty() {
+            Self::user_ask_solvers(domains)
+        } else {
+            let mut built_solver_configs = Vec::new();
+            for cli_solver_config in &issue_cmd.solver_configuration {
+                built_solver_configs.push(
+                    cli_solver_config
+                        .solver
+                        .build_from_command_line(cli_solver_config.clone())?,
+                );
+            }
+            build_domain_solver_maps(built_solver_configs)
         }
-        let default_cert_name = self.client.choose_cert_name_from_authorizers(authorizers);
+    }
+
+    fn user_ask_solvers(domains: HashSet<Identifier>) -> Result<DomainSolverMap, Error> {
+        println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
+There are several ways to do this, and the best method depends on your system and preferences.
+Currently, the following challenge \"solvers\" are available to prove control:".blue());
+        let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
+            .iter()
+            .filter(|builder| builder.supported(&domains))
+            .map(|builder| SolverChoice::SingleSolver(builder.as_ref()))
+            .collect();
+        solver_options.push(SolverChoice::MultipleSolvers);
+        // TODO: Warn if wildcards are present
+        // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
+        // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
+        let domains_with_solvers = match Select::new("Select a solver to authenticate all identifiers:", solver_options)
+            .prompt()
+            .context("No answer to solver prompt")?
+        {
+            SolverChoice::SingleSolver(single_solver_choice) => {
+                vec![single_solver_choice.build_interactive(domains)?]
+            }
+            SolverChoice::MultipleSolvers => return Self::user_ask_multiple_solvers(domains),
+        };
+        build_domain_solver_maps(domains_with_solvers)
+    }
+
+    async fn user_ask_cert_profile(
+        issuer: &AcmeIssuerWithAccount<'_>,
+        _current: Option<String>,
+    ) -> Result<Option<String>, Error> {
+        let client = issuer.client().await?;
+        if let Some(_meta) = &client.get_directory().meta {
+            // TODO: Check profiles, allow selecting one
+        }
+        Ok(None)
+    }
+
+    fn user_ask_cert_lifetime(current: Option<Duration>) -> Result<Option<Duration>, Error> {
+        println!(
+            "Some CAs allow you to request a specific lifetime for the certificate (within a certain allowed range)."
+        );
+        println!(
+            "You can enter such a desired lifetime for the certificate here, or leave it blank to not request any particular lifetime for the certificate."
+        );
+        println!("Note that if the CA does not support this feature, or the requested value, issuance will fail.");
+        println!("Consult the CA's documentation before using this feature.");
+        let duration = CustomType::<ParsedDuration>::new("Select a lifetime for the certificate")
+            .with_error_message("Please type a valid duration, like '90 days' or '15d 2 hours 37min'")
+            .with_default(current.unwrap_or(Duration::ZERO).into())
+            .with_help_message("Press ESC or enter 0s to not use this feature")
+            .prompt_skippable()
+            .context("No answer to cert lifetime prompt")?
+            .and_then(|duration| if duration.is_zero() { None } else { Some(*duration) });
+        Ok(duration)
+    }
+
+    fn user_ask_key_type(current: KeyType) -> Result<KeyType, Error> {
+        println!("The certificate can use one of the following supported cryptographic algorithms.");
+        println!("Note that not all CAs may support all of the choices below - consult the CA documentation.");
+        println!("If you are unsure what to select, just select the default option. RSA is also a very common choice.");
+        let key_type = Select::new(
+            "Choose a key type for the new certificate",
+            CommandLineKeyType::VARIANTS.iter().map(|k| (*k).into()).collect(),
+        )
+        .with_help_message(&format!("Press ESC to use current {current}"))
+        .prompt_skippable()
+        .context("No answer to key type prompt")?
+        .unwrap_or(current);
+        Ok(key_type)
+    }
+
+    fn user_ask_cert_name(current: String) -> Result<String, Error> {
         println!("If you want, you can give your new certificate a name to identify it later:");
         let cert_name = Text::new("Name your certificate:")
-            .with_placeholder(&default_cert_name)
-            .with_help_message(&format!("Press ESC or leave empty to use default {default_cert_name}"))
+            .with_placeholder(&current)
+            .with_help_message(&format!("Press ESC or leave empty to use {current}"))
             .prompt_skippable()
             .context("No answer to cert name prompt")?
             .map(|cert_name| {
                 if cert_name.trim().is_empty() {
-                    default_cert_name.clone()
+                    current.clone()
                 } else {
                     cert_name
                 }
             })
-            .unwrap_or(default_cert_name);
+            .unwrap_or(current);
         Ok(cert_name)
     }
 
-    fn user_ask_cert_domains(issue_cmd: &IssueCommand) -> Result<HashSet<Identifier>, Error> {
+    fn user_ask_initial_cert_domains(issue_cmd: &IssueCommand) -> Result<HashSet<Identifier>, Error> {
         if let Some(domains) = &issue_cmd.domains {
             return Ok(domains
                 .iter()
@@ -319,76 +463,71 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         if !issue_cmd.solver_configuration.is_empty() {
             return Ok(HashSet::new());
         }
-        loop {
-            let domains_string = Text::new("Enter the domain name(s) for the new certificate:")
-                .with_placeholder("example.com")
-                .with_help_message("Separate multiple names with spaces, commas, or both.")
-                .with_validator(|input: &str| {
-                    if input.trim().is_empty() {
-                        return Ok(Validation::Invalid("Domain cannot be empty".into()));
-                    }
-                    if input.split(',').any(|input| input.trim().is_empty()) {
-                        return Ok(Validation::Invalid(format!("Domain {input} cannot be empty").into()));
-                    }
-                    if input
-                        .split_whitespace()
-                        .flat_map(|s| s.split(','))
-                        .any(|input| input.starts_with('.') || input.ends_with('.'))
-                    {
-                        return Ok(Validation::Invalid(
-                            format!("Domain {input} cannot start or end with a dot").into(),
-                        ));
-                    }
-                    Ok(Validation::Valid)
-                })
-                .prompt()
-                .context("No answer to domain prompt")?;
-            let mut domains = domains_string
-                .split_whitespace()
-                .flat_map(|s| s.split(','))
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(|s| s.parse::<Identifier>().unwrap(/* Infallible */))
-                .sorted()
-                .collect::<HashSet<_>>();
-            if domains.is_empty() {
-                println!("Domain list cannot be empty!");
-                continue;
-            }
-            if domains.len() == 1 {
-                let domain = domains.iter().next().unwrap(/* Infallible */);
-                if domain.as_str().starts_with("www.") {
-                    let base_name =
-                        Identifier::from(domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string());
-                    let add_base_name = Confirm::new(&format!("It is common to also include {base_name} in certificates, so that visitors can use both. Do you want to add the base domain to your certificate?"))
-                        .with_default(false)
-                        .prompt_skippable()?.unwrap_or(false);
-                    if add_base_name {
-                        domains.insert(base_name);
-                    }
-                } else {
-                    let www_name = Identifier::from("www.".to_string() + domain.as_str());
-                    let add_www = Confirm::new(&format!("It is common to also include {www_name} in certificates, so that visitors can use both. Do you want to add the www subdomain to your certificate?"))
-                        .with_default(false)
-                        .prompt_skippable()?.unwrap_or(false);
-                    if add_www {
-                        domains.insert(www_name);
-                    }
+        Self::user_ask_cert_domains(std::iter::Empty::default())
+    }
+
+    fn user_ask_cert_domains<I: Iterator<Item = String>>(mut current: I) -> Result<HashSet<Identifier>, Error> {
+        let placeholder = if current.size_hint().0 == 0 {
+            "example.com".to_string()
+        } else {
+            current.join(", ")
+        };
+        let domains_string = Text::new("Enter the domain name(s) for the new certificate:")
+            .with_placeholder(&placeholder)
+            .with_help_message("Separate multiple names with spaces, commas, or both.")
+            .with_validator(|input: &str| {
+                if input.trim().is_empty() {
+                    return Ok(Validation::Invalid("Domain cannot be empty".into()));
+                }
+                if input.split(',').any(|input| input.trim().is_empty()) {
+                    return Ok(Validation::Invalid(format!("Domain {input} cannot be empty").into()));
+                }
+                if input
+                    .split_whitespace()
+                    .flat_map(|s| s.split(','))
+                    .any(|input| input.starts_with('.') || input.ends_with('.'))
+                {
+                    return Ok(Validation::Invalid(
+                        format!("Domain {input} cannot start or end with a dot").into(),
+                    ));
+                }
+                Ok(Validation::Valid)
+            })
+            .prompt()
+            .context("No answer to domain prompt")?;
+        let mut domains = domains_string
+            .split_whitespace()
+            .flat_map(|s| s.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.parse::<Identifier>().unwrap(/* Infallible */))
+            .sorted()
+            .collect::<HashSet<_>>();
+        if domains.is_empty() {
+            bail!("Domain list cannot be empty");
+        }
+        if domains.len() == 1 {
+            let domain = domains.iter().next().unwrap(/* Infallible */);
+            if domain.as_str().starts_with("www.") {
+                let base_name =
+                    Identifier::from(domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string());
+                let add_base_name = Confirm::new(&format!("It is common to also include {base_name} in certificates, so that visitors can use both. Do you want to add the base domain to your certificate?"))
+                    .with_default(false)
+                    .prompt_skippable()?.unwrap_or(false);
+                if add_base_name {
+                    domains.insert(base_name);
+                }
+            } else {
+                let www_name = Identifier::from("www.".to_string() + domain.as_str());
+                let add_www = Confirm::new(&format!("It is common to also include {www_name} in certificates, so that visitors can use both. Do you want to add the www subdomain to your certificate?"))
+                    .with_default(false)
+                    .prompt_skippable()?.unwrap_or(false);
+                if add_www {
+                    domains.insert(www_name);
                 }
             }
-            let domain_names = domains.iter().sorted().join(", ");
-            let confirm = Confirm::new(&format!(
-                "You have selected the following domain names: {domain_names}. Is this correct?"
-            ))
-            .with_help_message(
-                "Enter yes to proceed, or no to abort. If you abort you can enter the domain names again.",
-            )
-            .with_default(false)
-            .prompt()?;
-            if confirm {
-                break Ok(domains);
-            }
         }
+        Ok(domains)
     }
 
     async fn user_select_ca_and_account(&mut self, issue_cmd: &IssueCommand) -> Result<(String, String), Error> {
@@ -678,11 +817,94 @@ You may need to create an account at the CA's website first.",
                 if has_eab {
                     todo!("EAB currently not implemented")
                 } else {
-                    bail!("EAB is required for this CA. Please review the CA's website to find instructions, or select a different CA.")
+                    bail!(
+                        "EAB is required for this CA. Please review the CA's website to find instructions, or select a different CA."
+                    )
                 }
             }
         }
         Ok(tos_status)
+    }
+
+    fn user_ask_multiple_solvers(domains: HashSet<Identifier>) -> anyhow::Result<DomainSolverMap> {
+        println!(
+            "Multiple solvers can be specified directly in TOML format. A temporary file will be opened containing \
+ a template that you can fill out. Please refer to the documentation at TODO for more information about the solvers."
+        );
+        let domain_template = domains
+            .iter()
+            .map(|id| format!("\"{id}\" = \"example-solver\""))
+            .join("\n");
+        let template = format!(
+            "[domains]
+# This section contains the domain names of your certificate.
+# Each line has the domain name (quoted) on the left hand side, and the name of a solver on the right hand side.
+# Every domain can have a different solver, or multiple domains can share a single solver configuration.
+{domain_template}
+
+# Every solver configuration is specified as solver.<solver-name>
+[solver.example-solver]
+# The solver is named \"example-solver\" and has the configuration as specified below
+# Refer to TODO for documentation on the available solver types
+type = \"webroot\"
+# Refer to TODO about the available configuration options per solver
+web_index = \"/var/www/html\""
+        );
+        let raw_toml = Editor::new("Solver configuration:")
+            .with_file_extension(".toml")
+            .with_predefined_text(&template)
+            .with_help_message(
+                "This prompt will open your default text editor to make changes to the provided template.",
+            )
+            .with_validator(move |content: &str| Ok(validate_solver_toml(&domains, content)))
+            .prompt()
+            .context("No answer to solver prompt")?;
+        let toml = toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
+        let domains_table = toml
+            .get("domains")
+            .and_then(|domains| domains.as_table())
+            .ok_or(anyhow!("No domains specified"))?;
+        let mut domains = vec![];
+        for (domain, solver) in domains_table {
+            let solver_identifier = solver
+                .as_str()
+                .map(ToString::to_string)
+                .ok_or(anyhow!("Domain value for key {domain} must be a string"))?;
+            domains.push(IdentifierConfiguration {
+                domain: domain.to_string(),
+                solver_identifier,
+            });
+        }
+        let solvers_table = toml
+            .get("solver")
+            .and_then(|solvers| solvers.as_table())
+            .ok_or(anyhow!("No solvers specified"))?;
+        let mut solvers = HashMap::new();
+        for (solver, config) in solvers_table {
+            let solver_config = config
+                .as_table()
+                .map(|config| toml_edit::DocumentMut::from(config.clone()))
+                .ok_or(anyhow!("Solver {solver} is not a table"))?;
+            let solver_config: SolverConfiguration = toml_edit::de::from_document(solver_config)
+                .context(format!("Parsing solver configuration for {solver}"))?;
+            solvers.insert(solver.to_string(), solver_config);
+        }
+
+        let mut authorizers = Vec::new();
+        for identifier_config in domains {
+            let solver_name = identifier_config.solver_identifier.as_str();
+            let config = solvers
+                .get(solver_name)
+                .ok_or(anyhow!("Solver {solver_name} not found"))?;
+            let solver = config.clone().to_solver()?;
+            let authorizer = Authorizer::new_boxed(
+                Identifier::from(identifier_config.domain),
+                Some(solver_name.to_string()),
+                solver,
+            );
+            authorizers.push(authorizer);
+        }
+        todo!("Refactor interactive multi solver for new format")
     }
 }
 
@@ -781,131 +1003,25 @@ impl Display for dyn SolverConfigBuilder {
     }
 }
 
-struct MultiSolverBuilder {}
+pub enum SolverChoice {
+    SingleSolver(&'static dyn SolverConfigBuilder),
+    MultipleSolvers,
+}
 
-impl SolverConfigBuilder for MultiSolverBuilder {
-    fn new() -> Box<Self>
-    where
-        Self: Sized,
-    {
-        Box::new(MultiSolverBuilder {})
-    }
-
-    fn name(&self) -> &'static str {
-        "Multiple solvers"
-    }
-
-    fn description(&self) -> &'static str {
-        "This option allows you to use different solvers for different identifiers"
-    }
-
-    fn category(&self) -> SolverCategory {
-        SolverCategory::Advanced
-    }
-
-    fn preference(&self) -> usize {
-        200
-    }
-
-    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
-        true
-    }
-
-    fn build_interactive(
-        &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        println!(
-            "Multiple solvers can be specified directly in TOML format. A temporary file will be opened containing \
- a template that you can fill out. Please refer to the documentation at TODO for more information about the solvers."
-        );
-        let domain_template = domains
-            .iter()
-            .map(|id| format!("\"{id}\" = \"example-solver\""))
-            .join("\n");
-        let template = format!(
-            "[domains]
-# This section contains the domain names of your certificate.
-# Each line has the domain name (quoted) on the left hand side, and the name of a solver on the right hand side.
-# Every domain can have a different solver, or multiple domains can share a single solver configuration.
-{domain_template}
-
-# Every solver configuration is specified as solver.<solver-name>
-[solver.example-solver]
-# The solver is named \"example-solver\" and has the configuration as specified below
-# Refer to TODO for documentation on the available solver types
-type = \"webroot\"
-# Refer to TODO about the available configuration options per solver
-web_index = \"/var/www/html\""
-        );
-        let raw_toml = Editor::new("Solver configuration:")
-            .with_file_extension(".toml")
-            .with_predefined_text(&template)
-            .with_help_message(
-                "This prompt will open your default text editor to make changes to the provided template.",
-            )
-            .with_validator(move |content: &str| Ok(validate_solver_toml(&domains, content)))
-            .prompt()
-            .context("No answer to solver prompt")?;
-        let toml = toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
-        let domains_table = toml
-            .get("domains")
-            .and_then(|domains| domains.as_table())
-            .ok_or(anyhow!("No domains specified"))?;
-        let mut domains = vec![];
-        for (domain, solver) in domains_table {
-            let solver_identifier = solver
-                .as_str()
-                .map(ToString::to_string)
-                .ok_or(anyhow!("Domain value for key {domain} must be a string"))?;
-            domains.push(IdentifierConfiguration {
-                domain: domain.to_string(),
-                solver_identifier,
-            });
+impl Display for SolverChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SolverChoice::SingleSolver(solver) => {
+                write!(f, "{solver}")
+            }
+            SolverChoice::MultipleSolvers => write!(
+                f,
+                "{} {} - {}",
+                "[ADVANCED]".blue(),
+                "Multiple solvers".dark_green(),
+                "This option allows you to use different solvers for different identifiers".reset()
+            ),
         }
-        let solvers_table = toml
-            .get("solver")
-            .and_then(|solvers| solvers.as_table())
-            .ok_or(anyhow!("No solvers specified"))?;
-        let mut solvers = HashMap::new();
-        for (solver, config) in solvers_table {
-            let solver_config = config
-                .as_table()
-                .map(|config| toml_edit::DocumentMut::from(config.clone()))
-                .ok_or(anyhow!("Solver {solver} is not a table"))?;
-            let solver_config: SolverConfiguration = toml_edit::de::from_document(solver_config)
-                .context(format!("Parsing solver configuration for {solver}"))?;
-            solvers.insert(solver.to_string(), solver_config);
-        }
-
-        let mut authorizers = Vec::new();
-        for identifier_config in domains {
-            let solver_name = identifier_config.solver_identifier.as_str();
-            let config = solvers
-                .get(solver_name)
-                .ok_or(anyhow!("Solver {solver_name} not found"))?;
-            let solver = config.clone().to_solver()?;
-            let authorizer = Authorizer::new_boxed(
-                Identifier::from(identifier_config.domain),
-                Some(solver_name.to_string()),
-                solver,
-            );
-            authorizers.push(authorizer);
-        }
-        Ok(authorizers.into())
-    }
-
-    fn build_from_command_line(
-        &self,
-        _cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        unimplemented!("Not supported by interactive multi-solver builder")
-    }
-
-    fn get_command_line(&self) -> Command {
-        unimplemented!("Not supported by interactive multi-solver builder")
     }
 }
 

@@ -1,5 +1,3 @@
-extern crate core;
-
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
@@ -8,8 +6,7 @@ use crate::acme::object::{
     OrderStatus,
 };
 use crate::cert::ParsedX509Certificate;
-use crate::challenge_solver::{ChallengeSolver, KeyAuthorization};
-use crate::cli::AdvancedIssueConfiguration;
+use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, KeyAuthorization};
 use crate::config::{
     config_directory, AccountConfiguration, CertificateAuthorityConfiguration,
     CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, Configuration, MainConfiguration,
@@ -21,7 +18,6 @@ use crate::crypto::jws::JsonWebKey;
 use crate::pebble::pebble_root;
 use crate::util::humanize_duration_core;
 use anyhow::{anyhow, bail, Context, Error};
-use clap::{Args, Subcommand, ValueEnum};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
@@ -36,7 +32,6 @@ use time::error::ConversionRange;
 use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 use url::Url;
-use x509_parser::nom::HexDisplay;
 
 pub mod acme;
 pub mod cert;
@@ -54,6 +49,17 @@ pub mod util;
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 /// The maximum number of certificates we will parse in a PEM-array of certificates by default
 const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
+
+pub struct DomainSolverMap {
+    pub domains: HashMap<Identifier, String>,
+    pub solvers: HashMap<String, SolverConfiguration>,
+}
+
+impl From<(HashMap<Identifier, String>, HashMap<String, SolverConfiguration>)> for DomainSolverMap {
+    fn from((domains, solvers): (HashMap<Identifier, String>, HashMap<String, SolverConfiguration>)) -> Self {
+        Self { domains, solvers }
+    }
+}
 
 pub fn parse_duration(s: &str) -> Result<Duration, String> {
     cyborgtime::parse_duration(s).map_err(|e| format!("Invalid duration: {e}"))
@@ -94,12 +100,13 @@ impl Display for ParsedDuration {
     }
 }
 
+#[allow(clippy::missing_panics_doc)]
 pub fn current_time_truncated() -> time::OffsetDateTime {
     let now = time::OffsetDateTime::now_utc();
     now.replace_nanosecond(0).unwrap(/* unreachable */)
 }
 
-// TODO: must-staple option (Note: LE has deprecated it, so not exactly motivated to give this high priority)
+// TODO: must-staple option
 fn create_and_sign_csr(
     cert_key: &rcgen::KeyPair,
     identifiers: Vec<Identifier>,
@@ -179,55 +186,36 @@ impl Debug for Authorizer {
     }
 }
 
-pub fn build_cert_config<'a, I>(
-    name: String,
-    advanced: &AdvancedIssueConfiguration,
-    issuer: &AcmeIssuerWithAccount,
-    authorizers: I,
-) -> CertificateConfiguration
-where
-    I: Iterator<Item = &'a Authorizer>,
-{
-    let size_hint = authorizers.size_hint().0;
-    let mut domains = HashMap::with_capacity(size_hint);
-    let mut solvers: HashMap<String, SolverConfiguration> = HashMap::with_capacity(1);
-    for authorizer in authorizers {
-        let solver_config = authorizer.solver.config();
-        match authorizer.solver_name {
-            Some(ref solver_name) => {
-                domains.insert(authorizer.identifier.to_string(), solver_name.clone());
-                if !solvers.contains_key(solver_name) {
-                    solvers.insert(solver_name.clone(), solver_config);
-                }
+pub fn build_domain_solver_maps(
+    configs: Vec<DomainsWithSolverConfiguration>,
+) -> anyhow::Result<DomainSolverMap> {
+    let mut domains = HashMap::new();
+    let mut solvers = HashMap::new();
+    for solver_config in configs {
+        let solver_name = solver_config.solver_name.clone().unwrap_or_else(|| {
+            let base_solver_name = solver_config.config.name().to_string();
+            let mut i = 0;
+            let mut solver_name = base_solver_name.clone();
+            while solvers.contains_key(&solver_name) {
+                i += 1;
+                solver_name = format!("{base_solver_name}-{i}");
             }
-            None => {
-                if let Some((key, _)) = solvers.iter().find(|(_key, value)| **value == solver_config) {
-                    domains.insert(authorizer.identifier.to_string(), key.to_string());
-                } else {
-                    let base_solver_name = authorizer.solver.short_name().to_string();
-                    let mut i = 0;
-                    let mut solver_name = base_solver_name.clone();
-                    while solvers.contains_key(&solver_name) {
-                        i += 1;
-                        solver_name = format!("{base_solver_name}-{i}");
-                    }
-                    domains.insert(authorizer.identifier.to_string(), solver_name.clone());
-                    solvers.insert(solver_name, solver_config);
-                }
+            solver_name
+        });
+        if solvers
+            .insert(solver_name.clone(), solver_config.config.clone())
+            .is_some()
+        {
+            bail!("Duplicate solver name: {solver_name}");
+        };
+
+        for identifier in solver_config.domains {
+            if domains.insert(identifier.clone(), solver_name.clone()).is_some() {
+                bail!("Duplicate domain name: {identifier}");
             }
         }
     }
-    CertificateConfiguration {
-        display_name: name,
-        auto_renew: true,
-        reuse_key: advanced.reuse_key,
-        ca_identifier: issuer.issuer.config.identifier.clone(),
-        account_identifier: issuer.account.config.identifier.clone(),
-        key_type: advanced.key_type.unwrap_or_default().into(),
-        domains,
-        solvers,
-        lifetime: advanced.lifetime,
-    }
+    Ok((domains, solvers).into())
 }
 
 pub fn authorizers_from_config(config: CertificateConfiguration) -> anyhow::Result<Vec<Authorizer>> {
@@ -443,17 +431,18 @@ impl Certonaut {
         ca_id
     }
 
-    pub fn choose_cert_name_from_authorizers(&self, authorizers: &Vec<Authorizer>) -> String {
-        for authorizer in authorizers {
-            let name = authorizer.identifier.to_string();
+    pub fn choose_cert_name_from_domains<'a, I: Iterator<Item = &'a Identifier>>(&'a self, identifiers: I) -> String {
+        let identifiers = identifiers.sorted().collect::<Vec<_>>();
+        for identifier in &identifiers {
+            let name = identifier.to_string();
             let test_id = cert_id_from_display_name(&name);
             if !self.cert_list.contains_key(&test_id) {
                 return name;
             }
         }
-        // No free name in authorizers, so try something else
-        let base_name = if let Some(authorizer) = authorizers.first() {
-            authorizer.identifier.to_string()
+        // No free name in identifiers, so try something else
+        let base_name = if let Some(identifier) = identifiers.first() {
+            identifier.to_string()
         } else {
             "default".to_string()
         };
@@ -499,6 +488,24 @@ impl Certonaut {
             .remove(issuer_id)
             .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;
         config::save(&self.current_config()).context("Saving new configuration")?;
+        Ok(())
+    }
+
+    pub async fn issue_new(&self, cert_config: CertificateConfiguration) -> Result<(), Error> {
+        let cert_id = self.choose_cert_id_from_display_name(&cert_config.display_name);
+        let authorizers = authorizers_from_config(cert_config.clone())?;
+        let issuer = self.get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
+        let ca_name = &issuer.issuer.config.name;
+        let key_type = cert_config.key_type;
+        let cert_key = asymmetric::new_key(key_type)
+            .and_then(asymmetric::KeyPair::to_rcgen_keypair)
+            .context(format!("Could not generate certificate key with type {key_type}"))?;
+        let cert = issuer
+            .issue(&cert_key, cert_config.lifetime, authorizers)
+            .await
+            .context(format!("Issuing certificate with CA {ca_name}"))?;
+        println!("Got a certificate!");
+        config::save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         Ok(())
     }
 
@@ -754,7 +761,7 @@ pub struct AcmeIssuerWithAccount<'a> {
     pub account: &'a AcmeAccount,
 }
 
-impl<'a> AcmeIssuerWithAccount<'a> {
+impl AcmeIssuerWithAccount<'_> {
     async fn client(&self) -> Result<&AcmeClient, Error> {
         self.issuer.client().await
     }

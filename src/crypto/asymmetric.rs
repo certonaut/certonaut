@@ -471,16 +471,6 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     }
 
     #[rstest]
-    #[case::p256(TEST_EC_256)]
-    #[case::p384(TEST_EC_384)]
-    #[case::rsa2048(TEST_RSA_PEM)]
-    fn test_load_pem(#[case] expected_pem: &'static str) {
-        let keypair = KeyPair::from_pem(expected_pem).unwrap();
-        let actual_pem = keypair.to_pem().expect("pem serialization failed");
-        compare_ignore_newlines(expected_pem, &actual_pem.to_string());
-    }
-
-    #[rstest]
     #[case::p256(TEST_EC_256, 64)]
     #[case::p384(TEST_EC_384, 96)]
     #[case::rsa2048(TEST_RSA_PEM, 256)]

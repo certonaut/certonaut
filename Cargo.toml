@@ -3,8 +3,8 @@ name = "certonaut"
 version = "0.1.0"
 repository = "TODO"
 license = "MIT"
-edition = "2021"
-rust-version = "1.80.1"
+edition = "2024"
+rust-version = "1.85.0"
 
 [features]
 magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]

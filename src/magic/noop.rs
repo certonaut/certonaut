@@ -6,6 +6,7 @@ pub fn is_supported() -> bool {
     false
 }
 
+#[allow(clippy::unused_async)]
 pub async fn deploy_challenge(
     _http_challenge_parameters: HttpChallengeParameters,
     _cancellation_token: CancellationToken,

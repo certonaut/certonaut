@@ -1,17 +1,15 @@
 use crate::acme::object::{Identifier, InnerChallenge, Token};
-use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
+use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration, SolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
-use crate::{magic, AcmeIssuerWithAccount, Authorizer};
-use anyhow::Error;
+use crate::magic;
+use anyhow::{bail, Error};
 use async_trait::async_trait;
 use clap::{value_parser, Arg, Command};
-use crossterm::style::Stylize;
 use inquire::validator::Validation;
 use inquire::CustomType;
-use itertools::Itertools;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
@@ -142,53 +140,49 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn category(&self) -> SolverCategory;
     fn preference(&self) -> usize;
     fn supported(&self, domains: &HashSet<Identifier>) -> bool;
-    fn build_interactive(
-        &self,
-        issuer: &AcmeIssuerWithAccount,
-        issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<BuiltSolverConfiguration>;
+    fn build_interactive(&self, domains: HashSet<Identifier>) -> anyhow::Result<DomainsWithSolverConfiguration>;
     fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<BuiltSolverConfiguration>;
+    ) -> anyhow::Result<DomainsWithSolverConfiguration>;
     fn get_command_line(&self) -> Command;
 }
 
 #[derive(Debug)]
-pub enum BuiltSolverConfiguration {
-    SingleConfig((HashSet<Identifier>, SolverConfiguration)),
-    MultipleConfigs(Vec<Authorizer>),
+pub struct DomainsWithSolverConfiguration {
+    pub domains: HashSet<Identifier>,
+    pub config: SolverConfiguration,
+    pub solver_name: Option<String>,
 }
 
-impl From<(HashSet<Identifier>, SolverConfiguration)> for BuiltSolverConfiguration {
-    fn from(value: (HashSet<Identifier>, SolverConfiguration)) -> Self {
-        Self::SingleConfig(value)
-    }
-}
-
-impl From<Vec<Authorizer>> for BuiltSolverConfiguration {
-    fn from(value: Vec<Authorizer>) -> Self {
-        Self::MultipleConfigs(value)
-    }
-}
-
-impl TryInto<Vec<Authorizer>> for BuiltSolverConfiguration {
-    type Error = Error;
-
-    fn try_into(self) -> Result<Vec<Authorizer>, Self::Error> {
-        Ok(match self {
-            BuiltSolverConfiguration::SingleConfig((domains, config)) => {
-                let mut authorizers = Vec::with_capacity(domains.len());
-                for domain in domains.into_iter().sorted() {
-                    authorizers.push(Authorizer::new_boxed(domain, None, config.clone().to_solver()?));
-                }
-                authorizers
-            }
-            BuiltSolverConfiguration::MultipleConfigs(authorizer) => authorizer,
-        })
-    }
-}
+// impl From<(HashSet<Identifier>, SolverConfiguration)> for BuiltSolverConfiguration {
+//     fn from(value: (HashSet<Identifier>, SolverConfiguration)) -> Self {
+//         Self::SingleConfig(value)
+//     }
+// }
+//
+// impl From<Vec<Authorizer>> for BuiltSolverConfiguration {
+//     fn from(value: Vec<Authorizer>) -> Self {
+//         Self::MultipleConfigs(value)
+//     }
+// }
+//
+// impl TryInto<Vec<Authorizer>> for BuiltSolverConfiguration {
+//     type Error = Error;
+//
+//     fn try_into(self) -> Result<Vec<Authorizer>, Self::Error> {
+//         Ok(match self {
+//             BuiltSolverConfiguration::SingleConfig((domains, config)) => {
+//                 let mut authorizers = Vec::with_capacity(domains.len());
+//                 for domain in domains.into_iter().sorted() {
+//                     authorizers.push(Authorizer::new_boxed(domain, None, config.clone().to_solver()?));
+//                 }
+//                 authorizers
+//             }
+//             BuiltSolverConfiguration::MultipleConfigs(authorizer) => authorizer,
+//         })
+//     }
+// }
 
 struct NullSolverBuilder;
 
@@ -218,24 +212,23 @@ with the CA. Will cause failures otherwise."
         true
     }
 
-    fn build_interactive(
-        &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        Ok((domains, SolverConfiguration::Null(NullSolverConfiguration {})).into())
+    fn build_interactive(&self, domains: HashSet<Identifier>) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        Ok(DomainsWithSolverConfiguration {
+            domains,
+            config: SolverConfiguration::Null(NullSolverConfiguration {}),
+            solver_name: None,
+        })
     }
 
     fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        Ok((
-            cmd_line_config.base.domains.into_iter().collect(),
-            SolverConfiguration::Null(NullSolverConfiguration {}),
-        )
-            .into())
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        Ok(DomainsWithSolverConfiguration {
+            domains: cmd_line_config.base.domains.into_iter().collect(),
+            config: SolverConfiguration::Null(NullSolverConfiguration {}),
+            solver_name: None,
+        })
     }
 
     fn get_command_line(&self) -> Command {
@@ -270,28 +263,23 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         cfg!(debug_assertions)
     }
 
-    fn build_interactive(
-        &self,
-        _issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        Ok((
+    fn build_interactive(&self, domains: HashSet<Identifier>) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        Ok(DomainsWithSolverConfiguration {
             domains,
-            SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
-        )
-            .into())
+            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+            solver_name: None,
+        })
     }
 
     fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        Ok((
-            cmd_line_config.base.domains.into_iter().collect(),
-            SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
-        )
-            .into())
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        Ok(DomainsWithSolverConfiguration {
+            domains: cmd_line_config.base.domains.into_iter().collect(),
+            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+            solver_name: None,
+        })
     }
 
     fn get_command_line(&self) -> Command {
@@ -326,59 +314,55 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         magic::is_supported()
     }
 
-    fn build_interactive(
-        &self,
-        issuer: &AcmeIssuerWithAccount,
-        _issue_command: &IssueCommand,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        let custom_port = if issuer.issuer.config.public {
-            // Public CA's always adhere to RFC8555 and validate on port 80
-            None
-        } else {
-            let ca_name = issuer.issuer.config.name.clone().green();
-            println!("Non-public CA's such as {ca_name} sometimes do not adhere to RFC8555 and validate on a port other than port 80.");
-            println!("If this is the case for {ca_name}, you can enter the port number here");
-            CustomType::<u16>::new("Which port number does the CA validate HTTP-01 challenges on?")
-                .with_validator(|port: &u16| {
-                    Ok(if *port > 0 {
-                        Validation::Valid
-                    } else {
-                        Validation::Invalid("Port 0 is not valid".into())
-                    })
+    fn build_interactive(&self, domains: HashSet<Identifier>) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        if !magic::is_supported() {
+            bail!("The magic solver is not supported by your system");
+        }
+
+        println!("Some (non-public) CAs do not adhere to RFC8555 and validate on a port other than port 80.");
+        println!("This may also apply if you have NAT port-mapped your external port 80 to another internal port on this host.");
+        println!("If any of the above applies, you can enter the port number here");
+        let port = CustomType::<u16>::new("Which port number does the CA validate HTTP-01 challenges on?")
+            .with_validator(|port: &u16| {
+                Ok(if *port > 0 {
+                    Validation::Valid
+                } else {
+                    Validation::Invalid("Port 0 is not valid".into())
                 })
-                .with_error_message("Must be a port number")
-                .with_help_message("Enter the port number, or press ESC to use the default")
-                .prompt_skippable()?
-        };
-        Ok((
+            })
+            .with_error_message("Must be a port number")
+            .with_help_message("Enter the port number, or press ESC to use the default")
+            .prompt_skippable()?;
+        Ok(DomainsWithSolverConfiguration {
             domains,
-            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
-                validation_port: custom_port,
-            }),
-        )
-            .into())
+            config: SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port: port }),
+            solver_name: None,
+        })
     }
 
     fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<BuiltSolverConfiguration> {
-        let validation_port = cmd_line_config
-            .matches
-            .get_one::<u16>("validation_port")
-            .map(|port| *port);
-        Ok((
-            cmd_line_config.base.domains.into_iter().collect(),
-            SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port }),
-        )
-            .into())
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        if !magic::is_supported() {
+            bail!("The magic solver is not supported by your system");
+        }
+
+        let validation_port = cmd_line_config.matches.get_one::<u16>("validation_port").copied();
+        if matches!(validation_port, Some(0)) {
+            bail!("Port 0 is not valid");
+        }
+        Ok(DomainsWithSolverConfiguration {
+            domains: cmd_line_config.base.domains.into_iter().collect(),
+            config: SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port }),
+            solver_name: None,
+        })
     }
 
     fn get_command_line(&self) -> Command {
+        // TODO: help text
         Command::new("auto").about(self.description()).arg(
             Arg::new("validation_port")
-                .short('p')
                 .long("validation-port")
                 .value_parser(value_parser!(u16)),
         )

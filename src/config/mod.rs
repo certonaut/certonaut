@@ -274,8 +274,16 @@ impl SolverConfiguration {
         Ok(match self {
             SolverConfiguration::Null(solver) => NullSolver::from_config(solver),
             SolverConfiguration::PebbleHttp(solver) => ChallengeTestHttpSolver::from_config(solver),
-            SolverConfiguration::MagicHttp(solver) => MagicHttpSolver::from_config(solver),
+            SolverConfiguration::MagicHttp(solver) => MagicHttpSolver::try_from_config(solver)?,
         })
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            SolverConfiguration::Null(_) => "null",
+            SolverConfiguration::PebbleHttp(_) => "pebble-http",
+            SolverConfiguration::MagicHttp(_) => "magic-http",
+        }
     }
 }
 
