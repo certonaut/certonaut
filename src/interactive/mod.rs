@@ -2,8 +2,8 @@ use crate::acme::object::Identifier;
 use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration, IdentifierConfiguration,
-    SolverConfiguration,
+    AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
+    CertificateConfiguration, IdentifierConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
@@ -59,7 +59,6 @@ impl InteractiveService {
         let initial_config = CertificateConfiguration {
             display_name: cert_name,
             auto_renew: true,
-            reuse_key: issue_cmd.advanced.reuse_key,
             ca_identifier: initial_issuer,
             account_identifier: initial_account,
             key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
@@ -68,7 +67,11 @@ impl InteractiveService {
                 .map(|(id, solver)| (id.to_string(), solver))
                 .collect(),
             solvers,
-            lifetime: issue_cmd.advanced.lifetime,
+            advanced: AdvancedCertificateConfiguration {
+                reuse_key: issue_cmd.advanced.reuse_key,
+                lifetime: issue_cmd.advanced.lifetime,
+                profile: issue_cmd.advanced.profile,
+            },
         };
         let cert_config = self.interactive_edit_cert_configuration(initial_config).await?;
         self.client.issue_new(cert_config).await
@@ -243,7 +246,17 @@ impl InteractiveService {
                 &|config: &CertificateConfiguration| config.domains.keys().sorted().join(", ").into(),
                 |mut config: CertificateConfiguration| {
                     async {
-                        let new_domains = Self::user_ask_cert_domains(config.domains.keys().map_into())?;
+                        let sorted_domains: Vec<_> = config
+                            .domains
+                            .keys()
+                            .map(|domain| Identifier::from(domain.clone()))
+                            .sorted()
+                            .collect();
+                        let new_domains = Self::user_ask_cert_domains(sorted_domains.iter())?;
+                        if new_domains.iter().sorted().eq(sorted_domains.iter()) {
+                            // No change
+                            return Ok(config);
+                        }
                         let lock = self_locked.read().await;
                         let cert_name = lock.client.choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
@@ -261,7 +274,29 @@ impl InteractiveService {
             ),
             ClosureEditor::new(
                 "Solvers",
-                &|config: &CertificateConfiguration| config.solvers.keys().sorted().join(", ").into(),
+                &|config: &CertificateConfiguration| {
+                    config
+                        .solvers
+                        .keys()
+                        .sorted()
+                        .map(|solver| {
+                            let domains = config
+                                .domains
+                                .iter()
+                                .filter_map(|(candidate_domain, candidate_solver)| {
+                                    if solver == candidate_solver {
+                                        Some(candidate_domain)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .sorted()
+                                .join(", ");
+                            format!("{solver} ({domains})")
+                        })
+                        .join(", ")
+                        .into()
+                },
                 |mut config: CertificateConfiguration| {
                     async {
                         let domains = config
@@ -312,8 +347,39 @@ impl InteractiveService {
                 },
             ),
             ClosureEditor::new(
+                "Advanced",
+                &|_config: &CertificateConfiguration| "View/Change advanced options".into(),
+                |mut config| {
+                    async {
+                        let ca_identifier = config.ca_identifier.clone();
+                        let account_identifier = config.account_identifier.clone();
+                        let new_advanced = InteractiveConfigEditor::new(
+                            "Select an option",
+                            config.advanced,
+                            Self::cert_edit_advanced_inner_editors(ca_identifier, account_identifier, self_locked),
+                            |_config| async { Ok(true) }.boxed(),
+                        )
+                        .edit_config()
+                        .await?;
+                        config.advanced = new_advanced;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+        ]
+        .into_iter()
+    }
+
+    fn cert_edit_advanced_inner_editors<'a>(
+        ca: String,
+        account: String,
+        self_locked: &'a RwLock<&'a mut Self>,
+    ) -> impl Iterator<Item = ClosureEditor<'a, AdvancedCertificateConfiguration>> {
+        [
+            ClosureEditor::new(
                 "Requested Lifetime",
-                &|config: &CertificateConfiguration| match config.lifetime {
+                &|config: &AdvancedCertificateConfiguration| match config.lifetime {
                     None => "Not specified".into(),
                     Some(lifetime) => humanize_duration(lifetime.try_into().unwrap_or(time::Duration::MAX)).into(),
                 },
@@ -327,14 +393,27 @@ impl InteractiveService {
             ),
             ClosureEditor::new(
                 "Profile",
-                &|config: &CertificateConfiguration| (&config.ca_identifier).into(),
-                |config: CertificateConfiguration| {
-                    async {
+                &|config: &AdvancedCertificateConfiguration| {
+                    config.profile.as_deref().unwrap_or("Not specified").into()
+                },
+                move |mut config| {
+                    let ca = ca.clone();
+                    let account = account.clone();
+                    async move {
                         let lock = self_locked.read().await;
-                        let issuer = lock
-                            .client
-                            .get_issuer_with_account(&config.ca_identifier, &config.account_identifier)?;
-                        let _profile = Self::user_ask_cert_profile(&issuer, None).await?;
+                        let issuer = lock.client.get_issuer_with_account(&ca, &account)?;
+                        config.profile = Self::user_ask_cert_profile(&issuer, config.profile).await?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Reuse Key",
+                &|config: &AdvancedCertificateConfiguration| if config.reuse_key { "yes" } else { "no" }.into(),
+                |mut config| {
+                    async {
+                        config.reuse_key = Self::user_ask_key_reuse(config.reuse_key)?;
                         Ok(config)
                     }
                     .boxed()
@@ -377,6 +456,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
         // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
         let domains_with_solvers = match Select::new("Select a solver to authenticate all identifiers:", solver_options)
+            // TODO: Allow to skip prompt in case we already have solvers (no change)
             .prompt()
             .context("No answer to solver prompt")?
         {
@@ -433,6 +513,15 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(key_type)
     }
 
+    fn user_ask_key_reuse(current: bool) -> Result<bool, Error> {
+        println!("In certain setups, you want to reuse the same keypair in renewed certificates.");
+        println!("This is generally not advised unless you really need it.");
+        Ok(Confirm::new("Reuse the same keypair in renewed certificates")
+            .with_default(current)
+            .prompt_skippable()?
+            .unwrap_or(current))
+    }
+
     fn user_ask_cert_name(current: String) -> Result<String, Error> {
         println!("If you want, you can give your new certificate a name to identify it later:");
         let cert_name = Text::new("Name your certificate:")
@@ -463,24 +552,27 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         if !issue_cmd.solver_configuration.is_empty() {
             return Ok(HashSet::new());
         }
-        Self::user_ask_cert_domains(std::iter::Empty::default())
+        Self::user_ask_cert_domains(std::iter::empty())
     }
 
-    fn user_ask_cert_domains<I: Iterator<Item = String>>(mut current: I) -> Result<HashSet<Identifier>, Error> {
-        let placeholder = if current.size_hint().0 == 0 {
-            "example.com".to_string()
+    fn user_ask_cert_domains<'a, I: Iterator<Item = &'a Identifier>>(current: I) -> Result<HashSet<Identifier>, Error> {
+        let current = current.sorted().join(", ");
+        let mut prompt = Text::new("Enter the domain name(s) for the new certificate:");
+        prompt = if current.is_empty() {
+            prompt.with_placeholder("example.com")
         } else {
-            current.join(", ")
+            prompt.with_initial_value(&current)
         };
-        let domains_string = Text::new("Enter the domain name(s) for the new certificate:")
-            .with_placeholder(&placeholder)
+        let domains_string = prompt
             .with_help_message("Separate multiple names with spaces, commas, or both.")
             .with_validator(|input: &str| {
                 if input.trim().is_empty() {
                     return Ok(Validation::Invalid("Domain cannot be empty".into()));
                 }
                 if input.split(',').any(|input| input.trim().is_empty()) {
-                    return Ok(Validation::Invalid(format!("Domain {input} cannot be empty").into()));
+                    return Ok(Validation::Invalid(
+                        format!("Domain {input} contains empty component").into(),
+                    ));
                 }
                 if input
                     .split_whitespace()
@@ -493,8 +585,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 }
                 Ok(Validation::Valid)
             })
-            .prompt()
-            .context("No answer to domain prompt")?;
+            .prompt_skippable()
+            .context("No answer to domain prompt")?
+            .unwrap_or(current);
         let mut domains = domains_string
             .split_whitespace()
             .flat_map(|s| s.split(','))

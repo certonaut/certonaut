@@ -139,7 +139,7 @@ impl RenewTask {
     ) -> anyhow::Result<()> {
         let cert_name = &cert_config.display_name;
         info!("Renewing certificate {cert_name} at CA {}", issuer.issuer.config.name);
-        let cert_key = if cert_config.reuse_key {
+        let cert_key = if cert_config.advanced.reuse_key {
             let key_file = config::certificate_directory(cert_id).join("key.pem");
             crypto::asymmetric::KeyPair::load_from_disk(
                 File::open(key_file).context("Opening existing certificate private key file")?,
@@ -150,7 +150,7 @@ impl RenewTask {
             crypto::asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?
         };
         let authorizers = authorizers_from_config(cert_config.clone())?;
-        let renewed = issuer.issue(&cert_key, cert_config.lifetime, authorizers).await?;
+        let renewed = issuer.issue(&cert_key, cert_config.advanced.lifetime, authorizers).await?;
         config::save_certificate_and_config(cert_id, cert_config, &cert_key, &renewed)?;
         Ok(())
     }

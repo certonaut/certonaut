@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::fmt::Display;
 
 #[async_trait]
-pub trait ConfigElementEditor<C: Send + Sync> {
+pub trait ConfigElementEditor<C: Send + Sync>: Send + Sync {
     fn get_name(&self) -> &str;
     fn get_value<'a>(&'a self, config: &'a C) -> Cow<'a, str>;
     async fn edit(&mut self, config: C) -> anyhow::Result<C>;

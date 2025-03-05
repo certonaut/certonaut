@@ -501,7 +501,7 @@ impl Certonaut {
             .and_then(asymmetric::KeyPair::to_rcgen_keypair)
             .context(format!("Could not generate certificate key with type {key_type}"))?;
         let cert = issuer
-            .issue(&cert_key, cert_config.lifetime, authorizers)
+            .issue(&cert_key, cert_config.advanced.lifetime, authorizers)
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!("Got a certificate!");
@@ -646,7 +646,7 @@ impl Certonaut {
             println!("Account ID: {}", cert.account_identifier);
             println!("Key Type: {}", cert.key_type);
             println!("Renew disabled: {}", if cert.auto_renew { "no" } else { "yes" });
-            println!("Key reuse: {}", if cert.reuse_key { "yes" } else { "no" });
+            println!("Key reuse: {}", if cert.advanced.reuse_key { "yes" } else { "no" });
 
             let mut cert_file = config::certificate_directory(&cert_id);
             cert_file.push("fullchain.pem");

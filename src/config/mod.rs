@@ -103,7 +103,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
                 return match e.kind() {
                     std::io::ErrorKind::NotFound => Ok(certificates),
                     _ => Err(e.into()),
-                }
+                };
             }
         };
         for dir_entry in cert_dir_iter.filter_map(Result::ok) {
@@ -228,7 +228,6 @@ pub struct CertificateConfiguration {
     #[serde(rename = "name")]
     pub display_name: String,
     pub auto_renew: bool,
-    pub reuse_key: bool,
     #[serde(rename = "ca")]
     pub ca_identifier: String,
     #[serde(rename = "account")]
@@ -238,7 +237,16 @@ pub struct CertificateConfiguration {
     pub domains: HashMap<String, String>,
     #[serde(rename = "solver")]
     pub solvers: HashMap<String, SolverConfiguration>,
-    pub lifetime: Option<Duration>, // TODO: installer configuration
+    #[serde(flatten)]
+    pub advanced: AdvancedCertificateConfiguration,
+    // TODO: installer configuration
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdvancedCertificateConfiguration {
+    pub reuse_key: bool,
+    pub lifetime: Option<Duration>,
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
