@@ -12,7 +12,7 @@
 // Certain features are only unlocked by the kernel if the program declares a GPL-compatible license.
 // This license only applies to the BPF program(s), but not necessarily to the userspace program.
 // TODO: Determine the license we want to use here.
-char LICENSE[] SEC("license") = "Proprietary"; // We're not actually propretiary - this file is licensed under the same conditions as the main project.
+char LICENSE[] SEC("license") = "Proprietary"; // We're not actually proprietary - this file is licensed under the same conditions as the main project.
 // However, we need to tell the kernel that we're not GPLv2.
 
 // This map holds references to the socket where the HTTP-01 challenge solver listens on.
