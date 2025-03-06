@@ -44,8 +44,8 @@ pub struct ChallengeTestHttpSolver {
 impl ChallengeTestHttpSolver {
     pub fn from_config(_config: PebbleHttpSolverConfiguration) -> Box<Self> {
         Box::new(Self {
-            http: Default::default(),
             challenge: None,
+            ..Self::default()
         })
     }
 }

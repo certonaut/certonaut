@@ -206,8 +206,6 @@ pub async fn deploy_challenge(
 ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
     let guard = SOLVER_LOCK.lock().await;
     let challenge_port = params.challenge_port;
-    // Note to self: The final solver needs to somehow lock to ensure that on parallel issuance, we don't
-    // spawn multiple solvers at the same time that all fight for the socket redirection.
 
     // Dualstack sockets may not work if IPv6 is disabled, or if the platform sets ipv6-only flags by default
     let ipv4_solver = TcpListener::bind(("127.0.0.1", 0))
