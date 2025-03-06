@@ -103,9 +103,8 @@ impl ChallengeSolver for MagicHttpSolver {
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
         match self.inner {
             Some(data) => {
-                // Could also drop the guard, but this is more explicit
-                let cancellation = data.cancellation.disarm();
-                cancellation.cancel();
+                // Cancel the task
+                drop(data.cancellation);
                 Ok(data.task.await??)
             }
             None => {
