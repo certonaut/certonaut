@@ -3,20 +3,20 @@ use crate::acme::error::{Error, RateLimitError};
 use crate::acme::http::HttpClient;
 use crate::acme::http::RelationLink;
 use crate::acme::object::{
-    Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Deactivation, Directory, EmptyObject,
-    FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
+    Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Deactivation, Directory,
+    EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
+use crate::crypto::jws::{EMPTY_PAYLOAD, JsonWebKey, ProtectedHeader};
 use crate::util::serde_helper::PassthroughBytes;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::de::value::BytesDeserializer;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::de::value::BytesDeserializer;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
@@ -66,7 +66,10 @@ pub struct AcmeClient {
 
 impl AcmeClient {
     async fn try_new(builder: AcmeClientBuilder) -> ProtocolResult<Self> {
-        let http_client = builder.http_client.ok_or_else(HttpClient::try_new).or_else(|e| e)?;
+        let http_client = builder
+            .http_client
+            .ok_or_else(HttpClient::try_new)
+            .or_else(|e| e)?;
         // TODO: Retry this or prefer fast fail when directory is invalid?
         let directory_response = http_client.get(builder.server_url).await?;
         let directory = match directory_response.status() {
@@ -90,7 +93,10 @@ impl AcmeClient {
             }
 
             // Ask ACME server for new nonce, retrying if necessary
-            let response = self.http_client.head(self.directory.new_nonce.clone()).await?;
+            let response = self
+                .http_client
+                .head(self.directory.new_nonce.clone())
+                .await?;
             if let Some(nonce) = HttpClient::extract_nonce(&response) {
                 return Ok(nonce);
             }
@@ -148,7 +154,8 @@ impl AcmeClient {
                     // This condition is resolved at compile-time, depending on `R`.
                     let body: R = if TypeId::of::<R>() == TypeId::of::<PassthroughBytes>() {
                         let bytes = response.bytes().await?;
-                        let deserializer = BytesDeserializer::<'_, serde::de::value::Error>::new(&bytes);
+                        let deserializer =
+                            BytesDeserializer::<'_, serde::de::value::Error>::new(&bytes);
                         R::deserialize(deserializer)?
                     } else {
                         response.json().await?
@@ -218,7 +225,9 @@ impl AcmeClient {
             terms_of_service_agreed: options.terms_of_service_agreed,
             external_account_binding: None,
         };
-        let response = self.post_with_retry(target_url, &jwk, Some(&payload)).await?;
+        let response = self
+            .post_with_retry(target_url, &jwk, Some(&payload))
+            .await?;
         let account_url = response.location.ok_or(Error::ProtocolViolation(
             "ACME server did not provide an account URL for created account",
         ))?;
@@ -227,14 +236,26 @@ impl AcmeClient {
         Ok((account_key, account_url, created_account))
     }
 
-    pub async fn fetch_account(&self, account_key: &JsonWebKey, account_url: &Url) -> ProtocolResult<Account> {
-        let response = self.post_with_retry(account_url, account_key, EMPTY_PAYLOAD).await?;
+    pub async fn fetch_account(
+        &self,
+        account_key: &JsonWebKey,
+        account_url: &Url,
+    ) -> ProtocolResult<Account> {
+        let response = self
+            .post_with_retry(account_url, account_key, EMPTY_PAYLOAD)
+            .await?;
         Ok(response.body)
     }
 
-    pub async fn new_order(&self, account_key: &JsonWebKey, request: &NewOrderRequest) -> ProtocolResult<(Url, Order)> {
+    pub async fn new_order(
+        &self,
+        account_key: &JsonWebKey,
+        request: &NewOrderRequest,
+    ) -> ProtocolResult<(Url, Order)> {
         let target_url = &self.get_directory().new_order;
-        let response = self.post_with_retry(target_url, account_key, Some(request)).await?;
+        let response = self
+            .post_with_retry(target_url, account_key, Some(request))
+            .await?;
         let order_url = response.location.ok_or(Error::ProtocolViolation(
             "ACME server did not provide an order URL for created order",
         ))?;
@@ -242,13 +263,25 @@ impl AcmeClient {
         Ok((order_url, order))
     }
 
-    pub async fn get_order(&self, account_key: &JsonWebKey, order_url: &Url) -> ProtocolResult<Order> {
-        let response = self.post_with_retry(order_url, account_key, EMPTY_PAYLOAD).await?;
+    pub async fn get_order(
+        &self,
+        account_key: &JsonWebKey,
+        order_url: &Url,
+    ) -> ProtocolResult<Order> {
+        let response = self
+            .post_with_retry(order_url, account_key, EMPTY_PAYLOAD)
+            .await?;
         Ok(response.body)
     }
 
-    pub async fn get_authorization(&self, account_key: &JsonWebKey, authz_url: &Url) -> ProtocolResult<Authorization> {
-        let response = self.post_with_retry(authz_url, account_key, EMPTY_PAYLOAD).await?;
+    pub async fn get_authorization(
+        &self,
+        account_key: &JsonWebKey,
+        authz_url: &Url,
+    ) -> ProtocolResult<Authorization> {
+        let response = self
+            .post_with_retry(authz_url, account_key, EMPTY_PAYLOAD)
+            .await?;
         Ok(response.body)
     }
 
@@ -267,10 +300,17 @@ impl AcmeClient {
             .map(|link| link.url)
             .collect();
         let pem = response.body;
-        Ok(DownloadedCertificate { pem, alternate_chains })
+        Ok(DownloadedCertificate {
+            pem,
+            alternate_chains,
+        })
     }
 
-    pub async fn validate_challenge(&self, account_key: &JsonWebKey, challenge_url: &Url) -> ProtocolResult<Challenge> {
+    pub async fn validate_challenge(
+        &self,
+        account_key: &JsonWebKey,
+        challenge_url: &Url,
+    ) -> ProtocolResult<Challenge> {
         // TODO: if already valid, returns error
         let response = self
             .post_with_retry(challenge_url, account_key, Some(&EmptyObject {}))
@@ -307,12 +347,15 @@ impl AcmeClient {
             }
             let backoff = backoff_from_retry_after(retry_after);
             tokio::time::sleep(backoff).await;
-            let response = self.post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD).await?;
+            let response = self
+                .post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD)
+                .await?;
             challenge = response.body;
             retry_after = response.retry_after;
         }
         // Challenge never reached acceptable state
-        Err(last_error.unwrap_or_else(|| Error::TimedOut("Timed out waiting for challenge validation")))
+        Err(last_error
+            .unwrap_or_else(|| Error::TimedOut("Timed out waiting for challenge validation")))
     }
 
     pub async fn finalize_order(
@@ -333,7 +376,8 @@ impl AcmeClient {
         let retry_after = response.retry_after;
         let backoff = backoff_from_retry_after(retry_after);
         tokio::time::sleep(backoff).await;
-        self.poll_order(account_key, response.body, &order_url).await
+        self.poll_order(account_key, response.body, &order_url)
+            .await
     }
 
     pub async fn poll_order(
@@ -377,7 +421,11 @@ impl AcmeClient {
         Err(Error::TimedOut("Timed out waiting for order finalization"))
     }
 
-    pub async fn deactivate_account(&self, account_key: &JsonWebKey, account_url: &Url) -> ProtocolResult<Account> {
+    pub async fn deactivate_account(
+        &self,
+        account_key: &JsonWebKey,
+        account_url: &Url,
+    ) -> ProtocolResult<Account> {
         let response = self
             .post_with_retry(account_url, account_key, Some(&Deactivation::new()))
             .await?;
@@ -436,9 +484,9 @@ mod tests {
     use super::*;
     use bstr::ByteSlice;
     use httptest::matchers::request::method_path;
-    use httptest::matchers::{request, ExecutionContext, Matcher};
+    use httptest::matchers::{ExecutionContext, Matcher, request};
     use httptest::responders::{json_encoded, status_code};
-    use httptest::{all_of, cycle, Expectation, IntoTimes};
+    use httptest::{Expectation, IntoTimes, all_of, cycle};
     use serde_json::json;
     use std::fmt::Formatter;
     use std::fs::File;
@@ -458,7 +506,9 @@ mod tests {
             renewal_info: None,
             meta: None,
         };
-        server.expect(Expectation::matching(method_path("GET", "/")).respond_with(json_encoded(directory)));
+        server.expect(
+            Expectation::matching(method_path("GET", "/")).respond_with(json_encoded(directory)),
+        );
         server
     }
 

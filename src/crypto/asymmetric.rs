@@ -1,10 +1,10 @@
 use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
-use anyhow::{anyhow, bail, Context};
+use anyhow::{Context, anyhow, bail};
 use aws_lc_rs::encoding::AsBigEndian;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING};
 use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa, signature};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use pem::Pem;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -104,7 +104,8 @@ impl KeyPair {
         // PKCS#1, PKCS#8, and SEC1. Thus, prefer it over parsing the pem ourselves.
         // (It also solves the problem of finding the correct algorithm and curve. rcgen
         // solves this by just deserializing all possible options and checks what works).
-        let rcgen_keypair = rcgen::KeyPair::from_pem(pem).context("reading private key from pem failed")?;
+        let rcgen_keypair =
+            rcgen::KeyPair::from_pem(pem).context("reading private key from pem failed")?;
         let pkcs8_der = rcgen_keypair.serialized_der();
         Ok(match rcgen_keypair.algorithm() {
             alg if alg == &rcgen::PKCS_ECDSA_P256_SHA256 => {
@@ -222,7 +223,9 @@ impl AsymmetricKeyOperation for EcdsaKeyPair {
                     AsBigEndian::<encoding::EcPublicKeyUncompressedBin>::as_be_bytes(pub_key)
                         // The internet says all engines we care about support this (in fact, this is the
                         // default representation for many engines).
-                        .expect("BUG: Crypto engine failed to provide public key in uncompressed form");
+                        .expect(
+                            "BUG: Crypto engine failed to provide public key in uncompressed form",
+                        );
                 let pub_key_bytes = pub_key_uncompressed_binary.as_ref();
                 // Uncompressed public key - both coordinates present
                 assert_eq!(pub_key_bytes[0], 0x04);
@@ -255,7 +258,12 @@ impl AsymmetricKeyOperation for RsaKeyPair {
         let sig_len = self.keypair.public_modulus_len();
         let mut signature = vec![0; sig_len];
         self.keypair
-            .sign(&signature::RSA_PKCS1_SHA256, &random, message, &mut signature)
+            .sign(
+                &signature::RSA_PKCS1_SHA256,
+                &random,
+                message,
+                &mut signature,
+            )
             .map_err(|_| SignatureError::SignatureGeneration("RSA signing failed"))?;
         Ok(signature)
     }
@@ -308,12 +316,13 @@ pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
     Ok(match typ {
         KeyType::Ecdsa(curve) => {
             let algorithm = curve.get_jws_signing_algorithm();
-            let keypair =
-                signature::EcdsaKeyPair::generate(algorithm).map_err(|_| anyhow!("Could not generate key"))?;
+            let keypair = signature::EcdsaKeyPair::generate(algorithm)
+                .map_err(|_| anyhow!("Could not generate key"))?;
             KeyPair::Ecdsa(EcdsaKeyPair::new(curve, keypair))
         }
         KeyType::Rsa(size) => {
-            let keypair = signature::RsaKeyPair::generate(size).map_err(|_| anyhow!("Could not generate key"))?;
+            let keypair = signature::RsaKeyPair::generate(size)
+                .map_err(|_| anyhow!("Could not generate key"))?;
             KeyPair::Rsa(RsaKeyPair::new(keypair))
         }
     })
@@ -339,7 +348,9 @@ impl Display for SignatureError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match &self {
             SignatureError::Serialization(e) => write!(f, "JSON encoding failed: {e}"),
-            SignatureError::EncodingFailed(msg) | SignatureError::SignatureGeneration(msg) => write!(f, "{msg}"),
+            SignatureError::EncodingFailed(msg) | SignatureError::SignatureGeneration(msg) => {
+                write!(f, "{msg}")
+            }
         }
     }
 }
@@ -352,7 +363,7 @@ impl From<serde_json::Error> for SignatureError {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::asymmetric::{new_key, AsymmetricKeyOperation, Curve, KeyPair, KeyType};
+    use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType, new_key};
     use crate::crypto::jws::{JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
     use aws_lc_rs::rsa::KeySize;
     use rstest::*;
@@ -418,7 +429,10 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
         }
         let expected_len = expected_lines.len();
         let actual_len = actual_lines.len();
-        assert_eq!(expected_len, actual_len, "expected and actual do not have the same number of lines, expected has {expected_len} while actual has {actual_len}");
+        assert_eq!(
+            expected_len, actual_len,
+            "expected and actual do not have the same number of lines, expected has {expected_len} while actual has {actual_len}"
+        );
     }
 
     #[rstest]
@@ -434,7 +448,8 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[test]
     fn test_new_key_with_ecdsa_p256() {
         let mut file = temp_file();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256)).expect("Key generation should not have failed");
+        let keypair =
+            new_key(KeyType::Ecdsa(Curve::P256)).expect("Key generation should not have failed");
         keypair.save_to_disk(file.try_clone().unwrap()).unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         let _ = KeyPair::load_from_disk(file).unwrap();
@@ -454,7 +469,10 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::rsa2048(TEST_RSA_PEM, JsonWebKeyParameters::Rsa(JsonWebKeyRsa::new(
                 "liR3NaM-u9QqCKMaL5eaU7YD7ZeWwnNCjxhAnNeTm-G0adqb6eYVE3iey_0T_7BpIneDFMLwXJAPTlWKjtBRAGuIcMafgEkGt3CqSAQyAK-8HOuDFMEpswWxfg1yvqF_z-7pIOP2K-qD5F3UfTxd0-LEBQVCR9H4IPSIjo_N2pqB_3Y4Y38oN-RhIHD10ieTDYW5KR0lYowl1mWtnTZvV5XjeUW85FKJDpAXc21zMUHrAvowrodpWVEquHICdmxOfZTPpzPadRy7sA3jsSWQNr6SwsUHDAaeSyEwbG79iEc36vHqgD_GUtUjWne8oEQHzBK8S1UPNyCam_vaTquK6w".to_string(),
                 "AQAB".to_string())))]
-    fn test_to_jwk_parameters(#[case] test_pem: &'static str, #[case] expected_jwk: JsonWebKeyParameters) {
+    fn test_to_jwk_parameters(
+        #[case] test_pem: &'static str,
+        #[case] expected_jwk: JsonWebKeyParameters,
+    ) {
         let keypair = KeyPair::from_pem(test_pem).unwrap();
         let actual_jwk = keypair.to_jwk_parameters();
         assert_eq!(expected_jwk, actual_jwk, "JWK serialization not equal");
@@ -479,7 +497,11 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
         let keypair = KeyPair::from_pem(expected_pem).unwrap();
 
         let signature = keypair.sign(message).expect("signing must not fail");
-        assert_eq!(signature.len(), expected_length, "signature has invalid length");
+        assert_eq!(
+            signature.len(),
+            expected_length,
+            "signature has invalid length"
+        );
     }
 
     #[rstest]

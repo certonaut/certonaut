@@ -1,11 +1,13 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::Identifier;
-use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration, MainConfiguration};
+use certonaut::config::{
+    AccountConfiguration, CertificateAuthorityConfiguration, Configuration, MainConfiguration,
+};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
-use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver};
-use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
+use certonaut::pebble::{ChallengeTestHttpSolver, pebble_root};
+use certonaut::{AcmeAccount, Authorizer, Certonaut, config};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -40,7 +42,8 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
         main: MainConfiguration { ca_list: vec![] },
         #[allow(clippy::default_trait_access)]
         certificates: Default::default(),
-    })?;
+    })
+    .await?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),

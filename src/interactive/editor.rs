@@ -1,4 +1,4 @@
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use inquire::{Confirm, Select};
@@ -14,7 +14,8 @@ pub trait ConfigElementEditor<C: Send + Sync>: Send + Sync {
 
 pub type GetFunction<'a, C> = dyn Fn(&C) -> Cow<str> + Send + Sync + 'a;
 pub type EditFunction<'a, C> = dyn FnMut(C) -> BoxFuture<'a, anyhow::Result<C>> + Send + Sync + 'a;
-pub type ValidateFunction<'a, C> = dyn Fn(&C) -> BoxFuture<'a, anyhow::Result<bool>> + Send + Sync + 'a;
+pub type ValidateFunction<'a, C> =
+    dyn Fn(&C) -> BoxFuture<'a, anyhow::Result<bool>> + Send + Sync + 'a;
 
 pub struct ClosureEditor<'a, C> {
     name: String,

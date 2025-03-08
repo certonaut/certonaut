@@ -1,3 +1,4 @@
+use crate::CRATE_NAME;
 use crate::acme::client::DownloadedCertificate;
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
@@ -5,7 +6,6 @@ use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::CRATE_NAME;
 use anyhow::Error;
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
@@ -157,7 +157,11 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         self.backend.certificate_storage(id)
     }
 
-    pub fn save_certificate_config(&self, id: &str, config: &CertificateConfiguration) -> Result<(), Error> {
+    pub fn save_certificate_config(
+        &self,
+        id: &str,
+        config: &CertificateConfiguration,
+    ) -> Result<(), Error> {
         self.backend.save_certificate(id, config)?;
         Ok(())
     }
@@ -171,7 +175,11 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         Ok(())
     }
 
-    pub fn save_downloaded_certificate(&self, id: &str, cert: &DownloadedCertificate) -> Result<(), Error> {
+    pub fn save_downloaded_certificate(
+        &self,
+        id: &str,
+        cert: &DownloadedCertificate,
+    ) -> Result<(), Error> {
         let cert_dir = self.backend.certificate_storage(id);
         std::fs::create_dir_all(&cert_dir)?;
         let key_file = cert_dir.join("fullchain.pem");
@@ -349,7 +357,10 @@ impl DefaultConfig {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt".to_string(),
                             identifier: "lets-encrypt".to_string(),
-                            acme_directory: Url::from_str("https://acme-v02.api.letsencrypt.org/directory").unwrap(),
+                            acme_directory: Url::from_str(
+                                "https://acme-v02.api.letsencrypt.org/directory",
+                            )
+                            .unwrap(),
                             public: true,
                             testing: false,
                             default: true,
@@ -360,8 +371,10 @@ impl DefaultConfig {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt Staging".to_string(),
                             identifier: "lets-encrypt-staging".to_string(),
-                            acme_directory: Url::from_str("https://acme-staging-v02.api.letsencrypt.org/directory")
-                                .unwrap(),
+                            acme_directory: Url::from_str(
+                                "https://acme-staging-v02.api.letsencrypt.org/directory",
+                            )
+                            .unwrap(),
                             public: true,
                             testing: true,
                             default: false,

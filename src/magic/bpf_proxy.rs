@@ -1,6 +1,6 @@
-use crate::challenge_solver::HttpChallengeParameters;
 use crate::CRATE_NAME;
-use anyhow::{anyhow, Context};
+use crate::challenge_solver::HttpChallengeParameters;
+use anyhow::{Context, anyhow};
 use caps::{CapSet, Capability};
 use futures::future;
 use http::HeaderName;
@@ -30,7 +30,10 @@ const MINIMUM_KERNEL_MAJOR: usize = 5;
 const MINIMUM_KERNEL_MINOR: usize = 9;
 
 mod port_mapper {
-    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bpf/port_mapper.skel.rs"));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bpf/port_mapper.skel.rs"
+    ));
 }
 
 static HOP_BY_HOP_HEADERS: LazyLock<Vec<HeaderName>> = LazyLock::new(|| {
@@ -74,7 +77,8 @@ where
     }
 
     // Assumes we're not running containerized, otherwise we won't get called for the challenge port
-    let network_namespace = File::open("/proc/self/ns/net").context("Failed to load network namespace")?;
+    let network_namespace =
+        File::open("/proc/self/ns/net").context("Failed to load network namespace")?;
     let proxy_challenge_link = skeleton
         .progs
         .proxy_challenge
@@ -135,7 +139,9 @@ async fn proxy_http(
     let max_headers = request.headers().len() + 10;
 
     let mut client_builder = hyper::client::conn::http1::Builder::new();
-    client_builder.preserve_header_case(true).http09_responses(true);
+    client_builder
+        .preserve_header_case(true)
+        .http09_responses(true);
     // For performance reasons, only set this field if it exceeds hyper's default
     if max_headers > 100 {
         client_builder.max_headers(max_headers);
@@ -147,7 +153,9 @@ async fn proxy_http(
         }
     });
 
-    let mut req_builder = Request::builder().method(request.method()).uri(request.uri());
+    let mut req_builder = Request::builder()
+        .method(request.method())
+        .uri(request.uri());
 
     for (header_name, header_value) in request.headers() {
         if HOP_BY_HOP_HEADERS.contains(header_name) {
@@ -259,7 +267,9 @@ pub async fn deploy_challenge(
                     .keep_alive(false)
                     .serve_connection(
                         io,
-                        service_fn(|request| async { http_handler(&params, client_addr, request).await }),
+                        service_fn(|request| async {
+                            http_handler(&params, client_addr, request).await
+                        }),
                     )
                     .await
                 {
@@ -278,7 +288,8 @@ pub async fn deploy_challenge(
 }
 
 fn get_kernel_version() -> anyhow::Result<(usize, usize, usize)> {
-    let kernel_version = std::fs::read_to_string("/proc/sys/kernel/osrelease").context("Reading os-release")?;
+    let kernel_version =
+        std::fs::read_to_string("/proc/sys/kernel/osrelease").context("Reading os-release")?;
     let mut parts = kernel_version.split('.');
     let major = parts
         .next()
@@ -299,22 +310,30 @@ pub fn is_supported() -> bool {
     let (major, minor, _patch) = match get_kernel_version() {
         Ok(version) => version,
         Err(e) => {
-            warn!("Failed to determine kernel version, assuming system does not support magic-solver: {e:#}");
+            warn!(
+                "Failed to determine kernel version, assuming system does not support magic-solver: {e:#}"
+            );
             return false;
         }
     };
     if major < MINIMUM_KERNEL_MAJOR {
-        debug!("Kernel is way too old to support required BPF features (want {MINIMUM_KERNEL_MAJOR}.x, got {major}.x)");
+        debug!(
+            "Kernel is way too old to support required BPF features (want {MINIMUM_KERNEL_MAJOR}.x, got {major}.x)"
+        );
         return false;
     }
     if major == MINIMUM_KERNEL_MAJOR && minor < MINIMUM_KERNEL_MINOR {
-        debug!("Kernel is slightly too old to support required BPF features (want {MINIMUM_KERNEL_MAJOR}.{MINIMUM_KERNEL_MINOR}, got {major}.{minor})");
+        debug!(
+            "Kernel is slightly too old to support required BPF features (want {MINIMUM_KERNEL_MAJOR}.{MINIMUM_KERNEL_MINOR}, got {major}.{minor})"
+        );
         return false;
     }
 
     // Kernel is new enough to support BPF features, check permissions
     let capabilities = caps::read(None, CapSet::Effective).unwrap_or_default();
-    if !capabilities.contains(&Capability::CAP_BPF) || !capabilities.contains(&Capability::CAP_NET_ADMIN) {
+    if !capabilities.contains(&Capability::CAP_BPF)
+        || !capabilities.contains(&Capability::CAP_NET_ADMIN)
+    {
         debug!("Process lacks privileges to manipulate the network stack with BPF");
         return false;
     }

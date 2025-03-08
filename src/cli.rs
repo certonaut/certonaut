@@ -1,12 +1,12 @@
+use crate::CRATE_NAME;
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::config;
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::InteractiveService;
 use crate::renew::RenewService;
-use crate::CRATE_NAME;
-use crate::{parse_duration, Certonaut};
-use anyhow::{bail, Context};
+use crate::{Certonaut, parse_duration};
+use anyhow::{Context, bail};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;
@@ -58,8 +58,12 @@ pub enum Command {
 impl Display for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Command::Issue(_issue) => write!(f, "{}", CertificateCommand::Issue(IssueCommand::default())),
-            Command::Renew(_renew) => write!(f, "{}", CertificateCommand::Renew(RenewCommand::default())),
+            Command::Issue(_issue) => {
+                write!(f, "{}", CertificateCommand::Issue(IssueCommand::default()))
+            }
+            Command::Renew(_renew) => {
+                write!(f, "{}", CertificateCommand::Renew(RenewCommand::default()))
+            }
             Command::InteractiveIssuer => write!(f, "Manage CAs"),
             Command::InteractiveCertificate => write!(f, "Manage certificates"),
             Command::InteractiveAccount => write!(f, "Manage ACME accounts"),
@@ -88,7 +92,10 @@ impl Display for AccountCommand {
             AccountCommand::List => write!(f, "List accounts"),
             AccountCommand::Create => write!(f, "Create new account"),
             AccountCommand::Modify => write!(f, "Modify existing account"),
-            AccountCommand::Import => write!(f, "Import existing account from another installation or ACME client"),
+            AccountCommand::Import => write!(
+                f,
+                "Import existing account from another installation or ACME client"
+            ),
             AccountCommand::Delete => write!(f, "Delete (deactivate) account"),
         }
     }
@@ -268,11 +275,17 @@ pub async fn process_cli_command(
                     }
                     break action.map(|_| ());
                 }
-                bail!("Welcome! For non-interactive usage, an action (issue, renew) must be specified (a non-interactive terminal was detected, so interactive options have been disabled).");
+                bail!(
+                    "Welcome! For non-interactive usage, an action (issue, renew) must be specified (a non-interactive terminal was detected, so interactive options have been disabled)."
+                );
             }
             Some(Command::InteractiveIssuer) => {
                 if interactive {
-                    let selectable_commands = vec![IssuerCommand::List, IssuerCommand::Add, IssuerCommand::Remove];
+                    let selectable_commands = vec![
+                        IssuerCommand::List,
+                        IssuerCommand::Add,
+                        IssuerCommand::Remove,
+                    ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
                         .context("No action selected");
@@ -282,7 +295,9 @@ pub async fn process_cli_command(
                     }
                     break action.map(|_| ());
                 }
-                bail!("This command can only be used interactively (a non-interactive terminal was detected)");
+                bail!(
+                    "This command can only be used interactively (a non-interactive terminal was detected)"
+                );
             }
             Some(Command::InteractiveCertificate) => {
                 if interactive {
@@ -300,7 +315,9 @@ pub async fn process_cli_command(
                     }
                     break action.map(|_| ());
                 }
-                bail!("This command can only be used interactively (a non-interactive terminal was detected)");
+                bail!(
+                    "This command can only be used interactively (a non-interactive terminal was detected)"
+                );
             }
             Some(Command::InteractiveAccount) => {
                 if interactive {
@@ -320,21 +337,34 @@ pub async fn process_cli_command(
                     }
                     break action.map(|_| ());
                 }
-                bail!("This command can only be used interactively (a non-interactive terminal was detected)");
+                bail!(
+                    "This command can only be used interactively (a non-interactive terminal was detected)"
+                );
             }
             Some(Command::Issue(issue_cmd)) => {
-                break process_certificate_command(CertificateCommand::Issue(issue_cmd), matches, client, interactive)
-                    .await;
+                break process_certificate_command(
+                    CertificateCommand::Issue(issue_cmd),
+                    matches,
+                    client,
+                    interactive,
+                )
+                .await;
             }
             Some(Command::Renew(renew_cmd)) => {
-                break process_certificate_command(CertificateCommand::Renew(renew_cmd), matches, client, interactive)
-                    .await;
+                break process_certificate_command(
+                    CertificateCommand::Renew(renew_cmd),
+                    matches,
+                    client,
+                    interactive,
+                )
+                .await;
             }
             Some(Command::Issuer(issuer_cmd)) => {
                 break process_issuer_command(issuer_cmd, client, interactive).await;
             }
             Some(Command::Certificate(certificate_cmd)) => {
-                break process_certificate_command(certificate_cmd, matches, client, interactive).await;
+                break process_certificate_command(certificate_cmd, matches, client, interactive)
+                    .await;
             }
             Some(Command::Account(account_cmd)) => {
                 break process_account_command(account_cmd, client, interactive).await;
@@ -343,7 +373,11 @@ pub async fn process_cli_command(
     }
 }
 
-async fn process_issuer_command(cmd: IssuerCommand, client: Certonaut, interactive: bool) -> anyhow::Result<()> {
+async fn process_issuer_command(
+    cmd: IssuerCommand,
+    client: Certonaut,
+    interactive: bool,
+) -> anyhow::Result<()> {
     match cmd {
         IssuerCommand::List => {
             client.print_issuers().await;
@@ -392,7 +426,11 @@ async fn process_certificate_command(
     }
 }
 
-async fn process_account_command(cmd: AccountCommand, client: Certonaut, interactive: bool) -> anyhow::Result<()> {
+async fn process_account_command(
+    cmd: AccountCommand,
+    client: Certonaut,
+    interactive: bool,
+) -> anyhow::Result<()> {
     match cmd {
         AccountCommand::List => {
             client.print_accounts().await;
@@ -423,7 +461,10 @@ async fn process_account_command(cmd: AccountCommand, client: Certonaut, interac
     }
 }
 
-fn process_issue_cmd(mut issue_cmd: IssueCommand, raw_matches: &ArgMatches) -> anyhow::Result<IssueCommand> {
+fn process_issue_cmd(
+    mut issue_cmd: IssueCommand,
+    raw_matches: &ArgMatches,
+) -> anyhow::Result<IssueCommand> {
     let mut matches = match raw_matches.subcommand() {
         Some(("issue", matches)) => matches,
         Some(("certificate", matches)) => matches
@@ -450,7 +491,9 @@ fn process_issue_cmd(mut issue_cmd: IssueCommand, raw_matches: &ArgMatches) -> a
     }
 
     if !solvers.is_empty() && issue_cmd.domains.is_some() {
-        bail!("Can not specify both global domains and per-solver domains. Use --domains after giving the solver.",);
+        bail!(
+            "Can not specify both global domains and per-solver domains. Use --domains after giving the solver.",
+        );
     }
 
     issue_cmd.solver_configuration = solvers;
@@ -470,7 +513,9 @@ fn recursive_solver_subcommands(subcommand: clap::Command) -> clap::Command {
     subcommand.subcommands(
         CHALLENGE_SOLVER_REGISTRY
             .iter()
-            .map(|solver| AuthenticatorBaseCommand::augment_args(solver.get_command_line()).hide(true))
+            .map(|solver| {
+                AuthenticatorBaseCommand::augment_args(solver.get_command_line()).hide(true)
+            })
             .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
     )
 }
@@ -487,7 +532,9 @@ pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::
     let issue_cmd = issue_cmd.subcommands(
         CHALLENGE_SOLVER_REGISTRY
             .iter()
-            .map(|solver_builder| AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line()))
+            .map(|solver_builder| {
+                AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line())
+            })
             .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
     );
     *issue_cmd_ref = issue_cmd.clone();

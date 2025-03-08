@@ -219,9 +219,17 @@ impl Identifier {
 #[serde(rename_all = "camelCase")]
 pub struct NewOrderRequest {
     pub identifiers: Vec<Identifier>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_offset_date_time"
+    )]
     pub not_before: Option<time::OffsetDateTime>,
-    #[serde(default, skip_serializing_if = "Option::is_none", with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "optional_offset_date_time"
+    )]
     pub not_after: Option<time::OffsetDateTime>,
     // TODO: ARI
 }
@@ -360,7 +368,9 @@ pub struct Deactivation {
 
 impl Deactivation {
     pub fn new() -> Self {
-        Self { status: "deactivated" }
+        Self {
+            status: "deactivated",
+        }
     }
 }
 
@@ -379,7 +389,9 @@ mod tests {
     use time::macros::datetime;
 
     #[rstest]
-    fn test_deserialize_directory_valid(#[files("testdata/deserialize_test_directory_*.json")] testfile: PathBuf) {
+    fn test_deserialize_directory_valid(
+        #[files("testdata/deserialize_test_directory_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Directory = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
@@ -394,7 +406,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_metadata_valid(#[files("testdata/deserialize_test_metadata_*.json")] testfile: PathBuf) {
+    fn test_deserialize_metadata_valid(
+        #[files("testdata/deserialize_test_metadata_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Metadata = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
@@ -409,33 +423,43 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_nonce_valid(#[files("testdata/deserialize_test_nonce_*.json")] testfile: PathBuf) {
+    fn test_deserialize_nonce_valid(
+        #[files("testdata/deserialize_test_nonce_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Nonce = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
 
     #[rstest]
-    fn test_deserialize_nonce_invalid(#[files("testdata/deserialize_invalid_test_nonce_*.json")] testfile: PathBuf) {
+    fn test_deserialize_nonce_invalid(
+        #[files("testdata/deserialize_invalid_test_nonce_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Nonce> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
     }
 
     #[rstest]
-    fn test_deserialize_token_valid(#[files("testdata/deserialize_test_token_*.json")] testfile: PathBuf) {
+    fn test_deserialize_token_valid(
+        #[files("testdata/deserialize_test_token_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Token = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
 
     #[rstest]
-    fn test_deserialize_token_invalid(#[files("testdata/deserialize_invalid_test_token_*.json")] testfile: PathBuf) {
+    fn test_deserialize_token_invalid(
+        #[files("testdata/deserialize_invalid_test_token_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Token> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
     }
 
     #[rstest]
-    fn test_deserialize_account_valid(#[files("testdata/deserialize_test_account_*.json")] testfile: PathBuf) {
+    fn test_deserialize_account_valid(
+        #[files("testdata/deserialize_test_account_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Account = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
@@ -450,22 +474,29 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_order_valid(#[files("testdata/deserialize_test_order_*.json")] testfile: PathBuf) {
+    fn test_deserialize_order_valid(
+        #[files("testdata/deserialize_test_order_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Order = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
 
     #[rstest]
-    fn test_deserialize_order_invalid(#[files("testdata/deserialize_invalid_test_order_*.json")] testfile: PathBuf) {
+    fn test_deserialize_order_invalid(
+        #[files("testdata/deserialize_invalid_test_order_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Order> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
     }
 
     #[rstest]
-    fn test_deserialize_authorization_valid(#[files("testdata/deserialize_test_authz_*.json")] testfile: PathBuf) {
+    fn test_deserialize_authorization_valid(
+        #[files("testdata/deserialize_test_authz_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
-        let _: Authorization = serde_json::from_reader(file).expect("Deserialization must not fail");
+        let _: Authorization =
+            serde_json::from_reader(file).expect("Deserialization must not fail");
     }
 
     #[rstest]
@@ -478,7 +509,9 @@ mod tests {
     }
 
     #[rstest]
-    fn test_deserialize_challenge_valid(#[files("testdata/deserialize_test_challenge_*.json")] testfile: PathBuf) {
+    fn test_deserialize_challenge_valid(
+        #[files("testdata/deserialize_test_challenge_*.json")] testfile: PathBuf,
+    ) {
         let file = File::open(testfile).unwrap();
         let _: Challenge = serde_json::from_reader(file).expect("Deserialization must not fail");
     }
@@ -528,7 +561,10 @@ mod tests {
     #[case("\"expired\"", AuthorizationStatus::Expired)]
     #[case("\"revoked\"", AuthorizationStatus::Revoked)]
     #[case("\"garbageStatus\"", AuthorizationStatus::Invalid)]
-    fn test_deserialize_authorization_status(#[case] test_value: &str, #[case] expected: AuthorizationStatus) {
+    fn test_deserialize_authorization_status(
+        #[case] test_value: &str,
+        #[case] expected: AuthorizationStatus,
+    ) {
         let authz_status: AuthorizationStatus = serde_json::from_str(test_value).unwrap();
         assert_eq!(authz_status, expected);
     }
@@ -539,7 +575,10 @@ mod tests {
     #[case("\"valid\"", ChallengeStatus::Valid)]
     #[case("\"invalid\"", ChallengeStatus::Invalid)]
     #[case("\"garbageStatus\"", ChallengeStatus::Invalid)]
-    fn test_deserialize_challenge_status(#[case] test_value: &str, #[case] expected: ChallengeStatus) {
+    fn test_deserialize_challenge_status(
+        #[case] test_value: &str,
+        #[case] expected: ChallengeStatus,
+    ) {
         let challenge_status: ChallengeStatus = serde_json::from_str(test_value).unwrap();
         assert_eq!(challenge_status, expected);
     }
@@ -548,7 +587,10 @@ mod tests {
     #[case(r#"{"type":"http-01","token":"QWERTZ"}"#,  InnerChallenge::Http(HttpChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
     #[case(r#"{"type":"dns-01","token":"QWERTZ"}"#,  InnerChallenge::Dns(DnsChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
     #[case(r#"{"type":"tls-alpn-01","token":"QWERTZ"}"#,  InnerChallenge::Alpn(AlpnChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
-    fn test_deserialize_inner_challenge(#[case] test_value: &str, #[case] expected: InnerChallenge) {
+    fn test_deserialize_inner_challenge(
+        #[case] test_value: &str,
+        #[case] expected: InnerChallenge,
+    ) {
         let challenge: InnerChallenge = serde_json::from_str(test_value).unwrap();
         assert_eq!(challenge, expected);
     }
@@ -576,8 +618,12 @@ mod tests {
             terms_of_service_agreed: None,
             external_account_binding: None,
         }, r#"{"contact":[]}"#)]
-    fn test_serialize_account_request(#[case] account_request: AccountRequest, #[case] expected: &str) {
-        let serialized = serde_json::to_string(&account_request).expect("serialization must not fail");
+    fn test_serialize_account_request(
+        #[case] account_request: AccountRequest,
+        #[case] expected: &str,
+    ) {
+        let serialized =
+            serde_json::to_string(&account_request).expect("serialization must not fail");
         assert_eq!(serialized, expected);
     }
 
@@ -620,8 +666,12 @@ mod tests {
     #[case(FinalizeRequest {
             csr: "CSRPlaceholder".to_string(),
         }, r#"{"csr":"CSRPlaceholder"}"#)]
-    fn test_serialize_finalize_request(#[case] finalize_request: FinalizeRequest, #[case] expected: &str) {
-        let serialized = serde_json::to_string(&finalize_request).expect("serialization must not fail");
+    fn test_serialize_finalize_request(
+        #[case] finalize_request: FinalizeRequest,
+        #[case] expected: &str,
+    ) {
+        let serialized =
+            serde_json::to_string(&finalize_request).expect("serialization must not fail");
         assert_eq!(serialized, expected);
     }
 
@@ -634,7 +684,8 @@ mod tests {
 
     #[test]
     fn test_serialize_deactivated() {
-        let serialized = serde_json::to_string(&Deactivation::new()).expect("serialization must not fail");
+        let serialized =
+            serde_json::to_string(&Deactivation::new()).expect("serialization must not fail");
         assert_eq!(serialized, r#"{"status":"deactivated"}"#);
     }
 

@@ -1,9 +1,9 @@
+use crate::ChallengeSolver;
 use crate::acme::object::{Identifier, InnerChallenge, Token};
 use crate::challenge_solver::KeyAuthorization;
 use crate::config::{PebbleHttpSolverConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
-use crate::ChallengeSolver;
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -33,7 +33,8 @@ pub fn pebble_root() -> reqwest::Result<reqwest::Certificate> {
     reqwest::Certificate::from_pem(PEBBLE_ROOT_PEM.as_bytes())
 }
 
-static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> = LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
+static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
+    LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
 
 #[derive(Default)]
 pub struct ChallengeTestHttpSolver {

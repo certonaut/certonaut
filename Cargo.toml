@@ -5,6 +5,7 @@ repository = "TODO"
 license = "MIT"
 edition = "2024"
 rust-version = "1.85.0"
+default-run = "certonaut"
 
 [features]
 magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
@@ -39,6 +40,8 @@ x509-parser = "0.17.0"
 itertools = "0.14.0"
 cyborgtime = "2.1.1"
 strum = { version = "0.27.1", features = ["derive"] }
+fs4 = { version = "0.13.0", features = ["tokio"] }
+sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "time"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = { version = "0.5.5" }
@@ -64,3 +67,7 @@ tempfile = "3.15.0"
 [profile.release]
 # Makes linking really sloooow, but gives us a faster + smaller binary.
 lto = "fat"
+
+[[bin]]
+name = "create-dev-db"
+path = "src/bin/create_dev_db.rs"

@@ -10,11 +10,14 @@ pub(crate) mod serde_helper {
     pub(crate) mod optional_offset_date_time {
         use serde::{self, Deserializer, Serializer};
         use std::option::Option;
-        use time::serde::rfc3339;
         use time::OffsetDateTime;
+        use time::serde::rfc3339;
 
         #[allow(clippy::ref_option)]
-        pub fn serialize<S>(input: &Option<OffsetDateTime>, serializer: S) -> Result<S::Ok, S::Error>
+        pub fn serialize<S>(
+            input: &Option<OffsetDateTime>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
@@ -185,12 +188,16 @@ pub(crate) mod serde_helper {
         where
             D: Deserializer<'de>,
         {
-            deserializer.deserialize_str(KeyTypeVisitor::<D::Error> { _marker: PhantomData })
+            deserializer.deserialize_str(KeyTypeVisitor::<D::Error> {
+                _marker: PhantomData,
+            })
         }
     }
 }
 
-pub fn humanize_duration_core(duration: core::time::Duration) -> Result<String, time::error::ConversionRange> {
+pub fn humanize_duration_core(
+    duration: core::time::Duration,
+) -> Result<String, time::error::ConversionRange> {
     Ok(humanize_duration(duration.try_into()?))
 }
 
@@ -221,22 +228,42 @@ pub fn humanize_duration(mut duration: time::Duration) -> String {
 
     let mut components = Vec::new();
     if years > 0 {
-        components.push(format!("{} year{}", years, if years > 1 { "s" } else { "" }));
+        components.push(format!(
+            "{} year{}",
+            years,
+            if years > 1 { "s" } else { "" }
+        ));
     }
     if months > 0 {
-        components.push(format!("{} month{}", months, if months > 1 { "s" } else { "" }));
+        components.push(format!(
+            "{} month{}",
+            months,
+            if months > 1 { "s" } else { "" }
+        ));
     }
     if days > 0 {
         components.push(format!("{} day{}", days, if days > 1 { "s" } else { "" }));
     }
     if hours > 0 {
-        components.push(format!("{} hour{}", hours, if hours > 1 { "s" } else { "" }));
+        components.push(format!(
+            "{} hour{}",
+            hours,
+            if hours > 1 { "s" } else { "" }
+        ));
     }
     if minutes > 0 {
-        components.push(format!("{} minute{}", minutes, if minutes > 1 { "s" } else { "" }));
+        components.push(format!(
+            "{} minute{}",
+            minutes,
+            if minutes > 1 { "s" } else { "" }
+        ));
     }
     if seconds > 0 || components.is_empty() {
-        components.push(format!("{} second{}", seconds, if seconds == 1 { "" } else { "s" }));
+        components.push(format!(
+            "{} second{}",
+            seconds,
+            if seconds == 1 { "" } else { "s" }
+        ));
     }
 
     components.join(", ")
@@ -251,15 +278,19 @@ mod tests {
     use super::serde_helper::optional_offset_date_time;
     use crate::util::{format_hex_with_colon, humanize_duration};
     use rstest::rstest;
-    use time::macros::datetime;
     use time::OffsetDateTime;
+    use time::macros::datetime;
 
     #[rstest]
     #[case("\"1985-04-12T23:20:50.52Z\"", Some(datetime!(1985-04-12 23:20:50.52 UTC)))]
     #[case("\"1996-12-19T16:39:57-08:00\"", Some(datetime!(1996-12-20 00:39:57 UTC)))]
-    fn test_deserialize_optional_rfc339(#[case] test_value: &str, #[case] expected: Option<OffsetDateTime>) {
+    fn test_deserialize_optional_rfc339(
+        #[case] test_value: &str,
+        #[case] expected: Option<OffsetDateTime>,
+    ) {
         let mut deserializer = serde_json::Deserializer::from_str(test_value);
-        let date_time: Option<OffsetDateTime> = optional_offset_date_time::deserialize(&mut deserializer).unwrap();
+        let date_time: Option<OffsetDateTime> =
+            optional_offset_date_time::deserialize(&mut deserializer).unwrap();
         assert_eq!(date_time, expected);
     }
 
@@ -267,7 +298,10 @@ mod tests {
     #[case(Some(datetime!(1985-04-12 23:20:50.52 UTC)), "\"1985-04-12T23:20:50.52Z\"")]
     #[case(Some(datetime!(1996-12-20 00:39:57 UTC)), "\"1996-12-20T00:39:57Z\"")]
     #[case(None, "null")]
-    fn test_serialize_optional_rfc339(#[case] test_value: Option<OffsetDateTime>, #[case] expected: &str) {
+    fn test_serialize_optional_rfc339(
+        #[case] test_value: Option<OffsetDateTime>,
+        #[case] expected: &str,
+    ) {
         let mut serialized = Vec::new();
         let mut serializer = serde_json::Serializer::new(&mut serialized);
         optional_offset_date_time::serialize(&test_value, &mut serializer).unwrap();

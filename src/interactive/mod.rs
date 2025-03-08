@@ -1,5 +1,5 @@
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
@@ -9,10 +9,10 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::util::humanize_duration;
 use crate::{
-    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut, DomainSolverMap,
-    NewAccountOptions, ParsedDuration, CRATE_NAME,
+    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, CRATE_NAME, Certonaut,
+    DomainSolverMap, NewAccountOptions, ParsedDuration, build_domain_solver_maps,
 };
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -44,7 +44,10 @@ impl InteractiveService {
     }
 
     pub async fn interactive_issuance(&mut self, issue_cmd: IssueCommand) -> Result<(), Error> {
-        println!("{}", format!("{CRATE_NAME} interactive certificate issuance").green());
+        println!(
+            "{}",
+            format!("{CRATE_NAME} interactive certificate issuance").green()
+        );
         let (initial_issuer, initial_account) = self.user_select_ca_and_account(&issue_cmd).await?;
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
@@ -73,7 +76,9 @@ impl InteractiveService {
                 profile: issue_cmd.advanced.profile,
             },
         };
-        let cert_config = self.interactive_edit_cert_configuration(initial_config).await?;
+        let cert_config = self
+            .interactive_edit_cert_configuration(initial_config)
+            .await?;
         self.client.issue_new(cert_config).await
     }
 
@@ -138,7 +143,10 @@ impl InteractiveService {
         .ok_or(anyhow!(
             "No such account found at CA (are there any accounts for this CA?)"
         ))?;
-        println!("You have selected the following account for {}", "deletion".red());
+        println!(
+            "You have selected the following account for {}",
+            "deletion".red()
+        );
         Certonaut::print_account(&account).await;
         let delete = Confirm::new(
             "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
@@ -211,11 +219,15 @@ impl InteractiveService {
                 .chain(
                     [ClosureEditor::new(
                         "Certificate Authority",
-                        &|_config: &CertificateConfiguration| ca_display.lock().unwrap().clone().into(),
+                        &|_config: &CertificateConfiguration| {
+                            ca_display.lock().unwrap().clone().into()
+                        },
                         |mut config: CertificateConfiguration| {
                             async {
                                 let mut lock = self_locked.write().await;
-                                let (ca, account) = lock.user_select_ca_and_account(&IssueCommand::default()).await?;
+                                let (ca, account) = lock
+                                    .user_select_ca_and_account(&IssueCommand::default())
+                                    .await?;
                                 config.ca_identifier = ca;
                                 config.account_identifier = account;
                                 drop(lock);
@@ -243,7 +255,9 @@ impl InteractiveService {
         [
             ClosureEditor::new(
                 "Domains",
-                &|config: &CertificateConfiguration| config.domains.keys().sorted().join(", ").into(),
+                &|config: &CertificateConfiguration| {
+                    config.domains.keys().sorted().join(", ").into()
+                },
                 |mut config: CertificateConfiguration| {
                     async {
                         let sorted_domains: Vec<_> = config
@@ -258,7 +272,9 @@ impl InteractiveService {
                             return Ok(config);
                         }
                         let lock = self_locked.read().await;
-                        let cert_name = lock.client.choose_cert_name_from_domains(new_domains.iter());
+                        let cert_name = lock
+                            .client
+                            .choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
                         let new_authenticators = Self::user_ask_solvers(new_domains)?;
                         config.domains = new_authenticators
@@ -356,7 +372,11 @@ impl InteractiveService {
                         let new_advanced = InteractiveConfigEditor::new(
                             "Select an option",
                             config.advanced,
-                            Self::cert_edit_advanced_inner_editors(ca_identifier, account_identifier, self_locked),
+                            Self::cert_edit_advanced_inner_editors(
+                                ca_identifier,
+                                account_identifier,
+                                self_locked,
+                            ),
                             |_config| async { Ok(true) }.boxed(),
                         )
                         .edit_config()
@@ -381,7 +401,9 @@ impl InteractiveService {
                 "Requested Lifetime",
                 &|config: &AdvancedCertificateConfiguration| match config.lifetime {
                     None => "Not specified".into(),
-                    Some(lifetime) => humanize_duration(lifetime.try_into().unwrap_or(time::Duration::MAX)).into(),
+                    Some(lifetime) => {
+                        humanize_duration(lifetime.try_into().unwrap_or(time::Duration::MAX)).into()
+                    }
                 },
                 |mut config| {
                     async {
@@ -402,7 +424,8 @@ impl InteractiveService {
                     async move {
                         let lock = self_locked.read().await;
                         let issuer = lock.client.get_issuer_with_account(&ca, &account)?;
-                        config.profile = Self::user_ask_cert_profile(&issuer, config.profile).await?;
+                        config.profile =
+                            Self::user_ask_cert_profile(&issuer, config.profile).await?;
                         Ok(config)
                     }
                     .boxed()
@@ -410,7 +433,9 @@ impl InteractiveService {
             ),
             ClosureEditor::new(
                 "Reuse Key",
-                &|config: &AdvancedCertificateConfiguration| if config.reuse_key { "yes" } else { "no" }.into(),
+                &|config: &AdvancedCertificateConfiguration| {
+                    if config.reuse_key { "yes" } else { "no" }.into()
+                },
                 |mut config| {
                     async {
                         config.reuse_key = Self::user_ask_key_reuse(config.reuse_key)?;
@@ -455,10 +480,13 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         // TODO: Warn if wildcards are present
         // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
         // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
-        let domains_with_solvers = match Select::new("Select a solver to authenticate all identifiers:", solver_options)
-            // TODO: Allow to skip prompt in case we already have solvers (no change)
-            .prompt()
-            .context("No answer to solver prompt")?
+        let domains_with_solvers = match Select::new(
+            "Select a solver to authenticate all identifiers:",
+            solver_options,
+        )
+        // TODO: Allow to skip prompt in case we already have solvers (no change)
+        .prompt()
+        .context("No answer to solver prompt")?
         {
             SolverChoice::SingleSolver(single_solver_choice) => {
                 vec![single_solver_choice.build_interactive(domains)?]
@@ -486,25 +514,44 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         println!(
             "You can enter such a desired lifetime for the certificate here, or leave it blank to not request any particular lifetime for the certificate."
         );
-        println!("Note that if the CA does not support this feature, or the requested value, issuance will fail.");
+        println!(
+            "Note that if the CA does not support this feature, or the requested value, issuance will fail."
+        );
         println!("Consult the CA's documentation before using this feature.");
         let duration = CustomType::<ParsedDuration>::new("Select a lifetime for the certificate")
-            .with_error_message("Please type a valid duration, like '90 days' or '15d 2 hours 37min'")
+            .with_error_message(
+                "Please type a valid duration, like '90 days' or '15d 2 hours 37min'",
+            )
             .with_default(current.unwrap_or(Duration::ZERO).into())
             .with_help_message("Press ESC or enter 0s to not use this feature")
             .prompt_skippable()
             .context("No answer to cert lifetime prompt")?
-            .and_then(|duration| if duration.is_zero() { None } else { Some(*duration) });
+            .and_then(|duration| {
+                if duration.is_zero() {
+                    None
+                } else {
+                    Some(*duration)
+                }
+            });
         Ok(duration)
     }
 
     fn user_ask_key_type(current: KeyType) -> Result<KeyType, Error> {
-        println!("The certificate can use one of the following supported cryptographic algorithms.");
-        println!("Note that not all CAs may support all of the choices below - consult the CA documentation.");
-        println!("If you are unsure what to select, just select the default option. RSA is also a very common choice.");
+        println!(
+            "The certificate can use one of the following supported cryptographic algorithms."
+        );
+        println!(
+            "Note that not all CAs may support all of the choices below - consult the CA documentation."
+        );
+        println!(
+            "If you are unsure what to select, just select the default option. RSA is also a very common choice."
+        );
         let key_type = Select::new(
             "Choose a key type for the new certificate",
-            CommandLineKeyType::VARIANTS.iter().map(|k| (*k).into()).collect(),
+            CommandLineKeyType::VARIANTS
+                .iter()
+                .map(|k| (*k).into())
+                .collect(),
         )
         .with_help_message(&format!("Press ESC to use current {current}"))
         .prompt_skippable()
@@ -516,10 +563,12 @@ Currently, the following challenge \"solvers\" are available to prove control:".
     fn user_ask_key_reuse(current: bool) -> Result<bool, Error> {
         println!("In certain setups, you want to reuse the same keypair in renewed certificates.");
         println!("This is generally not advised unless you really need it.");
-        Ok(Confirm::new("Reuse the same keypair in renewed certificates")
-            .with_default(current)
-            .prompt_skippable()?
-            .unwrap_or(current))
+        Ok(
+            Confirm::new("Reuse the same keypair in renewed certificates")
+                .with_default(current)
+                .prompt_skippable()?
+                .unwrap_or(current),
+        )
     }
 
     fn user_ask_cert_name(current: String) -> Result<String, Error> {
@@ -540,7 +589,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(cert_name)
     }
 
-    fn user_ask_initial_cert_domains(issue_cmd: &IssueCommand) -> Result<HashSet<Identifier>, Error> {
+    fn user_ask_initial_cert_domains(
+        issue_cmd: &IssueCommand,
+    ) -> Result<HashSet<Identifier>, Error> {
         if let Some(domains) = &issue_cmd.domains {
             return Ok(domains
                 .iter()
@@ -555,7 +606,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Self::user_ask_cert_domains(std::iter::empty())
     }
 
-    fn user_ask_cert_domains<'a, I: Iterator<Item = &'a Identifier>>(current: I) -> Result<HashSet<Identifier>, Error> {
+    fn user_ask_cert_domains<'a, I: Iterator<Item = &'a Identifier>>(
+        current: I,
+    ) -> Result<HashSet<Identifier>, Error> {
         let current = current.sorted().join(", ");
         let mut prompt = Text::new("Enter the domain name(s) for the new certificate:");
         prompt = if current.is_empty() {
@@ -602,8 +655,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         if domains.len() == 1 {
             let domain = domains.iter().next().unwrap(/* Infallible */);
             if domain.as_str().starts_with("www.") {
-                let base_name =
-                    Identifier::from(domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string());
+                let base_name = Identifier::from(
+                    domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string(),
+                );
                 let add_base_name = Confirm::new(&format!("It is common to also include {base_name} in certificates, so that visitors can use both. Do you want to add the base domain to your certificate?"))
                     .with_default(false)
                     .prompt_skippable()?.unwrap_or(false);
@@ -623,7 +677,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(domains)
     }
 
-    async fn user_select_ca_and_account(&mut self, issue_cmd: &IssueCommand) -> Result<(String, String), Error> {
+    async fn user_select_ca_and_account(
+        &mut self,
+        issue_cmd: &IssueCommand,
+    ) -> Result<(String, String), Error> {
         let issuer = if let Some(preselected_ca) = &issue_cmd.ca {
             preselected_ca.clone()
         } else {
@@ -633,7 +690,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         let account = if let Some(preselected_account) = &issue_cmd.account {
             preselected_account.clone()
         } else {
-            let issuer = self.client.get_ca(&issuer).ok_or(anyhow!("CA {issuer} not found"))?;
+            let issuer = self
+                .client
+                .get_ca(&issuer)
+                .ok_or(anyhow!("CA {issuer} not found"))?;
             let ca_id = issuer.config.identifier.clone();
             match Self::user_select_account(issuer, true)? {
                 AccountChoice::ExistingAccount(ac) => ac.identifier,
@@ -676,7 +736,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 CaChoice::NewCa => false,
             })
             .map(|(idx, choice)| (idx, choice.clone()));
-        let mut ca_choice = Select::new("Select the Certificate Authority (CA) you want to use", choices);
+        let mut ca_choice = Select::new(
+            "Select the Certificate Authority (CA) you want to use",
+            choices,
+        );
         let user_choice = if let Some((default_index, default_ca)) = default_ca {
             let default_help = Select::<CaChoice>::DEFAULT_HELP_MESSAGE.unwrap();
             let default_ca_name = default_ca.to_string();
@@ -732,7 +795,8 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .context("No answer to test CA question")?
             .unwrap_or(false);
         let current_default = client.issuers.values().find(|ca| ca.config.default);
-        let mut new_default_prompt = Confirm::new("Do you want to use this CA as your default?").with_default(false);
+        let mut new_default_prompt =
+            Confirm::new("Do you want to use this CA as your default?").with_default(false);
         let mut help_message = "You do not currently have any default CA set".to_string();
         if let Some(current_default) = current_default {
             help_message = format!(
@@ -747,7 +811,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .context("No answer to default CA prompt")?
             .unwrap_or(false);
         if new_default {
-            client.issuers.values_mut().for_each(|ca| ca.config.default = false);
+            client
+                .issuers
+                .values_mut()
+                .for_each(|ca| ca.config.default = false);
         }
         Ok(CertificateAuthorityConfiguration {
             name: ca_name,
@@ -869,18 +936,24 @@ of email addresses below, or leave the field empty to not provide any contact ad
         .await
     }
 
-    async fn user_create_account_ca_specific_features(ca: &AcmeIssuer) -> anyhow::Result<Option<bool>> {
+    async fn user_create_account_ca_specific_features(
+        ca: &AcmeIssuer,
+    ) -> anyhow::Result<Option<bool>> {
         let ca_name = ca.config.name.as_str().green();
         let acme_client = ca.client().await?;
         let directory = acme_client.get_directory();
         let mut tos_status = None;
         if let Some(meta) = &directory.meta {
             if let Some(website) = &meta.website {
-                println!("If this is your first time using {ca_name}, you may want to review this website:",);
+                println!(
+                    "If this is your first time using {ca_name}, you may want to review this website:",
+                );
                 println!("{}", website.as_str().blue());
             }
             if let Some(tos) = &meta.terms_of_service {
-                println!("Please familiarize yourself with {ca_name} terms of service, available at this URL:",);
+                println!(
+                    "Please familiarize yourself with {ca_name} terms of service, available at this URL:",
+                );
                 println!("{}", tos.as_str().green().on_black());
                 let tos_agreed = Confirm::new("Do you agree to these terms of service?")
                     .with_default(false)
@@ -952,7 +1025,8 @@ web_index = \"/var/www/html\""
             .with_validator(move |content: &str| Ok(validate_solver_toml(&domains, content)))
             .prompt()
             .context("No answer to solver prompt")?;
-        let toml = toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
+        let toml =
+            toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
         let domains_table = toml
             .get("domains")
             .and_then(|domains| domains.as_table())
@@ -1021,7 +1095,9 @@ impl PartialEq for CaChoice {
 impl PartialOrd for CaChoice {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (CaChoice::ExistingCa(self_ca), CaChoice::ExistingCa(other_ca)) => Some(self_ca.name.cmp(&other_ca.name)),
+            (CaChoice::ExistingCa(self_ca), CaChoice::ExistingCa(other_ca)) => {
+                Some(self_ca.name.cmp(&other_ca.name))
+            }
             _ => None,
         }
     }
@@ -1052,9 +1128,10 @@ pub enum AccountChoice {
 impl PartialEq for AccountChoice {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (AccountChoice::ExistingAccount(self_acc), AccountChoice::ExistingAccount(other_acc)) => {
-                self_acc.identifier == other_acc.identifier
-            }
+            (
+                AccountChoice::ExistingAccount(self_acc),
+                AccountChoice::ExistingAccount(other_acc),
+            ) => self_acc.identifier == other_acc.identifier,
             _ => false,
         }
     }
@@ -1063,9 +1140,10 @@ impl PartialEq for AccountChoice {
 impl PartialOrd for AccountChoice {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (AccountChoice::ExistingAccount(self_acc), AccountChoice::ExistingAccount(other_acc)) => {
-                Some(self_acc.name.cmp(&other_acc.name))
-            }
+            (
+                AccountChoice::ExistingAccount(self_acc),
+                AccountChoice::ExistingAccount(other_acc),
+            ) => Some(self_acc.name.cmp(&other_acc.name)),
             _ => None,
         }
     }
@@ -1142,10 +1220,10 @@ fn validate_solver_toml(domains: &HashSet<Identifier>, content: &str) -> Validat
                     format!("Missing or invalid table for {solver_name}").into(),
                 ))?;
             let solver_document = DocumentMut::from(solver.clone());
-            let _test_config: SolverConfiguration =
-                toml_edit::de::from_document(solver_document).map_err(|toml_err| {
-                    Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
-                })?;
+            let _test_config: SolverConfiguration = toml_edit::de::from_document(solver_document)
+                .map_err(|toml_err| {
+                Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
+            })?;
         }
         Ok(())
     }

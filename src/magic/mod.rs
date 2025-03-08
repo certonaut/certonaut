@@ -2,7 +2,7 @@ use crate::acme::object::{Identifier, InnerChallenge};
 use crate::challenge_solver::{ChallengeSolver, HttpChallengeParameters, KeyAuthorization};
 use crate::config::{MagicHttpSolverConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use async_trait::async_trait;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -73,7 +73,9 @@ impl ChallengeSolver for MagicHttpSolver {
         } else {
             Some(self.challenge_port)
         };
-        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration { validation_port: port })
+        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
+            validation_port: port,
+        })
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

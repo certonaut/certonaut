@@ -1,7 +1,7 @@
 use crate::acme::object::Identifier;
-use crate::crypto::{sha256, SHA256_LENGTH};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use crate::crypto::{SHA256_LENGTH, sha256};
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use std::net::IpAddr;
 use tracing::warn;
 use x509_parser::certificate::Validity;
@@ -44,7 +44,9 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
                             }
                             GeneralName::IPAddress(ip_addr) => {
                                 let ip_addr = *ip_addr;
-                                warn!("Found IP address in certificate, support for IP addr identifiers is WIP");
+                                warn!(
+                                    "Found IP address in certificate, support for IP addr identifiers is WIP"
+                                );
                                 let parsed_ip_addr = ip_addr
                                     .try_into()
                                     .ok()
@@ -62,12 +64,16 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
                                         subject_alternative_names.push(id);
                                     }
                                     None => {
-                                        warn!("Certificate contains invalid IP address {ip_addr:#?}");
+                                        warn!(
+                                            "Certificate contains invalid IP address {ip_addr:#?}"
+                                        );
                                     }
                                 }
                             }
                             unsupported => {
-                                warn!("Found unsupported general name {unsupported} in certificate");
+                                warn!(
+                                    "Found unsupported general name {unsupported} in certificate"
+                                );
                             }
                         }
                     }

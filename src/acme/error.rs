@@ -25,7 +25,11 @@ impl Error {
         let status = err_response.status();
         if let Ok(problem) = err_response.json::<Problem>().await {
             if problem.is_rate_limit() {
-                RateLimitError { problem, retry_after }.into()
+                RateLimitError {
+                    problem,
+                    retry_after,
+                }
+                .into()
             } else {
                 Error::AcmeProblem(problem)
             }

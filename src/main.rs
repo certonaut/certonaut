@@ -1,7 +1,7 @@
 use anyhow::Context;
 use certonaut::cli::{process_cli_command, setup_command_line};
 use certonaut::config::CONFIG_FILE;
-use certonaut::{config, Certonaut};
+use certonaut::{Certonaut, config};
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
@@ -18,14 +18,23 @@ fn is_interactive() -> bool {
 async fn main() -> anyhow::Result<()> {
     let (cli, matches) = setup_command_line()?;
     let filter = EnvFilter::try_from_env(ENV_FILTER_NAME).unwrap_or_else(|_| {
-        EnvFilter::try_from_env("RUST_LOG")
-            .unwrap_or_else(|_| EnvFilter::new(if cli.verbose { "certonaut=debug,info" } else { "info" }))
+        EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| {
+            EnvFilter::new(if cli.verbose {
+                "certonaut=debug,info"
+            } else {
+                "info"
+            })
+        })
     });
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let interactive = is_interactive() && !cli.noninteractive;
-    CONFIG_FILE.set(cli.config).expect("Config file already set");
+    CONFIG_FILE
+        .set(cli.config)
+        .expect("Config file already set");
     let config = config::load()?;
-    let client = Certonaut::try_new(config).context("Loading configuration failed")?;
+    let client = Certonaut::try_new(config)
+        .await
+        .context("Loading configuration failed")?;
     let result = process_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal

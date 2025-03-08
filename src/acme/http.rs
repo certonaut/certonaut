@@ -117,7 +117,11 @@ impl HttpClient {
         self.execute(Request::new(Method::HEAD, url)).await
     }
 
-    pub async fn post<T: Serialize + 'static>(&self, url: Url, body: &T) -> ProtocolResult<Response> {
+    pub async fn post<T: Serialize + 'static>(
+        &self,
+        url: Url,
+        body: &T,
+    ) -> ProtocolResult<Response> {
         let request_builder = self.client.post(url);
         // RFC8555 Section 6.2, "[clients] must have the Content-Type header field set
         // to "application/jose+json""
@@ -180,10 +184,10 @@ pub mod test_helper {
 mod tests {
     use super::test_helper::*;
     use super::*;
+    use httptest::Expectation;
     use httptest::matchers::contains;
     use httptest::matchers::request::{headers, method_path};
     use httptest::responders::status_code;
-    use httptest::Expectation;
     use std::str::FromStr;
     use time::macros::datetime;
 
@@ -271,7 +275,8 @@ mod tests {
 
         let client = HttpClient::try_new().unwrap();
         let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
-        let retry_after = HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
+        let retry_after =
+            HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
         let backoff = retry_after.duration_since(SystemTime::now()).unwrap();
         let difference = backoff.abs_diff(Duration::from_secs(60));
         // Allow some leeway to account for a slow test or jumping clock
@@ -284,26 +289,29 @@ mod tests {
     #[tokio::test]
     async fn test_extract_backoff_with_timestamp() {
         let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("GET", "/"))
-                .respond_with(status_code(200).append_header("retry-after", "Sun, 06 Nov 1994 08:49:37 GMT")),
-        );
+        server.expect(Expectation::matching(method_path("GET", "/")).respond_with(
+            status_code(200).append_header("retry-after", "Sun, 06 Nov 1994 08:49:37 GMT"),
+        ));
 
         let client = HttpClient::try_new().unwrap();
         let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
-        let retry_after = HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
-        assert_eq!(retry_after, SystemTime::from(datetime!(1994-11-06 08:49:37 UTC)));
+        let retry_after =
+            HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
+        assert_eq!(
+            retry_after,
+            SystemTime::from(datetime!(1994-11-06 08:49:37 UTC))
+        );
     }
 
     #[tokio::test]
     async fn test_extract_backoff_with_invalid_timestamp() {
         let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("GET", "/")).respond_with(status_code(200).append_header(
+        server.expect(Expectation::matching(method_path("GET", "/")).respond_with(
+            status_code(200).append_header(
                 "retry-after",
                 "Well, what if there is no tomorrow? There wasn’t one today.",
-            )),
-        );
+            ),
+        ));
 
         let client = HttpClient::try_new().unwrap();
         let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
@@ -314,8 +322,9 @@ mod tests {
     async fn test_extract_location() {
         let server = SERVER_POOL.get_server();
         server.expect(
-            Expectation::matching(method_path("POST", "/"))
-                .respond_with(status_code(201).append_header("Location", "https://example.com/look-here")),
+            Expectation::matching(method_path("POST", "/")).respond_with(
+                status_code(201).append_header("Location", "https://example.com/look-here"),
+            ),
         );
 
         let client = HttpClient::try_new().unwrap();
@@ -329,7 +338,8 @@ mod tests {
         let server = SERVER_POOL.get_server();
         server.expect(
             Expectation::matching(method_path("POST", "/")).respond_with(
-                status_code(201).append_header("Location", "These aren’t the droids you’re looking for."),
+                status_code(201)
+                    .append_header("Location", "These aren’t the droids you’re looking for."),
             ),
         );
 
@@ -342,8 +352,9 @@ mod tests {
     async fn test_extract_location_with_relative_url() {
         let server = SERVER_POOL.get_server();
         server.expect(
-            Expectation::matching(method_path("POST", "/"))
-                .respond_with(status_code(201).append_header("Location", "/everything-is-relative")),
+            Expectation::matching(method_path("POST", "/")).respond_with(
+                status_code(201).append_header("Location", "/everything-is-relative"),
+            ),
         );
 
         let client = HttpClient::try_new().unwrap();

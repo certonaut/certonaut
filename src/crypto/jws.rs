@@ -1,8 +1,8 @@
 use crate::acme::object::Nonce;
 use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
-use aws_lc_rs::digest::{digest, SHA256};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use aws_lc_rs::digest::{SHA256, digest};
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use serde::Serialize;
 use url::Url;
 
@@ -206,10 +206,11 @@ pub struct FlatJsonWebSignature {
 #[cfg(test)]
 mod tests {
     use crate::acme::object::Nonce;
-    use crate::crypto::jws::{
-        Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters, ProtectedHeader,
-    };
     use crate::crypto::asymmetric::Curve;
+    use crate::crypto::jws::{
+        Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters,
+        ProtectedHeader,
+    };
     use rstest::rstest;
     use url::Url;
 
@@ -281,8 +282,14 @@ mod tests {
         )),
         "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s"
     )]
-    fn test_compute_account_thumbprint(#[case] parameters: JsonWebKeyParameters, #[case] expected_thumbprint: &str) {
+    fn test_compute_account_thumbprint(
+        #[case] parameters: JsonWebKeyParameters,
+        #[case] expected_thumbprint: &str,
+    ) {
         let actual_thumbprint = JsonWebKey::compute_account_thumbprint(&parameters);
-        assert_eq!(&actual_thumbprint, expected_thumbprint, "computed thumbprint not equal");
+        assert_eq!(
+            &actual_thumbprint, expected_thumbprint,
+            "computed thumbprint not equal"
+        );
     }
 }

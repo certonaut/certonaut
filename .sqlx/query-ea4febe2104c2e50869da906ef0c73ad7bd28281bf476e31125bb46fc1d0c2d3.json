@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2;",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cert_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "outcome",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "failure",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "timestamp",
+        "ordinal": 4,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "ea4febe2104c2e50869da906ef0c73ad7bd28281bf476e31125bb46fc1d0c2d3"
+}

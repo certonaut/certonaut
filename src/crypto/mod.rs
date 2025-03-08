@@ -1,5 +1,5 @@
-pub mod jws;
 pub mod asymmetric;
+pub mod jws;
 
 pub const SHA256_LENGTH: usize = 32;
 pub fn sha256(input: &[u8]) -> [u8; SHA256_LENGTH] {
