@@ -1,14 +1,11 @@
 use crate::cert::ParsedX509Certificate;
-use crate::config::{config_directory, CertificateConfiguration};
+use crate::config::config_directory;
 use crate::{
-    authorizers_from_config, config, crypto, load_certificates_from_file, state,
-    util, AcmeIssuerWithAccount, Certonaut,
+    config, crypto, load_certificates_from_file, state, util, AcmeIssuerWithAccount, Certonaut,
 };
 use anyhow::{anyhow, bail, Context};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
-use std::fs::File;
-use std::ops::Sub;
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tracing::{debug, info};

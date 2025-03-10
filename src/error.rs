@@ -1,5 +1,6 @@
 use crate::acme;
 use crate::acme::error::{Error as AcmeError, Error};
+use std::backtrace::BacktraceStatus;
 use std::fmt::{Debug, Formatter};
 
 pub type IssueResult<T> = Result<T, IssueError>;
@@ -9,6 +10,33 @@ pub enum IssueError {
     RateLimited(anyhow::Error),
     CAFailure(anyhow::Error),
     AuthFailure(anyhow::Error),
+}
+
+impl IssueError {
+    /// Returns this error message formatted in a standardized way, to be suitable for saving in a database.
+    /// The formatting is currently anyhow's "pretty" debug layout, but without any backtraces (even if backtraces are
+    /// enabled).
+    pub fn to_database_string(&self) -> String {
+        // There is an unfortunate misfeature in anyhow: If RUST_BACKTRACE env is set, we cannot
+        // suppress anyhow from printing the captured backtrace in errors without disabling pretty-printing.
+
+        // Therefore, hack the backtrace out of the generated string. This is quite slow, but so is capturing backtraces
+        // on errors.
+        let mut error_string = self.to_string();
+        match self {
+            IssueError::ClientFailure(err)
+            | IssueError::RateLimited(err)
+            | IssueError::CAFailure(err)
+            | IssueError::AuthFailure(err) => {
+                if err.backtrace().status() == BacktraceStatus::Captured {
+                    if let Some(index) = error_string.find("Stack backtrace:") {
+                        error_string = error_string[..index].trim().to_string();
+                    };
+                }
+            }
+        };
+        error_string
+    }
 }
 
 impl std::error::Error for IssueError {}

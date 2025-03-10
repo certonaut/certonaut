@@ -356,7 +356,7 @@ impl Certonaut {
                 bail!("Duplicate CA id {id} in configuration");
             };
         }
-        let database = Database::open(config_directory()).await?;
+        let database = Database::open(config_directory(), "database.sqlite").await?;
         Ok(Self {
             issuers,
             certificates: config.certificates,
@@ -1017,6 +1017,8 @@ impl AcmeIssuerWithAccount<'_> {
                 self.authorize(order, authorizers)
                     .await
                     .context("Error authorizing certificate issuance")
+                    // TODO: Just because we failed 'during' authorization doesn't mean that the failure isn't
+                    // something else. Only throw this if it's actually an acme::error::unauthorized issue
                     .authentication_failure()?;
                 info!("Finished authorizing all identifiers");
             }

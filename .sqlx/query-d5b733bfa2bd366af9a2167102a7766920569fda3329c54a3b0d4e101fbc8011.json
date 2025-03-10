@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2;",
+  "query": "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2 ORDER BY id;",
   "describe": {
     "columns": [
       {
@@ -40,5 +40,5 @@
       false
     ]
   },
-  "hash": "ea4febe2104c2e50869da906ef0c73ad7bd28281bf476e31125bb46fc1d0c2d3"
+  "hash": "d5b733bfa2bd366af9a2167102a7766920569fda3329c54a3b0d4e101fbc8011"
 }

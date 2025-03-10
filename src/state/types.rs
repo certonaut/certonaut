@@ -9,9 +9,8 @@ struct Ari {
     next_update: OffsetDateTime,
 }
 
-#[derive(Debug, sqlx::Type)]
+#[derive(Debug, sqlx::Type, FromRepr, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[repr(i32)]
-#[derive(FromRepr)]
 pub enum RenewalOutcome {
     Unknown = -1,
     Success = 0,
@@ -19,6 +18,7 @@ pub enum RenewalOutcome {
     AuthorizationFailure = 2,
     CAFailure = 3,
     ClientFailure = 4,
+    InstallationFailure = 5,
 }
 
 impl<T> From<&IssueResult<T>> for RenewalOutcome {
