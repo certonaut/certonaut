@@ -1,12 +1,14 @@
-use crate::CRATE_NAME;
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::config;
+use crate::config::ConfigBackend;
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::InteractiveService;
+use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
-use crate::{Certonaut, parse_duration};
-use anyhow::{Context, bail};
+use crate::CRATE_NAME;
+use crate::{parse_duration, Certonaut};
+use anyhow::{bail, Context};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;
@@ -15,7 +17,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use strum::VariantArray;
-use crate::config::ConfigBackend;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]
@@ -412,9 +413,11 @@ async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
             let issue_cmd = process_issue_cmd(issue_cmd, matches)?;
             if interactive {
                 let mut service = InteractiveService::new(client);
-                return service.interactive_issuance(issue_cmd).await;
+                service.interactive_issuance(issue_cmd).await
+            } else {
+                let mut service = NonInteractiveService::new(client);
+                service.noninteractive_issuance(issue_cmd).await
             }
-            todo!("Non-interactive issuance")
         }
         CertificateCommand::Renew(_renew_cmd) => {
             let service = RenewService::new(client, interactive);

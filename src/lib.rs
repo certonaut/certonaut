@@ -46,6 +46,7 @@ pub mod crypto;
 pub mod error;
 pub mod interactive;
 pub mod magic;
+pub mod non_interactive;
 pub mod pebble;
 pub mod renew;
 pub mod state;
@@ -373,6 +374,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
 
     pub fn get_ca_mut(&mut self, id: &str) -> Option<&mut AcmeIssuer> {
         self.issuers.get_mut(id)
+    }
+
+    pub fn get_default_ca(&self) -> Option<&AcmeIssuer> {
+        self.issuers.values().find(|issuer| issuer.config.default)
     }
 
     pub fn get_issuer_with_account(
@@ -905,6 +910,10 @@ impl AcmeIssuer {
 
     pub fn get_account(&self, account_id: &str) -> Option<&AcmeAccount> {
         self.accounts.get(account_id)
+    }
+
+    pub fn get_accounts(&self) -> impl Iterator<Item = &AcmeAccount> {
+        self.accounts.values()
     }
 
     pub fn add_account(&mut self, account: AcmeAccount) {
