@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use strum::VariantArray;
+use crate::config::ConfigBackend;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]
@@ -247,10 +248,10 @@ impl Debug for CommandLineSolverConfiguration {
     }
 }
 
-pub async fn process_cli_command(
+pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     mut cmd: Option<Command>,
     matches: &ArgMatches,
-    client: Certonaut,
+    client: Certonaut<CB>,
     interactive: bool,
 ) -> anyhow::Result<()> {
     loop {
@@ -373,9 +374,9 @@ pub async fn process_cli_command(
     }
 }
 
-async fn process_issuer_command(
+async fn process_issuer_command<CB: ConfigBackend + Send + Sync>(
     cmd: IssuerCommand,
-    client: Certonaut,
+    client: Certonaut<CB>,
     interactive: bool,
 ) -> anyhow::Result<()> {
     match cmd {
@@ -400,10 +401,10 @@ async fn process_issuer_command(
     }
 }
 
-async fn process_certificate_command(
+async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
     cmd: CertificateCommand,
     matches: &ArgMatches,
-    client: Certonaut,
+    client: Certonaut<CB>,
     interactive: bool,
 ) -> anyhow::Result<()> {
     match cmd {
@@ -426,9 +427,9 @@ async fn process_certificate_command(
     }
 }
 
-async fn process_account_command(
+async fn process_account_command<CB: ConfigBackend + Send + Sync>(
     cmd: AccountCommand,
-    client: Certonaut,
+    client: Certonaut<CB>,
     interactive: bool,
 ) -> anyhow::Result<()> {
     match cmd {

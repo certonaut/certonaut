@@ -10,9 +10,9 @@ use crate::acme::object::{
 use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, KeyAuthorization};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, Configuration,
-    MainConfiguration, SolverConfiguration, config_directory,
+    config_directory, AccountConfiguration,
+    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
+    ConfigBackend, Configuration, ConfigurationManager, MainConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -21,7 +21,7 @@ use crate::error::{IssueContext, IssueResult};
 use crate::pebble::pebble_root;
 use crate::state::Database;
 use crate::util::humanize_duration_core;
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
@@ -339,14 +339,16 @@ async fn new_acme_client(
 }
 
 #[derive(Debug)]
-pub struct Certonaut {
+pub struct Certonaut<CB> {
     issuers: HashMap<String, AcmeIssuer>,
     certificates: HashMap<String, CertificateConfiguration>,
     database: Database,
+    config: ConfigurationManager<CB>,
 }
 
-impl Certonaut {
-    pub async fn try_new(config: Configuration) -> anyhow::Result<Self> {
+impl<CB: ConfigBackend> Certonaut<CB> {
+    pub async fn try_new(manager: ConfigurationManager<CB>) -> anyhow::Result<Self> {
+        let config = manager.load()?;
         let mut issuers = HashMap::new();
         for ca in config.main.ca_list {
             let id = ca.inner.identifier.clone();
@@ -361,6 +363,7 @@ impl Certonaut {
             issuers,
             certificates: config.certificates,
             database,
+            config: manager,
         })
     }
 
@@ -458,7 +461,9 @@ impl Certonaut {
         };
         let issuer = AcmeIssuer::try_new(new_ca)?;
         self.issuers.insert(id, issuer);
-        config::save(&self.current_config()).context("Saving new configuration")?;
+        self.config
+            .save(&self.current_config())
+            .context("Saving new configuration")?;
         Ok(())
     }
 
@@ -467,7 +472,9 @@ impl Certonaut {
             .get_ca_mut(ca_id)
             .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
         ca.add_account(new_account);
-        config::save(&self.current_config()).context("Saving new configuration")?;
+        self.config
+            .save(&self.current_config())
+            .context("Saving new configuration")?;
         Ok(())
     }
 
@@ -532,7 +539,9 @@ impl Certonaut {
             .get_ca_mut(issuer_id)
             .and_then(|issuer| issuer.remove_account(account_id));
         if let Some(deleted_account) = deleted_account {
-            config::save(&self.current_config()).context("Saving new configuration")?;
+            self.config
+                .save(&self.current_config())
+                .context("Saving new configuration")?;
             if let Err(e) = std::fs::remove_file(deleted_account.config.key_file) {
                 warn!("Failed to delete account key: {}", e);
             }
@@ -546,7 +555,9 @@ impl Certonaut {
         self.issuers
             .remove(issuer_id)
             .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;
-        config::save(&self.current_config()).context("Saving new configuration")?;
+        self.config
+            .save(&self.current_config())
+            .context("Saving new configuration")?;
         Ok(())
     }
 
@@ -567,7 +578,8 @@ impl Certonaut {
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!("Got a certificate!");
-        config::save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
+        self.config
+            .save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         Ok(())
     }
 
@@ -584,13 +596,7 @@ impl Certonaut {
                 issuer.issuer.config.name
             );
             let cert_key = if cert_config.advanced.reuse_key {
-                let key_file = config::certificate_directory(cert_id).join("key.pem");
-                asymmetric::KeyPair::load_from_disk(
-                    File::open(key_file)
-                        .context("Opening existing certificate private key file")?,
-                )
-                .context("Loading existing certificate private key file")?
-                .to_rcgen_keypair()?
+                self.config.load_certificate_private_key(cert_id)?
             } else {
                 asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?
             };
@@ -599,7 +605,12 @@ impl Certonaut {
                 .issue(&cert_key, cert_config.advanced.lifetime, authorizers)
                 .await;
             if let Ok(new_cert) = &issue_result {
-                config::save_certificate_and_config(cert_id, cert_config, &cert_key, new_cert)?;
+                self.config.save_certificate_and_config(
+                    cert_id,
+                    cert_config,
+                    &cert_key,
+                    new_cert,
+                )?;
             }
             issue_result
         };
@@ -779,9 +790,7 @@ impl Certonaut {
                 if cert.advanced.reuse_key { "yes" } else { "no" }
             );
 
-            let mut cert_file = config::certificate_directory(&cert_id);
-            cert_file.push("fullchain.pem");
-            match load_certificates_from_file(&cert_file, Some(1)) {
+            match self.config.load_certificate_files(&cert_id, Some(1)) {
                 Ok(x509_certs) => {
                     if let Some(cert) = x509_certs.first() {
                         let serial = cert.serial.to_bytes_be();

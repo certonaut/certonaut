@@ -1,18 +1,18 @@
 use crate::acme::object::Identifier;
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
-    CertificateConfiguration, IdentifierConfiguration, SolverConfiguration,
+    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::util::humanize_duration;
 use crate::{
-    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, CRATE_NAME, Certonaut,
-    DomainSolverMap, NewAccountOptions, ParsedDuration, build_domain_solver_maps,
+    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut,
+    DomainSolverMap, NewAccountOptions, ParsedDuration, CRATE_NAME,
 };
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -34,12 +34,12 @@ mod editor;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
-pub struct InteractiveService {
-    client: Certonaut,
+pub struct InteractiveService<CB> {
+    client: Certonaut<CB>,
 }
 
-impl InteractiveService {
-    pub fn new(client: Certonaut) -> Self {
+impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
+    pub fn new(client: Certonaut<CB>) -> Self {
         Self { client }
     }
 
@@ -90,7 +90,7 @@ impl InteractiveService {
             .client
             .get_ca(&ca_id)
             .ok_or(anyhow!("Freshly created CA not found"))?;
-        Certonaut::print_issuer(issuer).await;
+        Certonaut::<CB>::print_issuer(issuer).await;
         println!("Successfully added new certificate authority");
         Ok(())
     }
@@ -102,7 +102,7 @@ impl InteractiveService {
         let acc_id = new_account.config.identifier.clone();
         self.client.add_new_account(&ca_id, new_account)?;
         let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
-        Certonaut::print_account(&account).await;
+        Certonaut::<CB>::print_account(&account).await;
         println!("Successfully added new account");
         Ok(())
     }
@@ -111,7 +111,7 @@ impl InteractiveService {
         let ca_id = self.interactive_select_ca(false)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
         println!("You have selected this CA for deletion:");
-        Certonaut::print_issuer(issuer).await;
+        Certonaut::<CB>::print_issuer(issuer).await;
         let delete = Confirm::new("Are you sure you want to remove this CA from configuration?")
             .with_default(false)
             .prompt()
@@ -147,7 +147,7 @@ impl InteractiveService {
             "You have selected the following account for {}",
             "deletion".red()
         );
-        Certonaut::print_account(&account).await;
+        Certonaut::<CB>::print_account(&account).await;
         let delete = Confirm::new(
             "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
         )
@@ -710,7 +710,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok((issuer, account))
     }
 
-    fn user_select_ca(client: &Certonaut, allow_creation: bool) -> Result<CaChoice, Error> {
+    fn user_select_ca(client: &Certonaut<CB>, allow_creation: bool) -> Result<CaChoice, Error> {
         let configured_ca_list = &client.issuers;
         if configured_ca_list.is_empty() {
             if allow_creation {
@@ -756,7 +756,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(user_choice)
     }
 
-    fn user_create_ca(client: &mut Certonaut) -> Result<CertificateAuthorityConfiguration, Error> {
+    fn user_create_ca(client: &mut Certonaut<CB>) -> Result<CertificateAuthorityConfiguration, Error> {
         println!("{}", "Adding a new certificate authority".dark_green());
         let ca_name = Text::new("Name for the new CA:")
             .prompt()
@@ -922,7 +922,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
             ca_name.to_string()
         };
         let account_id = format!("{ca_id}@{account_num}");
-        Certonaut::create_account(
+        Certonaut::<CB>::create_account(
             acme_client,
             NewAccountOptions {
                 name: account_name,

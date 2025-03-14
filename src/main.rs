@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
     CONFIG_FILE
         .set(cli.config)
         .expect("Config file already set");
-    let config = config::load()?;
+    let config = config::new_configuration_manager_with_default_config()?;
     let client = Certonaut::try_new(config)
         .await
         .context("Loading configuration failed")?;

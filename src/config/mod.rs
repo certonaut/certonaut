@@ -1,15 +1,18 @@
 use crate::acme::client::DownloadedCertificate;
+use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
+use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
 use crate::CRATE_NAME;
-use anyhow::Error;
+use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -39,13 +42,22 @@ pub fn config_directory() -> &'static Path {
 
 #[allow(clippy::module_name_repetitions)]
 pub trait ConfigBackend {
-    fn certificate_storage(&self, id: &str) -> PathBuf;
     fn load_main(&self) -> Result<MainConfiguration, Error>;
     fn save_main(&self, config: &MainConfiguration) -> Result<(), Error>;
-
-    fn load_certificate(&self, id: &str) -> Result<CertificateConfiguration, Error>;
-    fn save_certificate(&self, id: &str, config: &CertificateConfiguration) -> Result<(), Error>;
-
+    fn load_certificate_config(&self, id: &str) -> Result<CertificateConfiguration, Error>;
+    fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error>;
+    fn load_certificate_files(
+        &self,
+        id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<ParsedX509Certificate>, Error>;
+    fn save_certificate_config(
+        &self,
+        id: &str,
+        config: &CertificateConfiguration,
+    ) -> Result<(), Error>;
+    fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error>;
+    fn save_certificate_file(&self, id: &str, cert: &DownloadedCertificate) -> Result<(), Error>;
     fn list_certificates(&self) -> Result<Vec<String>, Error>;
 }
 
@@ -68,10 +80,6 @@ impl<'a> MultiFileConfigBackend<'a> {
 }
 
 impl ConfigBackend for MultiFileConfigBackend<'_> {
-    fn certificate_storage(&self, id: &str) -> PathBuf {
-        self.certificate_path(id)
-    }
-
     fn load_main(&self) -> Result<MainConfiguration, Error> {
         let main_path = self.main_path();
         TomlConfiguration::load(main_path.join(format!("{CRATE_NAME}.toml")))
@@ -83,15 +91,74 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
         TomlConfiguration::save(config, main_path.join(format!("{CRATE_NAME}.toml")))
     }
 
-    fn load_certificate(&self, id: &str) -> Result<CertificateConfiguration, Error> {
+    fn load_certificate_config(&self, id: &str) -> Result<CertificateConfiguration, Error> {
         let cert_path = self.certificate_path(id);
         TomlConfiguration::load(cert_path.join("config.toml"))
     }
 
-    fn save_certificate(&self, id: &str, config: &CertificateConfiguration) -> Result<(), Error> {
+    fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
+        let cert_path = self.certificate_path(id);
+        let key_file = cert_path.join("key.pem");
+        asymmetric::KeyPair::load_from_disk(
+            File::open(&key_file)
+                .context(format!("Opening private key file {}", key_file.display()))?,
+        )
+        .context(format!("Loading private key {}", key_file.display()))?
+        .to_rcgen_keypair()
+        .context(format!(
+            "Converting private key {} to rcgen format",
+            key_file.display()
+        ))
+    }
+
+    fn load_certificate_files(
+        &self,
+        id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<ParsedX509Certificate>, Error> {
+        let cert_path = self.certificate_path(id);
+        let cert_file = cert_path.join("fullchain.pem");
+        crate::load_certificates_from_file(cert_file, limit)
+    }
+
+    fn save_certificate_config(
+        &self,
+        id: &str,
+        config: &CertificateConfiguration,
+    ) -> Result<(), Error> {
         let cert_path = self.certificate_path(id);
         std::fs::create_dir_all(&cert_path)?;
         TomlConfiguration::save(config, cert_path.join("config.toml"))
+    }
+
+    fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error> {
+        let cert_path = self.certificate_path(id);
+        std::fs::create_dir_all(&cert_path).context(format!(
+            "Creating directory for certificate private key file {}",
+            cert_path.display()
+        ))?;
+        let key_file = cert_path.join("key.pem");
+        let pem = key.serialize_pem();
+        std::fs::write(&key_file, pem.as_bytes()).context(format!(
+            "Writing private key to file {}",
+            key_file.display()
+        ))?;
+        Ok(())
+    }
+
+    fn save_certificate_file(&self, id: &str, cert: &DownloadedCertificate) -> Result<(), Error> {
+        let cert_path = self.certificate_path(id);
+        std::fs::create_dir_all(&cert_path).context(format!(
+            "Creating directory for certificate file {}",
+            cert_path.display()
+        ))?;
+        let cert_file = cert_path.join("fullchain.pem");
+        let pem = cert.pem.as_bytes();
+        std::fs::write(&cert_file, pem).context(format!(
+            "Writing certificate to file {}",
+            cert_file.display()
+        ))?;
+        Ok(())
     }
 
     fn list_certificates(&self) -> Result<Vec<String>, Error> {
@@ -102,7 +169,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             Err(e) => {
                 return match e.kind() {
                     std::io::ErrorKind::NotFound => Ok(certificates),
-                    _ => Err(e.into()),
+                    _ => Err(Error::new(e).context("Listing certificate directory")),
                 };
             }
         };
@@ -122,7 +189,8 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
     }
 }
 
-pub struct ConfigurationManager<B: ConfigBackend> {
+#[derive(Debug)]
+pub struct ConfigurationManager<B> {
     backend: B,
 }
 
@@ -136,7 +204,11 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         let cert_ids = self.backend.list_certificates()?;
         let certificates = cert_ids
             .into_iter()
-            .map(|id| self.backend.load_certificate(&id).map(|cert| (id, cert)))
+            .map(|id| {
+                self.backend
+                    .load_certificate_config(&id)
+                    .map(|cert| (id, cert))
+            })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         Ok(Configuration {
@@ -148,13 +220,21 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
     pub fn save(&self, config: &Configuration) -> Result<(), Error> {
         self.backend.save_main(&config.main)?;
         for (id, cert) in &config.certificates {
-            self.backend.save_certificate(id, cert)?;
+            self.backend.save_certificate_config(id, cert)?;
         }
         Ok(())
     }
 
-    pub fn certificate_storage(&self, id: &str) -> PathBuf {
-        self.backend.certificate_storage(id)
+    pub fn load_certificate_files(
+        &self,
+        id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<ParsedX509Certificate>, Error> {
+        self.backend.load_certificate_files(id, limit)
+    }
+
+    pub fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
+        self.backend.load_certificate_private_key(id)
     }
 
     pub fn save_certificate_config(
@@ -162,17 +242,12 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         id: &str,
         config: &CertificateConfiguration,
     ) -> Result<(), Error> {
-        self.backend.save_certificate(id, config)?;
+        self.backend.save_certificate_config(id, config)?;
         Ok(())
     }
 
-    pub fn save_certificate_key(&self, id: &str, key: &KeyPair) -> Result<(), Error> {
-        let cert_dir = self.backend.certificate_storage(id);
-        std::fs::create_dir_all(&cert_dir)?;
-        let key_file = cert_dir.join("key.pem");
-        let pem = key.serialize_pem();
-        std::fs::write(&key_file, pem.as_bytes())?;
-        Ok(())
+    pub fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error> {
+        self.backend.save_certificate_private_key(id, key)
     }
 
     pub fn save_downloaded_certificate(
@@ -180,11 +255,19 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         id: &str,
         cert: &DownloadedCertificate,
     ) -> Result<(), Error> {
-        let cert_dir = self.backend.certificate_storage(id);
-        std::fs::create_dir_all(&cert_dir)?;
-        let key_file = cert_dir.join("fullchain.pem");
-        let pem = cert.pem.as_bytes();
-        std::fs::write(&key_file, pem)?;
+        self.backend.save_certificate_file(id, cert)
+    }
+
+    pub fn save_certificate_and_config(
+        &self,
+        id: &str,
+        cert_config: &CertificateConfiguration,
+        keypair: &KeyPair,
+        cert: &DownloadedCertificate,
+    ) -> Result<(), Error> {
+        self.save_certificate_config(id, cert_config)?;
+        self.save_certificate_private_key(id, keypair)?;
+        self.save_downloaded_certificate(id, cert)?;
         Ok(())
     }
 }
@@ -305,45 +388,18 @@ impl SolverConfiguration {
 
 // TODO: Get rid of these globals and refactor logic to be suitable for usage in tests
 
-pub fn load() -> Result<Configuration, Error> {
+pub fn new_configuration_manager_with_default_config()
+-> Result<ConfigurationManager<MultiFileConfigBackend<'static>>, Error> {
     let directory = config_directory();
     let exists = directory.exists();
     let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
-    if exists {
-        manager.load()
+    Ok(if exists {
+        manager
     } else {
         let default = DefaultConfig::default().get_config();
         manager.save(&default)?;
-        Ok(default)
-    }
-}
-
-pub fn save(config: &Configuration) -> Result<(), Error> {
-    let directory = config_directory();
-    let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
-    manager.save(config)?;
-    Ok(())
-}
-
-pub fn certificate_directory(cert_id: &str) -> PathBuf {
-    let directory = config_directory();
-    let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
-    manager.certificate_storage(cert_id)
-}
-
-#[allow(clippy::module_name_repetitions)]
-pub fn save_certificate_and_config(
-    id: &str,
-    cert_config: &CertificateConfiguration,
-    keypair: &KeyPair,
-    cert: &DownloadedCertificate,
-) -> Result<(), Error> {
-    let directory = config_directory();
-    let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
-    manager.save_certificate_config(id, cert_config)?;
-    manager.save_certificate_key(id, keypair)?;
-    manager.save_downloaded_certificate(id, cert)?;
-    Ok(())
+        manager
+    })
 }
 
 #[allow(clippy::module_name_repetitions)]
@@ -351,6 +407,7 @@ pub fn save_certificate_and_config(
 pub struct DefaultConfig {}
 
 impl DefaultConfig {
+    #[allow(clippy::missing_panics_doc)]
     pub fn get_config(&self) -> Configuration {
         Configuration {
             main: MainConfiguration {

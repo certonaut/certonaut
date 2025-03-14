@@ -1,9 +1,9 @@
 use crate::cert::ParsedX509Certificate;
-use crate::config::config_directory;
+use crate::config::{config_directory, ConfigBackend};
 use crate::state::types::external::{RenewalOutcome, RenewalOutcomeDiscriminants};
 use crate::util::humanize_duration;
 use crate::Certonaut;
-use crate::{config, load_certificates_from_file, state, util, AcmeIssuerWithAccount};
+use crate::{state, AcmeIssuerWithAccount};
 use anyhow::{anyhow, bail, Context};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -18,13 +18,13 @@ use tracing::{debug, info, warn};
 const MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS: i64 = 300;
 
 #[allow(clippy::module_name_repetitions)]
-pub struct RenewService {
+pub struct RenewService<CB> {
     interactive: bool,
-    client: Arc<Certonaut>,
+    client: Arc<Certonaut<CB>>,
 }
 
-impl RenewService {
-    pub fn new(client: Certonaut, interactive: bool) -> Self {
+impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
+    pub fn new(client: Certonaut<CB>, interactive: bool) -> Self {
         Self {
             interactive,
             client: Arc::new(client),
@@ -32,7 +32,9 @@ impl RenewService {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        let lock = state::RenewalLock::exclusive_lock(config_directory()).await?;
+        let lock = state::RenewalLock::exclusive_lock(config_directory())
+            .await
+            .context("Failed to acquire exclusive file lock for renewal")?;
         let certs = &self.client.certificates;
         let mut renew_tasks = FuturesUnordered::new();
         for cert_name in certs.keys() {
@@ -67,14 +69,14 @@ impl RenewService {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub struct RenewTask {
+pub struct RenewTask<CB: ConfigBackend> {
     interactive: bool,
     cert_id: String,
-    client: Arc<Certonaut>,
+    client: Arc<Certonaut<CB>>,
 }
 
-impl RenewTask {
-    pub fn new(interactive: bool, cert_name: String, client: Arc<Certonaut>) -> Self {
+impl<CB: ConfigBackend> RenewTask<CB> {
+    pub fn new(interactive: bool, cert_name: String, client: Arc<Certonaut<CB>>) -> Self {
         Self {
             interactive,
             cert_id: cert_name,
@@ -93,17 +95,17 @@ impl RenewTask {
             .get(cert_id)
             .ok_or(anyhow!("Certificate {cert_id} not found"))?;
         let cert_name = &cert_config.display_name;
-        let certificates = load_certificates_from_file(
-            config::certificate_directory(cert_id).join("fullchain.pem"),
-            Some(1),
-        )?;
+        let certificates = self
+            .client
+            .config
+            .load_certificate_files(cert_id, Some(1))?;
 
         let issuer = self
             .client
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         if let Some(leaf) = certificates.first() {
             let renew_in = Self::renew_in(&issuer, leaf).await;
-            let renew_in_humanized = util::humanize_duration(renew_in);
+            let renew_in_humanized = humanize_duration(renew_in);
             if renew_in > Duration::new(MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS, 0) {
                 info!("Certificate {cert_name} is not due for renewal for {renew_in_humanized}");
                 return Ok(());

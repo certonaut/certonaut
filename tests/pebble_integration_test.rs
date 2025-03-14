@@ -1,13 +1,11 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::Identifier;
-use certonaut::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration, Configuration, MainConfiguration,
-};
+use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration, MainConfiguration};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
-use certonaut::pebble::{ChallengeTestHttpSolver, pebble_root};
-use certonaut::{AcmeAccount, Authorizer, Certonaut, config};
+use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver};
+use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -38,12 +36,14 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
         terms_of_service_agreed: Some(true),
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
-    let mut certonaut = Certonaut::try_new(Configuration {
-        main: MainConfiguration { ca_list: vec![] },
-        #[allow(clippy::default_trait_access)]
-        certificates: Default::default(),
-    })
-    .await?;
+    // TODO: Refactor for better test usage
+    // Configuration {
+    //     main: MainConfiguration { ca_list: vec![] },
+    //     #[allow(clippy::default_trait_access)]
+    //     certificates: Default::default(),
+    // }
+    let mut certonaut =
+        Certonaut::try_new(config::new_configuration_manager_with_default_config()?).await?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),
