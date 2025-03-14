@@ -22,7 +22,7 @@ impl IssueError {
 
         // Therefore, hack the backtrace out of the generated string. This is quite slow, but so is capturing backtraces
         // on errors.
-        let mut error_string = self.to_string();
+        let mut error_string = format!("Error: {self}");
         match self {
             IssueError::ClientFailure(err)
             | IssueError::RateLimited(err)

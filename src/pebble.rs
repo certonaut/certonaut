@@ -1,9 +1,9 @@
-use crate::ChallengeSolver;
 use crate::acme::object::{Identifier, InnerChallenge, Token};
 use crate::challenge_solver::KeyAuthorization;
-use crate::config::{PebbleHttpSolverConfiguration, SolverConfiguration};
+use crate::config::PebbleHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use anyhow::{Error, bail};
+use crate::ChallengeSolver;
+use anyhow::{bail, Error};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -59,10 +59,6 @@ impl ChallengeSolver for ChallengeTestHttpSolver {
 
     fn short_name(&self) -> &'static str {
         "pebble-http"
-    }
-
-    fn config(&self) -> SolverConfiguration {
-        SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {})
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

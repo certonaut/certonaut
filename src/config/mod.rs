@@ -1,4 +1,3 @@
-use crate::CRATE_NAME;
 use crate::acme::client::DownloadedCertificate;
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
@@ -6,6 +5,7 @@ use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
+use crate::CRATE_NAME;
 use anyhow::Error;
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
@@ -302,6 +302,8 @@ impl SolverConfiguration {
         }
     }
 }
+
+// TODO: Get rid of these globals and refactor logic to be suitable for usage in tests
 
 pub fn load() -> Result<Configuration, Error> {
     let directory = config_directory();

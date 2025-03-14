@@ -1,8 +1,8 @@
 use crate::acme::object::{Identifier, InnerChallenge};
 use crate::challenge_solver::{ChallengeSolver, HttpChallengeParameters, KeyAuthorization};
-use crate::config::{MagicHttpSolverConfiguration, SolverConfiguration};
+use crate::config::MagicHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use anyhow::{Error, bail};
+use anyhow::{bail, Error};
 use async_trait::async_trait;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -65,17 +65,6 @@ impl ChallengeSolver for MagicHttpSolver {
 
     fn short_name(&self) -> &'static str {
         "magic-http"
-    }
-
-    fn config(&self) -> SolverConfiguration {
-        let port = if self.challenge_port == DEFAULT_CHALLENGE_PORT {
-            None
-        } else {
-            Some(self.challenge_port)
-        };
-        SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
-            validation_port: port,
-        })
     }
 
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {

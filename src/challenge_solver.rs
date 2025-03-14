@@ -6,11 +6,11 @@ use crate::config::{
 };
 use crate::crypto::jws::JsonWebKey;
 use crate::magic;
-use anyhow::{Error, bail};
+use anyhow::{bail, Error};
 use async_trait::async_trait;
-use clap::{Arg, Command, value_parser};
-use inquire::CustomType;
+use clap::{value_parser, Arg, Command};
 use inquire::validator::Validation;
+use inquire::CustomType;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;
@@ -55,7 +55,6 @@ fn get_key_authorization(key: &JsonWebKey, token: &Token) -> String {
 pub trait ChallengeSolver: Send {
     fn long_name(&self) -> &'static str;
     fn short_name(&self) -> &'static str;
-    fn config(&self) -> SolverConfiguration;
     // TODO: Preference sorting in case a solver supports multiple?
     fn supports_challenge(&self, challenge: &InnerChallenge) -> bool;
     async fn deploy_challenge(
@@ -84,10 +83,6 @@ impl ChallengeSolver for NullSolver {
 
     fn short_name(&self) -> &'static str {
         "null"
-    }
-
-    fn config(&self) -> SolverConfiguration {
-        SolverConfiguration::Null(NullSolverConfiguration {})
     }
 
     fn supports_challenge(&self, _challenge: &InnerChallenge) -> bool {
