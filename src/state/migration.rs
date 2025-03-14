@@ -1,8 +1,6 @@
 use crate::CRATE_NAME;
-use sqlx::migrate::MigrateError;
-use sqlx::pool::PoolConnection;
 use sqlx::SqlitePool;
-use sqlx::{Executor, Sqlite};
+use sqlx::migrate::MigrateError;
 use tracing::warn;
 
 // This is mainly in its own module because the sqlx::migrate! macro breaks my IDE's analyzer

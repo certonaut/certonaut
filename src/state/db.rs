@@ -1,6 +1,6 @@
 use crate::error::IssueResult;
-use crate::state::types::{Renewal, RenewalOutcome};
-use anyhow::{anyhow, Context};
+use crate::state::types::{external, internal};
+use anyhow::{Context, anyhow};
 use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::{ConnectOptions, Executor};
 use std::path::Path;
@@ -55,7 +55,7 @@ impl crate::state::Database {
         cert_id: &str,
         result: &IssueResult<T>,
     ) -> anyhow::Result<()> {
-        let outcome: RenewalOutcome = result.into();
+        let outcome: internal::RenewalOutcome = result.into();
         let failure = match result {
             Ok(_) => None,
             Err(err) => Some(err.to_database_string()),
@@ -76,16 +76,19 @@ impl crate::state::Database {
     pub async fn get_latest_renewals(
         &self,
         cert_id: &str,
-        since: OffsetDateTime,
-    ) -> anyhow::Result<Vec<Renewal>> {
+        since: &OffsetDateTime,
+    ) -> anyhow::Result<Vec<external::Renewal>> {
         let renewals = sqlx::query_as!(
-            Renewal,
+            internal::Renewal,
             "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2 ORDER BY id;",
             cert_id,
             since
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await?
+        .into_iter()
+        .filter_map(|renew| Option::<external::Renewal>::from(renew))
+        .collect::<Vec<_>>();
         Ok(renewals)
     }
 
@@ -110,6 +113,7 @@ impl Drop for crate::state::Database {
 mod tests {
     use super::*;
     use crate::error::IssueError;
+    use crate::state::types::external::RenewalOutcome;
     use rstest::rstest;
     use std::ops::{Deref, DerefMut, Sub};
     use std::sync::atomic::AtomicUsize;
@@ -172,14 +176,14 @@ mod tests {
         let renewals_1 = db_1
             .get_latest_renewals(
                 "cert_1",
-                OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
+                &OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
             )
             .await
             .unwrap();
         let renewals_2 = db_2
             .get_latest_renewals(
                 "cert_1",
-                OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
+                &OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
             )
             .await
             .unwrap();
@@ -196,7 +200,7 @@ mod tests {
         let renewals = db
             .get_latest_renewals(
                 "cert_1",
-                OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
             )
             .await
             .unwrap();
@@ -204,7 +208,6 @@ mod tests {
         assert_eq!(renewals.len(), 1);
         let renewal = renewals.first().unwrap();
         assert_eq!(renewal.cert_id, "cert_1");
-        assert_eq!(renewal.failure, None);
         assert_eq!(renewal.outcome, RenewalOutcome::Success);
         let time_delta = OffsetDateTime::now_utc() - renewal.timestamp;
         assert!(time_delta < Duration::from_secs(3));
@@ -212,18 +215,12 @@ mod tests {
 
     #[tokio::test]
     #[rstest]
-    #[case(
-        IssueError::CAFailure(anyhow!("Houston, we have a problem")), "Houston, we have a problem",
-        RenewalOutcome::CAFailure
-    )]
-    #[case(IssueError::RateLimited(anyhow!("I’m givin’ her all she’s got, Captain!")
-    ), "I’m givin’ her all she’s got, Captain!", RenewalOutcome::RateLimit)]
-    #[case(IssueError::AuthFailure(anyhow!("I’m sorry, Dave. I’m afraid I can’t do that.")
-    ), "I’m sorry, Dave. I’m afraid I can’t do that.", RenewalOutcome::AuthorizationFailure)]
-    #[case(IssueError::ClientFailure(anyhow!("You had one job!")), "You had one job!", RenewalOutcome::ClientFailure)]
+    #[case(IssueError::CAFailure(anyhow!("Houston, we have a problem")), RenewalOutcome::CAFailure("Error: Houston, we have a problem".into()))]
+    #[case(IssueError::RateLimited(anyhow!("I’m givin’ her all she’s got, Captain!")), RenewalOutcome::RateLimit("Error: I’m givin’ her all she’s got, Captain!".into()))]
+    #[case(IssueError::AuthFailure(anyhow!("I’m sorry, Dave. I’m afraid I can’t do that.")), RenewalOutcome::AuthorizationFailure("Error: I’m sorry, Dave. I’m afraid I can’t do that.".into()))]
+    #[case(IssueError::ClientFailure(anyhow!("You had one job!")), RenewalOutcome::ClientFailure("Error: You had one job!".into()))]
     async fn test_add_new_renewal_with_err(
         #[case] error: IssueError,
-        #[case] error_msg: &str,
         #[case] outcome: RenewalOutcome,
     ) {
         let db = open_db().await;
@@ -233,7 +230,7 @@ mod tests {
         let renewals = db
             .get_latest_renewals(
                 "cert_1",
-                OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
             )
             .await
             .unwrap();
@@ -241,7 +238,6 @@ mod tests {
         assert_eq!(renewals.len(), 1);
         let renewal = renewals.first().unwrap();
         assert_eq!(renewal.cert_id, "cert_1");
-        assert_eq!(renewal.failure, Some(error_msg.to_owned()));
         assert_eq!(renewal.outcome, outcome);
         let time_delta = OffsetDateTime::now_utc() - renewal.timestamp;
         assert!(time_delta < Duration::from_secs(3));
@@ -266,13 +262,19 @@ mod tests {
         let latest_renewals = db
             .get_latest_renewals(
                 cert_name,
-                OffsetDateTime::now_utc().sub(Duration::from_millis(999)),
+                &OffsetDateTime::now_utc().sub(Duration::from_millis(999)),
             )
             .await
             .unwrap();
         assert_eq!(latest_renewals.len(), 2);
-        assert_eq!(latest_renewals[0].failure.as_deref(), Some("Failure 1"));
-        assert_eq!(latest_renewals[1].failure.as_deref(), Some("Failure 2"));
+        assert_eq!(
+            latest_renewals[0].outcome,
+            RenewalOutcome::AuthorizationFailure("Error: Failure 1".into())
+        );
+        assert_eq!(
+            latest_renewals[1].outcome,
+            RenewalOutcome::ClientFailure("Error: Failure 2".into())
+        );
     }
 
     #[tokio::test]
@@ -289,7 +291,7 @@ mod tests {
             let latest_renewals = db
                 .get_latest_renewals(
                     cert_name,
-                    OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                    &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
                 )
                 .await
                 .unwrap();

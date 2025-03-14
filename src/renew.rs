@@ -1,14 +1,21 @@
 use crate::cert::ParsedX509Certificate;
 use crate::config::config_directory;
-use crate::{
-    config, crypto, load_certificates_from_file, state, util, AcmeIssuerWithAccount, Certonaut,
-};
+use crate::state::types::external::{RenewalOutcome, RenewalOutcomeDiscriminants};
+use crate::util::humanize_duration;
+use crate::Certonaut;
+use crate::{config, load_certificates_from_file, state, util, AcmeIssuerWithAccount};
 use anyhow::{anyhow, bail, Context};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::ops::Sub;
 use std::sync::Arc;
+use strum::IntoDiscriminant;
 use time::{Duration, OffsetDateTime};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+const MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS: i64 = 300;
 
 #[allow(clippy::module_name_repetitions)]
 pub struct RenewService {
@@ -79,15 +86,15 @@ impl RenewTask {
         if !self.interactive {
             // TODO: Sleep for a random duration
         }
-        let cert_id = self.cert_id;
+        let cert_id = &self.cert_id;
         let cert_config = self
             .client
             .certificates
-            .get(&cert_id)
+            .get(cert_id)
             .ok_or(anyhow!("Certificate {cert_id} not found"))?;
         let cert_name = &cert_config.display_name;
         let certificates = load_certificates_from_file(
-            config::certificate_directory(&cert_id).join("fullchain.pem"),
+            config::certificate_directory(cert_id).join("fullchain.pem"),
             Some(1),
         )?;
 
@@ -97,20 +104,95 @@ impl RenewTask {
         if let Some(leaf) = certificates.first() {
             let renew_in = Self::renew_in(&issuer, leaf).await;
             let renew_in_humanized = util::humanize_duration(renew_in);
-            if renew_in > Duration::new(300, 0) {
+            if renew_in > Duration::new(MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS, 0) {
                 info!("Certificate {cert_name} is not due for renewal for {renew_in_humanized}");
                 return Ok(());
             }
+            match self.decide_noninteractive_renewal().await? {
+                BackoffDecision::NoBackoff => {}
+                BackoffDecision::Backoff(reason) => {
+                    if issuer.issuer.config.testing {
+                        warn!(
+                            "Certificate {cert_name} has repeated renewal failures. Trying to renew anyway since {} is a test CA",
+                            { &issuer.issuer.config.name }
+                        );
+                    } else {
+                        warn!(
+                            "Not renewing certificate {cert_name} at this time because of: {reason}"
+                        );
+                        return Ok(());
+                    }
+                }
+            };
             info!("Certificate {cert_name} will be renewed in {renew_in_humanized}");
             tokio::time::sleep(renew_in.try_into().unwrap_or(std::time::Duration::ZERO)).await;
             self.client
-                .renew_certificate(cert_id.as_str(), cert_config, &issuer)
+                .renew_certificate(cert_id, cert_config, &issuer)
                 .await?;
         } else {
             // TODO: Gracefully handle
             bail!("Certificate {cert_name} fullchain.pem does not contain any X.509 certificate");
         }
         Ok(())
+    }
+
+    /// Decide whether renewal can be attempted now, based on previous renewal history.
+    /// Specifically, this code will suggest backoff if recent renewals failed repeatedly.
+    async fn decide_noninteractive_renewal(&self) -> anyhow::Result<BackoffDecision> {
+        // Events older than the cutoff are not considered for decision-making
+        let cutoff = OffsetDateTime::now_utc().sub(Duration::days(7));
+        let recent_renewals = self
+            .client
+            .database
+            .get_latest_renewals(&self.cert_id, &cutoff)
+            .await?;
+        let last_success = recent_renewals
+            .iter()
+            .rev()
+            .find(|r| r.outcome == RenewalOutcome::Success);
+        let last_failure = recent_renewals.iter().rev().find(|r| {
+            r.outcome != RenewalOutcome::Success && last_success.is_none_or(|s| r.id > s.id)
+        });
+
+        if let Some(last_failure) = last_failure {
+            let time_since_last_failure = OffsetDateTime::now_utc() - last_failure.timestamp;
+
+            // All failures since the last success (or all since the cutoff)
+            let recent_failures = recent_renewals.iter().filter(|r| {
+                r.outcome != RenewalOutcome::Success && last_success.is_none_or(|s| r.id > s.id)
+            });
+
+            let mut failure_buckets = HashMap::new();
+
+            for failure in recent_failures {
+                let discriminant = failure.outcome.discriminant();
+                let mut occurrences = failure_buckets
+                    .get(&discriminant)
+                    .copied()
+                    .unwrap_or(0usize);
+                occurrences += 1;
+                failure_buckets.insert(failure.outcome.discriminant(), occurrences);
+            }
+
+            if let Some((failure_type, _)) = failure_buckets.iter().find(|(_, count)| **count >= 3)
+            {
+                // We keep failing with the same problem. Reduce attempts to no more than twice a day.
+                if time_since_last_failure < Duration::hours(12) {
+                    let next_retry = Duration::hours(12) - time_since_last_failure;
+                    return Ok(BackoffDecision::Backoff(BackoffReason {
+                        next_retry,
+                        failure_type: *failure_type,
+                        last_failure: last_failure.outcome.to_string(),
+                    }));
+                }
+                return Ok(BackoffDecision::NoBackoff);
+            }
+
+            Ok(BackoffDecision::NoBackoff)
+        } else {
+            // No recent failures
+            Ok(BackoffDecision::NoBackoff)
+        }
     }
 
     #[allow(clippy::unused_async)]
@@ -138,5 +220,48 @@ impl RenewTask {
                 time_until_renew
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum BackoffDecision {
+    NoBackoff,
+    Backoff(BackoffReason),
+}
+
+#[derive(Debug, Clone)]
+struct BackoffReason {
+    next_retry: Duration,
+    failure_type: RenewalOutcomeDiscriminants,
+    last_failure: String,
+}
+
+impl Display for BackoffReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let time = humanize_duration(self.next_retry);
+        match self.failure_type {
+            RenewalOutcomeDiscriminants::Success => {
+                write!(f, "Next retry in {time}.")
+            }
+            RenewalOutcomeDiscriminants::RateLimit => {
+                write!(f, "The CA enforced a rate limit. Next retry in {time}.")
+            }
+            RenewalOutcomeDiscriminants::AuthorizationFailure => {
+                write!(
+                    f,
+                    "Too many authorization failures. This indicates a configuration problem on your side. Next retry in {time}."
+                )
+            }
+            RenewalOutcomeDiscriminants::CAFailure => {
+                write!(
+                    f,
+                    "The Certificate Authority seems to be experiencing an issue. Next retry in {time}."
+                )
+            }
+            RenewalOutcomeDiscriminants::ClientFailure => {
+                write!(f, "Too many client-side errors. Next retry in {time}.")
+            }
+        }?;
+        write!(f, " The last recorded failure was: {}", self.last_failure)
     }
 }
