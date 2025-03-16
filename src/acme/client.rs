@@ -7,16 +7,16 @@ use crate::acme::object::{
     EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{EMPTY_PAYLOAD, JsonWebKey, ProtectedHeader};
+use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
 use crate::util::serde_helper::PassthroughBytes;
-use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde::de::value::BytesDeserializer;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::time::{Duration, SystemTime};
@@ -56,6 +56,7 @@ impl AcmeClientBuilder {
     }
 }
 
+#[cfg_attr(test, faux::create)]
 #[derive(Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct AcmeClient {
@@ -64,6 +65,7 @@ pub struct AcmeClient {
     nonce_pool: Mutex<VecDeque<Nonce>>,
 }
 
+// Separate impl block due to faux limitations
 impl AcmeClient {
     async fn try_new(builder: AcmeClientBuilder) -> ProtocolResult<Self> {
         let http_client = builder
@@ -76,11 +78,27 @@ impl AcmeClient {
             StatusCode::OK => directory_response.json().await?,
             _ => return Err(Error::get_error_from_http(directory_response).await),
         };
-        Ok(Self {
+        Ok(Self::new(
             http_client,
             directory,
-            nonce_pool: Mutex::new(VecDeque::default()),
-        })
+            Mutex::new(VecDeque::new()),
+        ))
+    }
+}
+
+// Main impl block
+#[cfg_attr(test, faux::methods)]
+impl AcmeClient {
+    fn new(
+        http_client: HttpClient,
+        directory: Directory,
+        nonce_pool: Mutex<VecDeque<Nonce>>,
+    ) -> Self {
+        Self {
+            http_client,
+            directory,
+            nonce_pool,
+        }
     }
 
     pub async fn get_nonce(&self) -> ProtocolResult<Nonce> {
@@ -210,6 +228,9 @@ impl AcmeClient {
         Err(last_error)
     }
 
+    /// Get the ACME directory resource.
+    ///
+    /// This is cached, so subsequent calls will return the same directory.
     pub fn get_directory(&self) -> &Directory {
         &self.directory
     }
@@ -484,9 +505,9 @@ mod tests {
     use super::*;
     use bstr::ByteSlice;
     use httptest::matchers::request::method_path;
-    use httptest::matchers::{ExecutionContext, Matcher, request};
+    use httptest::matchers::{request, ExecutionContext, Matcher};
     use httptest::responders::{json_encoded, status_code};
-    use httptest::{Expectation, IntoTimes, all_of, cycle};
+    use httptest::{all_of, cycle, Expectation, IntoTimes};
     use serde_json::json;
     use std::fmt::Formatter;
     use std::fs::File;

@@ -1,7 +1,9 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::Identifier;
-use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Configuration, MainConfiguration};
+use certonaut::config::{
+    AccountConfiguration, CertificateAuthorityConfiguration,
+};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver};
@@ -67,7 +69,6 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     let issuer = certonaut.get_issuer_with_account("pebble", "pebble-account")?;
     let authorizers = vec![Authorizer::new(
         Identifier::from("example.com".to_string()),
-        None,
         ChallengeTestHttpSolver::default(),
     )];
     issuer

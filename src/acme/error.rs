@@ -123,8 +123,11 @@ impl std::error::Error for Error {
     }
 }
 
+pub const ACME_URN: &str = "urn:ietf:params:acme:error:";
 pub const ACME_BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
 pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";
+pub const ACME_UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
+pub const ACME_SERVER_INTERNAL: &str = "urn:ietf:params:acme:error:serverInternal";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -143,6 +146,20 @@ impl Problem {
 
     pub fn is_rate_limit(&self) -> bool {
         self.typ == ACME_RATE_LIMITED || self.subproblems.iter().any(Subproblem::is_rate_limit)
+    }
+
+    pub fn is_auth_failure(&self) -> bool {
+        // TODO: Consider caa, connection, dns, incorrectResponse, tls as well
+        self.typ == ACME_UNAUTHORIZED || self.subproblems.iter().any(Subproblem::is_auth_failure)
+    }
+
+    pub fn is_server_failure(&self) -> bool {
+        self.typ == ACME_SERVER_INTERNAL
+            || self.subproblems.iter().any(Subproblem::is_server_failure)
+    }
+
+    pub fn into_result(self) -> Result<(), Error> {
+        Err(self.into())
     }
 }
 
@@ -177,6 +194,14 @@ impl Subproblem {
 
     pub fn is_rate_limit(&self) -> bool {
         self.typ == ACME_RATE_LIMITED
+    }
+
+    pub fn is_auth_failure(&self) -> bool {
+        self.typ == ACME_UNAUTHORIZED
+    }
+
+    pub fn is_server_failure(&self) -> bool {
+        self.typ == ACME_SERVER_INTERNAL
     }
 }
 

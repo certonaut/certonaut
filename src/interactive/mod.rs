@@ -1066,7 +1066,6 @@ web_index = \"/var/www/html\""
             let solver = config.clone().to_solver()?;
             let authorizer = Authorizer::new_boxed(
                 Identifier::from(identifier_config.domain),
-                Some(solver_name.to_string()),
                 solver,
             );
             authorizers.push(authorizer);

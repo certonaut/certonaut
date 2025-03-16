@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)]
+// Forbid unsafe code in the project, except for tests
+#![cfg_attr(not(test), forbid(unsafe_code))]
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
@@ -182,29 +183,16 @@ fn load_certificates_from_reader<R: BufRead + Seek>(
 
 pub struct Authorizer {
     identifier: Identifier,
-    solver_name: Option<String>,
     solver: Box<dyn ChallengeSolver>,
 }
 
 impl Authorizer {
-    pub fn new(
-        identifier: Identifier,
-        name: Option<String>,
-        solver: impl ChallengeSolver + 'static,
-    ) -> Self {
-        Self::new_boxed(identifier, name, Box::new(solver))
+    pub fn new(identifier: Identifier, solver: impl ChallengeSolver + 'static) -> Self {
+        Self::new_boxed(identifier, Box::new(solver))
     }
 
-    pub fn new_boxed(
-        identifier: Identifier,
-        name: Option<String>,
-        solver: Box<dyn ChallengeSolver>,
-    ) -> Self {
-        Self {
-            identifier,
-            solver_name: name,
-            solver,
-        }
+    pub fn new_boxed(identifier: Identifier, solver: Box<dyn ChallengeSolver>) -> Self {
+        Self { identifier, solver }
     }
 }
 
@@ -212,7 +200,6 @@ impl Debug for Authorizer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Authorizer")
             .field("identifier", &self.identifier)
-            .field("solver_name", &self.solver_name)
             .field("solver", &self.solver.short_name())
             .finish()
     }
@@ -273,7 +260,7 @@ pub fn authorizers_from_config(
             .cloned()
             .ok_or(anyhow!("Solver {solver_name} not found"))?;
         let solver = solver_config.to_solver()?;
-        authorizers.push(Authorizer::new_boxed(id, Some(solver_name), solver));
+        authorizers.push(Authorizer::new_boxed(id, solver));
     }
     Ok(authorizers)
 }
@@ -882,6 +869,13 @@ impl AcmeIssuer {
         })
     }
 
+    #[cfg(test)]
+    fn override_client(&self, client: AcmeClient) -> anyhow::Result<()> {
+        self.client
+            .set(client)
+            .context("AcmeIssuer already initialized")
+    }
+
     pub async fn client(&self) -> Result<&AcmeClient, Error> {
         self.client
             .get_or_try_init(|| async { new_acme_client(&self.config).await })
@@ -1027,17 +1021,18 @@ impl AcmeIssuerWithAccount<'_> {
             }
             OrderStatus::Invalid => {
                 if let Some(error) = order.error {
-                    return Err(error.into());
+                    return Err((
+                        error,
+                        anyhow!("New order has unacceptable status (invalid)"),
+                    )
+                        .into());
                 }
                 return anyhow!("New order has unacceptable status (invalid)").ca_failure();
             }
             OrderStatus::Pending => {
                 self.authorize(order, authorizers)
                     .await
-                    .context("Error authorizing certificate issuance")
-                    // TODO: Just because we failed 'during' authorization doesn't mean that the failure isn't
-                    // something else. Only throw this if it's actually an acme::error::unauthorized issue
-                    .authentication_failure()?;
+                    .context("Error authorizing certificate issuance")?;
                 info!("Finished authorizing all identifiers");
             }
         }
@@ -1071,27 +1066,34 @@ impl AcmeIssuerWithAccount<'_> {
             }
             OrderStatus::Pending => {
                 if let Some(error) = order.error {
-                    return Err(error.into());
+                    error.into_result().context(
+                        "Order is still pending after having authorized all identifiers",
+                    )?;
                 }
                 anyhow!("Order is still pending after having authorized all identifiers")
                     .ca_failure()
             }
             OrderStatus::Invalid => {
                 if let Some(error) = order.error {
-                    return Err(error.into());
+                    error.into_result().context("Order has invalid status")?;
                 }
                 anyhow!("Order has invalid status (no error reported by CA)").ca_failure()
             }
         }
     }
 
-    async fn authorize(&self, order: Order, mut authorizers: Vec<Authorizer>) -> Result<(), Error> {
+    async fn authorize(
+        &self,
+        order: Order,
+        mut authorizers: Vec<Authorizer>,
+    ) -> anyhow::Result<()> {
         let client = self.client().await?;
         for authz_url in order.authorizations {
             debug!("Checking authorization @ {authz_url}");
             let authz = client
                 .get_authorization(&self.account.jwk, &authz_url)
-                .await?;
+                .await
+                .context("Retrieving authorization from server")?;
             match authz.status {
                 AuthorizationStatus::Valid => {
                     debug!("Authorization already valid");
@@ -1171,7 +1173,7 @@ impl AcmeIssuerWithAccount<'_> {
                     }
                     bail!(
                         "Failed to authorize {id}. The CA reported these problems: {problem_string}"
-                    )
+                    );
                 }
                 AuthorizationStatus::Deactivated
                 | AuthorizationStatus::Expired
@@ -1179,7 +1181,7 @@ impl AcmeIssuerWithAccount<'_> {
                     let id = &authz.identifier;
                     bail!(
                         "Authorization for {id} is in an invalid status (deactivated, expired, or revoked)"
-                    )
+                    );
                 }
             }
         }
@@ -1199,5 +1201,208 @@ impl AcmeIssuerWithAccount<'_> {
                 deactivated_account.status
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::acme::object::{Authorization, Challenge, HttpChallenge, Token};
+    use crate::challenge_solver::NullSolver;
+    use crate::crypto::asymmetric::{new_key, Curve};
+    use crate::util::serde_helper::PassthroughBytes;
+    use std::path::PathBuf;
+
+    fn setup_fake_ca(fake_url: &Url) -> anyhow::Result<AcmeIssuer> {
+        let fake_config = CertificateAuthorityConfigurationWithAccounts {
+            inner: CertificateAuthorityConfiguration {
+                name: "Fake CA".to_string(),
+                identifier: "fake".to_string(),
+                acme_directory: fake_url.clone(),
+                public: false,
+                testing: false,
+                default: false,
+            },
+            accounts: vec![AccountConfiguration {
+                name: "Fake Account".to_string(),
+                identifier: "fake".to_string(),
+                key_file: PathBuf::from("testdata/account.key"),
+                url: fake_url.clone(),
+            }],
+        };
+        AcmeIssuer::try_new(fake_config)
+    }
+
+    #[tokio::test]
+    async fn test_issue_with_cached_authz() -> Result<(), Error> {
+        let fake_url = Url::parse("https://fake.invalid")?;
+        let issuer = setup_fake_ca(&fake_url)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let mut mock_client = AcmeClient::faux();
+        let new_order = Ok((
+            fake_url.clone(),
+            Order {
+                status: OrderStatus::Ready,
+                expires: None,
+                identifiers: vec![],
+                not_before: None,
+                not_after: None,
+                error: None,
+                authorizations: vec![],
+                finalize: fake_url.clone(),
+                certificate: None,
+            },
+        ));
+        let finalized_order = Ok(Order {
+            status: OrderStatus::Valid,
+            expires: None,
+            identifiers: vec![],
+            not_before: None,
+            not_after: None,
+            error: None,
+            authorizations: vec![],
+            finalize: fake_url.clone(),
+            certificate: Some(fake_url.clone()),
+        });
+        let certificate = Ok(DownloadedCertificate {
+            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            alternate_chains: vec![],
+        });
+        faux::when!(mock_client.new_order)
+            .once()
+            .then_return(new_order);
+        faux::when!(mock_client.finalize_order)
+            .once()
+            .then_return(finalized_order);
+        faux::when!(mock_client.download_certificate)
+            .once()
+            .then_return(certificate);
+        issuer.override_client(mock_client)?;
+
+        let cert = issuer_with_account
+            .issue(
+                &keypair,
+                None,
+                vec![Authorizer::new(
+                    Identifier::from_str("example.com")?,
+                    NullSolver::default(),
+                )],
+            )
+            .await?;
+
+        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_issue_with_single_authz() -> Result<(), Error> {
+        let fake_url = Url::parse("https://fake.invalid")?;
+        let fake_order_url = Url::parse("https://fake.invalid/order")?;
+        let fake_authz_url = Url::parse("https://fake.invalid/authz")?;
+        let fake_challenge_url = Url::parse("https://fake.invalid/challenge")?;
+        let fake_finalize_url = Url::parse("https://fake.invalid/finalize")?;
+        let fake_cert_url = Url::parse("https://fake.invalid/cert")?;
+        let issuer = setup_fake_ca(&fake_url)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let mut mock_client = AcmeClient::faux();
+        let new_order = Ok((
+            fake_order_url.clone(),
+            Order {
+                status: OrderStatus::Pending,
+                expires: None,
+                identifiers: vec![],
+                not_before: None,
+                not_after: None,
+                error: None,
+                authorizations: vec![fake_authz_url.clone()],
+                finalize: fake_finalize_url.clone(),
+                certificate: None,
+            },
+        ));
+        let pending_authorization = Ok(Authorization {
+            identifier: Identifier::from_str("example.com")?,
+            status: AuthorizationStatus::Pending,
+            expires: None,
+            challenges: vec![Challenge {
+                url: fake_challenge_url.clone(),
+                status: ChallengeStatus::Pending,
+                validated: None,
+                error: None,
+                inner_challenge: InnerChallenge::Http(HttpChallenge {
+                    token: Token::from_str("some-token")?,
+                }),
+            }],
+            wildcard: false,
+        });
+        let validated_challenge = Ok(Challenge {
+            url: fake_challenge_url.clone(),
+            status: ChallengeStatus::Valid,
+            validated: None,
+            error: None,
+            inner_challenge: InnerChallenge::Http(HttpChallenge {
+                token: Token::from_str("some-token")?,
+            }),
+        });
+        let ready_order = Ok(Order {
+            status: OrderStatus::Ready,
+            expires: None,
+            identifiers: vec![],
+            not_before: None,
+            not_after: None,
+            error: None,
+            authorizations: vec![fake_authz_url.clone()],
+            finalize: fake_finalize_url.clone(),
+            certificate: None,
+        });
+        let finalized_order = Ok(Order {
+            status: OrderStatus::Valid,
+            expires: None,
+            identifiers: vec![],
+            not_before: None,
+            not_after: None,
+            error: None,
+            authorizations: vec![fake_authz_url.clone()],
+            finalize: fake_finalize_url.clone(),
+            certificate: Some(fake_cert_url.clone()),
+        });
+        let certificate = Ok(DownloadedCertificate {
+            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            alternate_chains: vec![],
+        });
+        faux::when!(mock_client.new_order)
+            .once()
+            .then_return(new_order);
+        faux::when!(mock_client.get_authorization(_, fake_authz_url))
+            .once()
+            .then_return(pending_authorization);
+        faux::when!(mock_client.validate_challenge(_, fake_challenge_url))
+            .once()
+            .then_return(validated_challenge);
+        faux::when!(mock_client.get_order(_, fake_order_url))
+            .once()
+            .then_return(ready_order);
+        faux::when!(mock_client.finalize_order)
+            .once()
+            .then_return(finalized_order);
+        faux::when!(mock_client.download_certificate(_, fake_cert_url))
+            .once()
+            .then_return(certificate);
+        issuer.override_client(mock_client)?;
+
+        let cert = issuer_with_account
+            .issue(
+                &keypair,
+                None,
+                vec![Authorizer::new(
+                    Identifier::from_str("example.com")?,
+                    NullSolver::default(),
+                )],
+            )
+            .await?;
+
+        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
     }
 }

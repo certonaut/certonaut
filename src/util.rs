@@ -10,8 +10,8 @@ pub(crate) mod serde_helper {
     pub(crate) mod optional_offset_date_time {
         use serde::{self, Deserializer, Serializer};
         use std::option::Option;
-        use time::OffsetDateTime;
         use time::serde::rfc3339;
+        use time::OffsetDateTime;
 
         #[allow(clippy::ref_option)]
         pub fn serialize<S>(
@@ -40,6 +40,12 @@ pub(crate) mod serde_helper {
     #[derive(Debug)]
     pub struct PassthroughBytes {
         inner: Vec<u8>,
+    }
+
+    impl PassthroughBytes {
+        pub(crate) fn new(data: Vec<u8>) -> Self {
+            Self { inner: data }
+        }
     }
 
     impl AsRef<[u8]> for PassthroughBytes {
@@ -278,8 +284,8 @@ mod tests {
     use super::serde_helper::optional_offset_date_time;
     use crate::util::{format_hex_with_colon, humanize_duration};
     use rstest::rstest;
-    use time::OffsetDateTime;
     use time::macros::datetime;
+    use time::OffsetDateTime;
 
     #[rstest]
     #[case("\"1985-04-12T23:20:50.52Z\"", Some(datetime!(1985-04-12 23:20:50.52 UTC)))]

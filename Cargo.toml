@@ -60,6 +60,7 @@ vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", re
 
 [dev-dependencies]
 bstr = "1.11.3"
+faux = "0.1.12"
 httptest = "0.16.1"
 rstest = "0.25.0"
 tempfile = "3.15.0"

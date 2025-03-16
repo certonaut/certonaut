@@ -87,7 +87,7 @@ impl crate::state::Database {
         .fetch_all(&self.pool)
         .await?
         .into_iter()
-        .filter_map(|renew| Option::<external::Renewal>::from(renew))
+        .filter_map(Option::<external::Renewal>::from)
         .collect::<Vec<_>>();
         Ok(renewals)
     }

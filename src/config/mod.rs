@@ -325,6 +325,7 @@ pub struct CertificateConfiguration {
     pub account_identifier: String,
     #[serde(with = "key_type_config_serializer")]
     pub key_type: KeyType,
+    // TODO: Consider something like a ConfigIdentifier as key?
     pub domains: HashMap<String, String>,
     #[serde(rename = "solver")]
     pub solvers: HashMap<String, SolverConfiguration>,

@@ -62,7 +62,8 @@ impl From<anyhow::Error> for IssueError {
     fn from(err: anyhow::Error) -> Self {
         match err.downcast_ref::<AcmeError>() {
             Some(inner) => match inner {
-                Error::ProtocolViolation(_) | Error::AcmeProblem(_) => IssueError::CAFailure(err),
+                Error::ProtocolViolation(_) => IssueError::CAFailure(err),
+                Error::AcmeProblem(problem) => (problem.clone(), err).into(),
                 Error::IoError(_)
                 | Error::CryptoFailure(_)
                 | Error::DeserializationFailed(_)
@@ -75,12 +76,16 @@ impl From<anyhow::Error> for IssueError {
     }
 }
 
-impl From<acme::error::Problem> for IssueError {
-    fn from(err: acme::error::Problem) -> Self {
-        if err.is_rate_limit() {
-            IssueError::RateLimited(AcmeError::from(err).into())
+impl From<(acme::error::Problem, anyhow::Error)> for IssueError {
+    fn from((problem, err): (acme::error::Problem, anyhow::Error)) -> Self {
+        if problem.is_rate_limit() {
+            IssueError::RateLimited(err)
+        } else if problem.is_server_failure() {
+            IssueError::CAFailure(err)
+        } else if problem.is_auth_failure() {
+            IssueError::AuthFailure(err)
         } else {
-            IssueError::CAFailure(AcmeError::from(err).into())
+            IssueError::ClientFailure(err)
         }
     }
 }
@@ -88,7 +93,6 @@ impl From<acme::error::Problem> for IssueError {
 pub trait IssueContext<T> {
     fn client_failure(self) -> IssueResult<T>;
     fn ca_failure(self) -> IssueResult<T>;
-    fn authentication_failure(self) -> IssueResult<T>;
 }
 
 impl<T> IssueContext<T> for anyhow::Error {
@@ -98,10 +102,6 @@ impl<T> IssueContext<T> for anyhow::Error {
 
     fn ca_failure(self) -> IssueResult<T> {
         Err(IssueError::CAFailure(self))
-    }
-
-    fn authentication_failure(self) -> IssueResult<T> {
-        Err(IssueError::AuthFailure(self))
     }
 }
 
@@ -117,13 +117,6 @@ impl<T> IssueContext<T> for Result<T, anyhow::Error> {
         match self {
             Ok(ok) => Ok(ok),
             Err(err) => err.ca_failure(),
-        }
-    }
-
-    fn authentication_failure(self) -> IssueResult<T> {
-        match self {
-            Ok(ok) => Ok(ok),
-            Err(err) => err.authentication_failure(),
         }
     }
 }

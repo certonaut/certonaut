@@ -7,6 +7,7 @@ use crate::{state, AcmeIssuerWithAccount};
 use anyhow::{anyhow, bail, Context};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Sub;
@@ -118,6 +119,9 @@ impl<CB: ConfigBackend> RenewTask<CB> {
                             "Certificate {cert_name} has repeated renewal failures. Trying to renew anyway since {} is a test CA",
                             { &issuer.issuer.config.name }
                         );
+                        info!(
+                            "If this were not a test CA, then we would not renew because of: {reason}"
+                        );
                     } else {
                         warn!(
                             "Not renewing certificate {cert_name} at this time because of: {reason}"
@@ -176,14 +180,17 @@ impl<CB: ConfigBackend> RenewTask<CB> {
                 failure_buckets.insert(failure.outcome.discriminant(), occurrences);
             }
 
-            if let Some((failure_type, _)) = failure_buckets.iter().find(|(_, count)| **count >= 3)
+            if let Some((failure_type, _)) = failure_buckets
+                .into_iter()
+                .sorted_by(|(_, left), (_, right)| std::cmp::Ord::cmp(right, left))
+                .find(|(_, count)| *count >= 3)
             {
                 // We keep failing with the same problem. Reduce attempts to no more than twice a day.
                 if time_since_last_failure < Duration::hours(12) {
                     let next_retry = Duration::hours(12) - time_since_last_failure;
                     return Ok(BackoffDecision::Backoff(BackoffReason {
                         next_retry,
-                        failure_type: *failure_type,
+                        failure_type,
                         last_failure: last_failure.outcome.to_string(),
                     }));
                 }
@@ -264,6 +271,6 @@ impl Display for BackoffReason {
                 write!(f, "Too many client-side errors. Next retry in {time}.")
             }
         }?;
-        write!(f, " The last recorded failure was: {}", self.last_failure)
+        write!(f, " The last recorded failure was:\n{}", self.last_failure)
     }
 }
