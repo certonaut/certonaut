@@ -28,7 +28,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let acme_url = Url::parse(PEBBLE_URL)?;
     let temp_dir = TempDir::new()?;
-    config::CONFIG_FILE.set(temp_dir.into_path()).ok();
+    config::CONFIG_FILE.set(temp_dir.path().to_path_buf()).ok();
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
@@ -127,7 +127,7 @@ async fn setup_non_localhost_dns(host: String) -> anyhow::Result<()> {
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let temp_dir = TempDir::new()?;
-    config::CONFIG_FILE.set(temp_dir.into_path()).ok();
+    config::CONFIG_FILE.set(temp_dir.path().to_path_buf()).ok();
     let test_host = "magic-solver-e2e-test.example.org".to_string();
     setup_non_localhost_dns(test_host.clone()).await?;
     let acme_url = Url::parse(PEBBLE_URL)?;
