@@ -51,7 +51,7 @@ jobs:
         go install ./...
         cd ..
         pebble -strict -config pebble/test/config/pebble-config.json -dnsserver :8053 &
-        pebble-challtestsrv -config pebble/test/config/pebble-config.json &
+        pebble-challtestsrv &
 
     - name: Run full test suite
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
