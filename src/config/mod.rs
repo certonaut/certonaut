@@ -13,10 +13,10 @@ use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
-use std::time::Duration;
 use url::Url;
 use x509_parser::nom::AsBytes;
 
@@ -205,7 +205,26 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
     }
 
     pub fn load(&self) -> Result<Configuration, Error> {
-        let main_config = self.backend.load_main()?;
+        let main_config = match self.backend.load_main() {
+            Ok(main_config) => main_config,
+            Err(e) => {
+                if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
+                    match io_error.kind() {
+                        ErrorKind::NotFound => {
+                            // Assume no config exists - overwrite with default
+                            let default = DefaultConfig::default().get_config();
+                            self.save(&default)?;
+                            self.backend.load_main()?
+                        }
+                        _ => {
+                            return Err(e);
+                        }
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        };
         let cert_ids = self.backend.list_certificates()?;
         let certificates = cert_ids
             .into_iter()
@@ -407,15 +426,8 @@ pub enum InstallerConfiguration {
 pub fn new_configuration_manager_with_default_config()
 -> Result<ConfigurationManager<MultiFileConfigBackend<'static>>, Error> {
     let directory = config_directory();
-    let exists = directory.exists();
     let manager = ConfigurationManager::new(MultiFileConfigBackend::new(directory));
-    Ok(if exists {
-        manager
-    } else {
-        let default = DefaultConfig::default().get_config();
-        manager.save(&default)?;
-        manager
-    })
+    Ok(manager)
 }
 
 #[allow(clippy::module_name_repetitions)]

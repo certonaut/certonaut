@@ -6,7 +6,6 @@ use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL};
 use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
-use futures::FutureExt;
 use serde::Serialize;
 use std::fs::File;
 use std::net::IpAddr;
@@ -27,7 +26,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let acme_url = Url::parse(PEBBLE_URL)?;
     let temp_dir = TempDir::new()?;
-    config::CONFIG_FILE.set(temp_dir.into_path()).unwrap();
+    config::CONFIG_FILE.set(temp_dir.into_path()).ok();
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
@@ -124,7 +123,9 @@ async fn setup_non_localhost_dns(host: String) -> anyhow::Result<()> {
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let test_host = "magic-solver-e2-test.example.org".to_string();
+    let temp_dir = TempDir::new()?;
+    config::CONFIG_FILE.set(temp_dir.into_path()).ok();
+    let test_host = "magic-solver-e2e-test.example.org".to_string();
     setup_non_localhost_dns(test_host.clone()).await?;
     let acme_url = Url::parse(PEBBLE_URL)?;
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
