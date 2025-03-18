@@ -38,16 +38,20 @@ jobs:
     - name: Install deps
       run: |
         sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
-    - name: Set up Go
-      uses: actions/setup-go@v5
-    - name: Install Pebble
+    - name: Download Pebble
       run: |
         git clone https://github.com/letsencrypt/pebble.git
         cd pebble
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+          go-version-file: go.mod
+    - name: Run Pebble
+      run: |
         go install ./...
         cd ..
-        pebble -strict -config pebble/config/pebble-config.json -dnsserver :8053 &
-        pebble-challtestsrv -config pebble/config/pebble-config.json &
+        pebble -strict -config pebble/test/config/pebble-config.json -dnsserver :8053 &
+        pebble-challtestsrv -config pebble/test/config/pebble-config.json &
 
     - name: Run full test suite
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
