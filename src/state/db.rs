@@ -1,6 +1,6 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::{ConnectOptions, Executor};
 use std::path::Path;
@@ -109,17 +109,19 @@ impl Drop for crate::state::Database {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::error::IssueError;
-    use crate::state::types::external::RenewalOutcome;
-    use rstest::rstest;
-    use std::ops::{Deref, DerefMut, Sub};
+pub mod test_helper {
+    use crate::state::db::Database;
+    use std::ops::{Deref, DerefMut};
     use std::sync::atomic::AtomicUsize;
 
-    struct TemporaryDatabase {
+    pub struct TemporaryDatabase {
         db: Database,
+    }
+
+    impl From<TemporaryDatabase> for Database {
+        fn from(value: TemporaryDatabase) -> Self {
+            value.db
+        }
     }
 
     impl Deref for TemporaryDatabase {
@@ -153,9 +155,19 @@ mod tests {
         }
     }
 
-    async fn open_db() -> TemporaryDatabase {
+    pub async fn open_db() -> TemporaryDatabase {
         TemporaryDatabase::new().await
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::IssueError;
+    use crate::state::db::test_helper::open_db;
+    use crate::state::types::external::RenewalOutcome;
+    use rstest::rstest;
+    use std::ops::Sub;
 
     #[tokio::test]
     async fn test_open_file_database() {

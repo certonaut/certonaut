@@ -1,7 +1,8 @@
 use anyhow::Context;
 use certonaut::cli::{process_cli_command, setup_command_line};
-use certonaut::config::CONFIG_FILE;
-use certonaut::{Certonaut, config};
+use certonaut::config::{config_directory, CONFIG_FILE};
+use certonaut::state::Database;
+use certonaut::{config, Certonaut};
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
@@ -32,9 +33,8 @@ async fn main() -> anyhow::Result<()> {
         .set(cli.config)
         .expect("Config file already set");
     let config = config::new_configuration_manager_with_default_config()?;
-    let client = Certonaut::try_new(config)
-        .await
-        .context("Loading configuration failed")?;
+    let database = Database::open(config_directory(), "database.sqlite").await?;
+    let client = Certonaut::try_new(config, database).context("Loading configuration failed")?;
     let result = process_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal

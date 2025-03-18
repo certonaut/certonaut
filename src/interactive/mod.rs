@@ -24,7 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 use std::sync::Mutex;
-use std::time::Duration;
 use strum::VariantArray;
 use tokio::sync::RwLock;
 use toml_edit::DocumentMut;
@@ -423,6 +422,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 &|config: &AdvancedCertificateConfiguration| match config.lifetime_seconds {
                     None => "Not specified".into(),
                     Some(lifetime) => {
+                        // TODO: This can overflow, but do we really care?
                         humanize_duration(time::Duration::seconds(lifetime as i64)).into()
                     }
                 },

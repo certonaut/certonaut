@@ -33,7 +33,7 @@ pub fn pebble_root() -> reqwest::Result<reqwest::Certificate> {
     reqwest::Certificate::from_pem(PEBBLE_ROOT_PEM.as_bytes())
 }
 
-static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
+pub static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
     LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
 
 #[derive(Default)]
