@@ -1,15 +1,14 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::Identifier;
-use certonaut::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-};
+use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver};
 use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use tempfile::TempDir;
 use url::Url;
 
@@ -68,7 +67,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     )?;
     let issuer = certonaut.get_issuer_with_account("pebble", "pebble-account")?;
     let authorizers = vec![Authorizer::new(
-        Identifier::from("example.com".to_string()),
+        Identifier::from_str("example.com")?,
         ChallengeTestHttpSolver::default(),
     )];
     issuer
@@ -93,7 +92,7 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let acme_url = Url::parse(PEBBLE_URL)?;
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
-    let acme_client = AcmeClientBuilder::new(acme_url)
+    let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
         .try_build()
         .await?;
@@ -105,24 +104,34 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
         terms_of_service_agreed: Some(true),
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
-    let mut issuer = AcmeIssuer::new(
-        Arc::new(acme_client),
+    let mut certonaut =
+        Certonaut::try_new(config::new_configuration_manager_with_default_config()?).await?;
+    certonaut.add_new_ca(CertificateAuthorityConfiguration {
+        name: "pebble".to_string(),
+        identifier: "pebble".to_string(),
+        acme_directory: acme_url,
+        public: false,
+        testing: true,
+        default: false,
+    })?;
+    certonaut.add_new_account(
+        "pebble",
         AcmeAccount::new_account(
             AccountConfiguration {
-                name: "pebble-e2e-test".to_string(),
-                identifier: "pebble-e2e-test".to_string(),
-                key_file: key_file.to_path_buf(),
+                name: "pebble-account".to_string(),
+                identifier: "pebble-account".to_string(),
+                key_file: PathBuf::new(),
                 url: account_url,
             },
             jwk,
         ),
-    );
+    )?;
+    let issuer = certonaut.get_issuer_with_account("pebble", "pebble-account")?;
 
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new(
         Identifier::from_str("example.com")?,
-        None,
-        MagicHttpSolver::new(5002),
+        certonaut::magic::MagicHttpSolver::new(5002),
     )];
     let _cert = issuer.issue(&new_key, None, authorizers).await?;
     Ok(())

@@ -1,5 +1,5 @@
-// Forbid unsafe code in the project, except for tests
-#![cfg_attr(not(test), forbid(unsafe_code))]
+// Deny unsafe code in the project by default, allow for exceptions though
+#![cfg_attr(not(test), deny(unsafe_code))]
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
