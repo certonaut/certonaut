@@ -8,7 +8,6 @@ use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL};
 use certonaut::{AcmeAccount, Authorizer, Certonaut};
 use serde::Serialize;
-use serial_test::serial;
 use std::fs::File;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -19,7 +18,6 @@ use url::Url;
 const PEBBLE_URL: &str = "https://localhost:14000/dir";
 
 #[tokio::test]
-#[serial]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
@@ -46,8 +44,11 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     //     #[allow(clippy::default_trait_access)]
     //     certificates: Default::default(),
     // }
-    let mut certonaut =
-        Certonaut::try_new(new_configuration_manager_with_noop_backend()).await?;
+    let test_db = certonaut::state::open_test_db().await;
+    let mut certonaut = Certonaut::try_new(
+        new_configuration_manager_with_noop_backend(),
+        test_db.into(),
+    )?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),
@@ -116,7 +117,6 @@ async fn setup_non_localhost_dns(host: String) -> anyhow::Result<()> {
 
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
 #[tokio::test]
-#[serial]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
@@ -140,8 +140,11 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
         terms_of_service_agreed: Some(true),
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
-    let mut certonaut =
-        Certonaut::try_new(new_configuration_manager_with_noop_backend()).await?;
+    let test_db = certonaut::state::open_test_db().await;
+    let mut certonaut = Certonaut::try_new(
+        new_configuration_manager_with_noop_backend(),
+        test_db.into(),
+    )?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),

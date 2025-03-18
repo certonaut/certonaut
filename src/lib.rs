@@ -344,7 +344,7 @@ pub struct Certonaut<CB> {
 }
 
 impl<CB: ConfigBackend> Certonaut<CB> {
-    pub async fn try_new(manager: ConfigurationManager<CB>) -> anyhow::Result<Self> {
+    pub fn try_new(manager: ConfigurationManager<CB>, database: Database) -> anyhow::Result<Self> {
         let config = manager.load()?;
         let mut issuers = HashMap::new();
         for ca in config.main.ca_list {
@@ -355,7 +355,6 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 bail!("Duplicate CA id {id} in configuration");
             };
         }
-        let database = Database::open(config_directory(), "database.sqlite").await?;
         Ok(Self {
             issuers,
             certificates: config.certificates,
