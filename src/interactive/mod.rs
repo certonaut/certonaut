@@ -3,7 +3,8 @@ use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::cli::{CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
-    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, SolverConfiguration,
+    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, InstallerConfiguration,
+    SolverConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
@@ -78,6 +79,9 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                     .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
             },
+            installer: issue_cmd
+                .install_script
+                .map(|script| InstallerConfiguration::Script { script }),
         };
         let cert_config = self
             .interactive_edit_cert_configuration(initial_config)
@@ -385,6 +389,20 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         .edit_config()
                         .await?;
                         config.advanced = new_advanced;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Install Script",
+                &|config: &CertificateConfiguration| match &config.installer {
+                    Some(InstallerConfiguration::Script { script }) => script.into(),
+                    None => "Nothing".into(),
+                },
+                |mut config| {
+                    async {
+                        config.installer = Self::user_ask_installer(config.installer)?;
                         Ok(config)
                     }
                     .boxed()
@@ -1071,20 +1089,43 @@ web_index = \"/var/www/html\""
         })
     }
 
-        let mut authorizers = Vec::new();
-        for identifier_config in domains {
-            let solver_name = identifier_config.solver_identifier.as_str();
-            let config = solvers
-                .get(solver_name)
-                .ok_or(anyhow!("Solver {solver_name} not found"))?;
-            let solver = config.clone().to_solver()?;
-            let authorizer = Authorizer::new_boxed(
-                Identifier::from(identifier_config.domain),
-                solver,
-            );
-            authorizers.push(authorizer);
-        }
-        todo!("Refactor interactive multi solver for new format")
+    fn user_ask_installer(
+        current: Option<InstallerConfiguration>,
+    ) -> Result<Option<InstallerConfiguration>, Error> {
+        println!("In many cases, you will want to run a script to install the certificate.");
+        println!(
+            "For instance, you may want to reload a webserver or copy the certificate to multiple instances in a distributed environment."
+        );
+        println!(
+            "You can specify such a custom script here. The script receives two environment variables:"
+        );
+        println!(
+            "$RENEWED_LINEAGE - points to the directory containing the certificate and key files."
+        );
+        println!(
+            "$RENEWED_DOMAINS - contains the domain names of the certificate, separated by spaces."
+        );
+        println!(
+            "(The above is compatible to certbot, so scripts written for certbot should just work)"
+        );
+        let script_raw = if let Some(InstallerConfiguration::Script { script }) = &current {
+            script.to_string()
+        } else {
+            String::new()
+        };
+        let script = Text::new("Shell command to run after issuance?")
+            .with_initial_value(&script_raw)
+            .with_help_message("Enter a shell command, or leave empty to run no command")
+            .prompt_skippable()
+            .context("No answer to shell command prompt")?
+            .map_or(current, |script| {
+                if script.is_empty() {
+                    None
+                } else {
+                    Some(InstallerConfiguration::Script { script })
+                }
+            });
+        Ok(script)
     }
 }
 

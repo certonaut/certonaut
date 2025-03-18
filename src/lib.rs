@@ -13,7 +13,8 @@ use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, K
 use crate::config::{
     config_directory, AccountConfiguration,
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, Configuration, ConfigurationManager, MainConfiguration, SolverConfiguration,
+    ConfigBackend, Configuration, ConfigurationManager, InstallerConfiguration,
+    MainConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -43,6 +44,7 @@ pub mod acme;
 pub mod cert;
 pub mod challenge_solver;
 pub mod cli;
+pub mod cmd_runner;
 pub mod config;
 pub mod crypto;
 pub mod error;
@@ -587,6 +589,12 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         );
         self.config
             .save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
+        self.install_certificate(&cert_id, &cert_config)
+            .await
+            .context(format!(
+                "Installing certificate {}",
+                cert_config.display_name
+            ))?;
         Ok(())
     }
 
@@ -634,6 +642,61 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             error!("Failed to store renewal in database: {db_error}");
         };
         renewal_result.map(|_| ())
+    }
+
+    pub async fn install_certificate(
+        &self,
+        cert_id: &str,
+        cert_config: &CertificateConfiguration,
+    ) -> Result<(), Error> {
+        if let Some(installer_config) = &cert_config.installer {
+            match installer_config {
+                InstallerConfiguration::Script { script } => {
+                    let config_dir = self.config.certificate_directory(cert_id);
+                    let env = HashMap::from([
+                        (
+                            <str as AsRef<OsStr>>::as_ref("RENEWED_LINEAGE").to_os_string(),
+                            config_dir.into_os_string(),
+                        ),
+                        (
+                            <str as AsRef<OsStr>>::as_ref("RENEWED_DOMAINS").to_os_string(),
+                            <String as AsRef<OsStr>>::as_ref(
+                                &cert_config.domains.keys().sorted().join(" "),
+                            )
+                            .to_os_string(),
+                        ),
+                    ]);
+                    let status = cmd_runner::run_shell_command(script.as_ref(), env)
+                        .await
+                        .context("Launching installer command {script:?} failed")?;
+                    if !status.success() {
+                        let Some(status_code) = status.code() else {
+                            if let Some(signal) = {
+                                #[cfg(unix)]
+                                {
+                                    std::os::unix::process::ExitStatusExt::signal(&status)
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    None::<i32>
+                                }
+                            } {
+                                bail!(
+                                    "Installer command {script:?} was interrupted by signal {signal}"
+                                )
+                            }
+                            bail!("Installer command {script:?} was terminated for unknown reason")
+                        };
+                        bail!(
+                            "Installer command {script:?} exited with non-zero status code {status_code}"
+                        );
+                    }
+                    Ok(())
+                }
+            }
+        } else {
+            Ok(())
+        }
     }
 
     pub async fn print_accounts(&self) {

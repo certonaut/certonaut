@@ -164,6 +164,9 @@ pub struct IssueCommand {
     pub cert_name: Option<String>,
     #[clap(flatten)]
     pub advanced: AdvancedIssueConfiguration,
+    /// Script to run to install the certificate
+    #[clap(short, long = "install", global = true)]
+    pub install_script: Option<String>,
     #[clap(skip)]
     pub solver_configuration: Vec<CommandLineSolverConfiguration>,
 }

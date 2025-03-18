@@ -135,6 +135,10 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             self.client
                 .renew_certificate(cert_id, cert_config, &issuer)
                 .await?;
+            self.client
+                .install_certificate(cert_id, cert_config)
+                .await
+                .context(format!("Installing certificate {cert_name}"))?;
         } else {
             // TODO: Gracefully handle
             bail!("Certificate {cert_name} fullchain.pem does not contain any X.509 certificate");

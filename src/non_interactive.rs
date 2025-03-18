@@ -1,5 +1,8 @@
 use crate::cli::IssueCommand;
-use crate::config::{AdvancedCertificateConfiguration, CertificateConfiguration, ConfigBackend};
+use crate::config::{
+    AdvancedCertificateConfiguration, CertificateConfiguration, ConfigBackend,
+    InstallerConfiguration,
+};
 use crate::Certonaut;
 use crate::CRATE_NAME;
 use anyhow::{bail, Context, Error};
@@ -90,6 +93,9 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                     .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
             },
+            installer: issue_cmd
+                .install_script
+                .map(|script| InstallerConfiguration::Script { script }),
         })
     }
 }

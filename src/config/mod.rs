@@ -59,6 +59,7 @@ pub trait ConfigBackend {
     fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error>;
     fn save_certificate_file(&self, id: &str, cert: &DownloadedCertificate) -> Result<(), Error>;
     fn list_certificates(&self) -> Result<Vec<String>, Error>;
+    fn certificate_directory(&self, id: &str) -> PathBuf;
 }
 
 pub struct MultiFileConfigBackend<'a> {
@@ -98,7 +99,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
 
     fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
         let cert_path = self.certificate_path(id);
-        let key_file = cert_path.join("key.pem");
+        let key_file = cert_path.join("privkey.pem");
         asymmetric::KeyPair::load_from_disk(
             File::open(&key_file)
                 .context(format!("Opening private key file {}", key_file.display()))?,
@@ -137,7 +138,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             "Creating directory for certificate private key file {}",
             cert_path.display()
         ))?;
-        let key_file = cert_path.join("key.pem");
+        let key_file = cert_path.join("privkey.pem");
         let pem = key.serialize_pem();
         std::fs::write(&key_file, pem.as_bytes()).context(format!(
             "Writing private key to file {}",
@@ -186,6 +187,10 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             }
         }
         Ok(certificates)
+    }
+
+    fn certificate_directory(&self, id: &str) -> PathBuf {
+        self.certificate_path(id)
     }
 }
 
@@ -270,6 +275,10 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         self.save_downloaded_certificate(id, cert)?;
         Ok(())
     }
+
+    pub fn certificate_directory(&self, cert_id: &str) -> PathBuf {
+        self.backend.certificate_directory(cert_id)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -331,7 +340,8 @@ pub struct CertificateConfiguration {
     pub solvers: HashMap<String, SolverConfiguration>,
     #[serde(flatten)]
     pub advanced: AdvancedCertificateConfiguration,
-    // TODO: installer configuration
+    #[serde(default)]
+    pub installer: Option<InstallerConfiguration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -387,7 +397,12 @@ impl SolverConfiguration {
     }
 }
 
-// TODO: Get rid of these globals and refactor logic to be suitable for usage in tests
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallerConfiguration {
+    Script { script: String },
+}
 
 pub fn new_configuration_manager_with_default_config()
 -> Result<ConfigurationManager<MultiFileConfigBackend<'static>>, Error> {
