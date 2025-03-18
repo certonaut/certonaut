@@ -78,5 +78,5 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Run full test suite
+    - name: Run Integration Tests
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
