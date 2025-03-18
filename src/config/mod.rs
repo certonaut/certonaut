@@ -475,3 +475,74 @@ impl DefaultConfig {
         }
     }
 }
+
+pub mod test_backend {
+    use crate::acme::client::DownloadedCertificate;
+    use crate::cert::ParsedX509Certificate;
+    use crate::config::{
+        CertificateConfiguration, ConfigBackend, ConfigurationManager, MainConfiguration,
+    };
+    use anyhow::Error;
+    use rcgen::KeyPair;
+    use std::path::PathBuf;
+
+    pub fn new_configuration_manager_with_noop_backend() -> ConfigurationManager<NoopBackend> {
+        ConfigurationManager::new(NoopBackend {})
+    }
+
+    pub struct NoopBackend {}
+
+    impl ConfigBackend for NoopBackend {
+        fn load_main(&self) -> Result<MainConfiguration, Error> {
+            Ok(MainConfiguration { ca_list: vec![] })
+        }
+
+        fn save_main(&self, config: &MainConfiguration) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn load_certificate_config(&self, _id: &str) -> Result<CertificateConfiguration, Error> {
+            unimplemented!("noop backend cannot load certificates")
+        }
+
+        fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
+            unimplemented!("noop backend cannot load private keys")
+        }
+
+        fn load_certificate_files(
+            &self,
+            id: &str,
+            limit: Option<usize>,
+        ) -> Result<Vec<ParsedX509Certificate>, Error> {
+            unimplemented!("noop backend cannot load certificate files")
+        }
+
+        fn save_certificate_config(
+            &self,
+            id: &str,
+            config: &CertificateConfiguration,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn save_certificate_file(
+            &self,
+            id: &str,
+            cert: &DownloadedCertificate,
+        ) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn list_certificates(&self) -> Result<Vec<String>, Error> {
+            Ok(Vec::new())
+        }
+
+        fn certificate_directory(&self, _id: &str) -> PathBuf {
+            PathBuf::from("/dev/null")
+        }
+    }
+}

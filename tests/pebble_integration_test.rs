@@ -1,18 +1,18 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::acme::object::Identifier;
+use certonaut::config::test_backend::new_configuration_manager_with_noop_backend;
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL};
-use certonaut::{config, AcmeAccount, Authorizer, Certonaut};
+use certonaut::{AcmeAccount, Authorizer, Certonaut};
 use serde::Serialize;
 use serial_test::serial;
 use std::fs::File;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tempfile::TempDir;
 use tokio::net::UdpSocket;
 use url::Url;
 
@@ -27,8 +27,6 @@ const PEBBLE_URL: &str = "https://localhost:14000/dir";
 async fn pebble_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
     let acme_url = Url::parse(PEBBLE_URL)?;
-    let temp_dir = TempDir::new()?;
-    config::CONFIG_FILE.set(temp_dir.path().to_path_buf()).ok();
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
@@ -49,7 +47,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
     //     certificates: Default::default(),
     // }
     let mut certonaut =
-        Certonaut::try_new(config::new_configuration_manager_with_default_config()?).await?;
+        Certonaut::try_new(new_configuration_manager_with_noop_backend()).await?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),
@@ -126,8 +124,6 @@ async fn setup_non_localhost_dns(host: String) -> anyhow::Result<()> {
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     tracing_subscriber::fmt::try_init().ok();
-    let temp_dir = TempDir::new()?;
-    config::CONFIG_FILE.set(temp_dir.path().to_path_buf()).ok();
     let test_host = "magic-solver-e2e-test.example.org".to_string();
     setup_non_localhost_dns(test_host.clone()).await?;
     let acme_url = Url::parse(PEBBLE_URL)?;
@@ -145,7 +141,7 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
     let mut certonaut =
-        Certonaut::try_new(config::new_configuration_manager_with_default_config()?).await?;
+        Certonaut::try_new(new_configuration_manager_with_noop_backend()).await?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: "pebble".to_string(),
         identifier: "pebble".to_string(),
