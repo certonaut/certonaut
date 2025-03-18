@@ -25,7 +25,7 @@ jobs:
       run: cargo build --verbose --locked --all-features
     
     - name: Run tests
-      run: cargo test --verbose --all-features
+      run: cargo test --verbose --locked --all-features
   
   integration-tests:
     runs-on: ubuntu-latest
@@ -51,4 +51,4 @@ jobs:
         pebble/pebble-challtestsrv -config pebble/config/pebble-config.json &
 
     - name: Run full test suite
-      run: sudo -E env "PATH=$PATH" cargo test --all-features --ignored
+      run: sudo -E env "PATH=$PATH" cargo test --locked --all-features --ignored
