@@ -51,4 +51,4 @@ jobs:
         pebble/pebble-challtestsrv -config pebble/config/pebble-config.json &
 
     - name: Run full test suite
-      run: sudo -E env "PATH=$PATH" cargo test --locked --all-features --ignored
+      run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
