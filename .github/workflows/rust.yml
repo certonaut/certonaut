@@ -40,17 +40,17 @@ jobs:
     - name: Download Pebble
       run: |
         git clone https://github.com/letsencrypt/pebble.git
-        cd pebble
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
           go-version-file: pebble/go.mod
     - name: Run Pebble
       run: |
+        cd pebble
         go install ./...
-        cd ..
-        pebble -strict -config pebble/test/config/pebble-config.json -dnsserver :8053 &
+        pebble -strict -config test/config/pebble-config.json -dnsserver :8053 &
         pebble-challtestsrv &
+        cd ..
 
     - name: Run full test suite
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
