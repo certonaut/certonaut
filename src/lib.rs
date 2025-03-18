@@ -1,5 +1,5 @@
 // Deny unsafe code in the project by default, allow for exceptions though
-#![cfg_attr(not(test), deny(unsafe_code))]
+#![deny(unsafe_code)]
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
@@ -26,6 +26,7 @@ use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
@@ -91,6 +92,12 @@ pub struct ParsedDuration {
 impl From<Duration> for ParsedDuration {
     fn from(inner: Duration) -> Self {
         ParsedDuration { inner }
+    }
+}
+
+impl From<u64> for ParsedDuration {
+    fn from(seconds: u64) -> Self {
+        Duration::from_secs(seconds).into()
     }
 }
 
@@ -565,11 +572,19 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .context(format!(
                 "Could not generate certificate key with type {key_type}"
             ))?;
+        let lifetime = cert_config
+            .advanced
+            .lifetime_seconds
+            .map(|lifetime| Some(Duration::from_secs(lifetime)))
+            .unwrap_or_default();
         let cert = issuer
-            .issue(&cert_key, cert_config.advanced.lifetime, authorizers)
+            .issue(&cert_key, lifetime, authorizers)
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
-        println!("Got a certificate!");
+        println!(
+            "Successfully issued certificate {} with CA {ca_name}",
+            cert_config.display_name
+        );
         self.config
             .save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         Ok(())
@@ -593,9 +608,12 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?
             };
             let authorizers = authorizers_from_config(cert_config.clone())?;
-            let issue_result = issuer
-                .issue(&cert_key, cert_config.advanced.lifetime, authorizers)
-                .await;
+            let lifetime = cert_config
+                .advanced
+                .lifetime_seconds
+                .map(|lifetime| Some(Duration::from_secs(lifetime)))
+                .unwrap_or_default();
+            let issue_result = issuer.issue(&cert_key, lifetime, authorizers).await;
             if let Ok(new_cert) = &issue_result {
                 self.config.save_certificate_and_config(
                     cert_id,
@@ -781,6 +799,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 "Key reuse: {}",
                 if cert.advanced.reuse_key { "yes" } else { "no" }
             );
+            // TODO: path to cert+key?
 
             match self.config.load_certificate_files(&cert_id, Some(1)) {
                 Ok(x509_certs) => {

@@ -43,6 +43,7 @@ pub(crate) mod serde_helper {
     }
 
     impl PassthroughBytes {
+        #[cfg(test)]
         pub(crate) fn new(data: Vec<u8>) -> Self {
             Self { inner: data }
         }

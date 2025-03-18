@@ -9,8 +9,8 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::util::humanize_duration;
 use crate::{
-    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Authorizer, Certonaut,
-    DomainSolverMap, NewAccountOptions, ParsedDuration, CRATE_NAME,
+    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Certonaut, DomainSolverMap,
+    NewAccountOptions, ParsedDuration, CRATE_NAME,
 };
 use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
@@ -72,7 +72,10 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             solvers,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,
-                lifetime: issue_cmd.advanced.lifetime,
+                lifetime_seconds: issue_cmd
+                    .advanced
+                    .lifetime
+                    .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
             },
         };
@@ -399,15 +402,16 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         [
             ClosureEditor::new(
                 "Requested Lifetime",
-                &|config: &AdvancedCertificateConfiguration| match config.lifetime {
+                &|config: &AdvancedCertificateConfiguration| match config.lifetime_seconds {
                     None => "Not specified".into(),
                     Some(lifetime) => {
-                        humanize_duration(lifetime.try_into().unwrap_or(time::Duration::MAX)).into()
+                        humanize_duration(time::Duration::seconds(lifetime as i64)).into()
                     }
                 },
                 |mut config| {
                     async {
-                        config.lifetime = Self::user_ask_cert_lifetime(config.lifetime)?;
+                        config.lifetime_seconds =
+                            Self::user_ask_cert_lifetime(config.lifetime_seconds)?;
                         Ok(config)
                     }
                     .boxed()
@@ -507,7 +511,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(None)
     }
 
-    fn user_ask_cert_lifetime(current: Option<Duration>) -> Result<Option<Duration>, Error> {
+    fn user_ask_cert_lifetime(current: Option<u64>) -> Result<Option<u64>, Error> {
         println!(
             "Some CAs allow you to request a specific lifetime for the certificate (within a certain allowed range)."
         );
@@ -522,7 +526,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .with_error_message(
                 "Please type a valid duration, like '90 days' or '15d 2 hours 37min'",
             )
-            .with_default(current.unwrap_or(Duration::ZERO).into())
+            .with_default(current.unwrap_or_default().into())
             .with_help_message("Press ESC or enter 0s to not use this feature")
             .prompt_skippable()
             .context("No answer to cert lifetime prompt")?
@@ -532,7 +536,8 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 } else {
                     Some(*duration)
                 }
-            });
+            })
+            .map(|duration| duration.as_secs());
         Ok(duration)
     }
 
@@ -658,7 +663,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 let base_name = Identifier::from(
                     domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string(),
                 );
-                let add_base_name = Confirm::new(&format!("It is common to also include {base_name} in certificates, so that visitors can use both. Do you want to add the base domain to your certificate?"))
+                let add_base_name = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the base domain to your certificate?", base_name.to_string().green().on_black()))
                     .with_default(false)
                     .prompt_skippable()?.unwrap_or(false);
                 if add_base_name {
@@ -666,7 +671,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 }
             } else {
                 let www_name = Identifier::from("www.".to_string() + domain.as_str());
-                let add_www = Confirm::new(&format!("It is common to also include {www_name} in certificates, so that visitors can use both. Do you want to add the www subdomain to your certificate?"))
+                let add_www = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the www subdomain to your certificate?", www_name.to_string().green().on_black()))
                     .with_default(false)
                     .prompt_skippable()?.unwrap_or(false);
                 if add_www {
@@ -756,7 +761,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         Ok(user_choice)
     }
 
-    fn user_create_ca(client: &mut Certonaut<CB>) -> Result<CertificateAuthorityConfiguration, Error> {
+    fn user_create_ca(
+        client: &mut Certonaut<CB>,
+    ) -> Result<CertificateAuthorityConfiguration, Error> {
         println!("{}", "Adding a new certificate authority".dark_green());
         let ca_name = Text::new("Name for the new CA:")
             .prompt()
@@ -864,8 +871,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         let acme_client = ca.client().await?;
         let tos_status = Self::user_create_account_ca_specific_features(ca).await?;
         println!(
-            "You can provide one or more contact addresses to the CA. This is optional, but \
-doing so may allow the CA to contact you in case of problems. Please provide a comma-separated list \
+            "You can provide one or more contact addresses to the CA. Please provide a comma-separated list \
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
         );
         let email_prompt = Text::new("Email(s):")
@@ -1056,6 +1062,14 @@ web_index = \"/var/www/html\""
                 .context(format!("Parsing solver configuration for {solver}"))?;
             solvers.insert(solver.to_string(), solver_config);
         }
+        Ok(DomainSolverMap {
+            domains: domains
+                .into_iter()
+                .map(|ic| (Identifier::from(ic.domain), ic.solver_identifier))
+                .collect(),
+            solvers,
+        })
+    }
 
         let mut authorizers = Vec::new();
         for identifier_config in domains {

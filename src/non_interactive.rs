@@ -30,7 +30,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                     .get_default_ca()
                     .map(|issuer| issuer.config.identifier.clone())
             })
-            .context("A certificate authority must be specified in non-interactive mode")?;
+            .context("No default Certificate Authority found. Specify a CA on the command line for non-interactive mode")?;
         let issuer = self
             .client
             .get_ca(&ca)
@@ -84,7 +84,10 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             solvers,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,
-                lifetime: issue_cmd.advanced.lifetime,
+                lifetime_seconds: issue_cmd
+                    .advanced
+                    .lifetime
+                    .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
             },
         })

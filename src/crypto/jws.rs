@@ -1,8 +1,8 @@
 use crate::acme::object::Nonce;
 use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
-use aws_lc_rs::digest::{SHA256, digest};
-use base64::Engine;
+use crate::crypto::sha256;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde::Serialize;
 use url::Url;
 
@@ -129,7 +129,7 @@ impl JsonWebKey {
                 format!(r#"{{"e":"{e}","kty":"{kty}","n":"{n}"}}"#)
             }
         };
-        let hash = digest(&SHA256, fixed_serialization.as_bytes());
+        let hash = sha256(fixed_serialization.as_bytes());
         BASE64_URL_SAFE_NO_PAD.encode(hash.as_ref())
     }
 

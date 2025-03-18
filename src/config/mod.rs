@@ -337,7 +337,7 @@ pub struct CertificateConfiguration {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedCertificateConfiguration {
     pub reuse_key: bool,
-    pub lifetime: Option<Duration>,
+    pub lifetime_seconds: Option<u64>,
     pub profile: Option<String>,
 }
 

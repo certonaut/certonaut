@@ -69,6 +69,7 @@ impl From<anyhow::Error> for IssueError {
                 | Error::DeserializationFailed(_)
                 | Error::Http(_)
                 | Error::TimedOut(_) => IssueError::ClientFailure(err),
+                // TODO: Remember the retry_after value and honor it for renewals
                 Error::RateLimited(_) => IssueError::RateLimited(err),
             },
             None => IssueError::ClientFailure(err),
