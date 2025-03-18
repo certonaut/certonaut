@@ -14,9 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Install deps
+      run: |
+        sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
+    
     - name: Build
       run: cargo build --verbose --locked --all-features
+    
     - name: Run tests
       run: cargo test --verbose --all-features
   
@@ -27,6 +34,10 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Install deps
+      run: |
+        sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
       
     - name: Install Pebble and challtestsrv
       run: |
