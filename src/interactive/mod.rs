@@ -1,10 +1,9 @@
-use crate::acme::object::Identifier;
 use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
-use crate::cli::{CommandLineKeyType, IssueCommand};
+use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
-    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, InstallerConfiguration,
-    SolverConfiguration,
+    CertificateConfiguration, ConfigBackend, Identifier, IdentifierConfiguration,
+    InstallerConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
@@ -65,10 +64,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ca_identifier: initial_issuer,
             account_identifier: initial_account,
             key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
-            domains: domains
-                .into_iter()
-                .map(|(id, solver)| (id.to_string(), solver))
-                .collect(),
+            domains,
             solvers,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,
@@ -157,9 +153,9 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         let delete = Confirm::new(
             "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
         )
-        .with_default(false)
-        .prompt()
-        .context("No answer to deletion prompt")?;
+            .with_default(false)
+            .prompt()
+            .context("No answer to deletion prompt")?;
         // TODO: Verify whether any certs reference this account ID
         if delete {
             // First, deactivate account at CA
@@ -190,6 +186,56 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 id
             }
         })
+    }
+
+    pub async fn interactive_modify_cert_configuration(
+        &mut self,
+        cmd: CertificateModifyCommand,
+    ) -> Result<(), Error> {
+        let cert_id = match cmd.cert_id {
+            Some(cert_id) => cert_id,
+            None => self.user_select_cert()?,
+        };
+        let current_cert_config = self
+            .client
+            .get_certificate(&cert_id)
+            .cloned()
+            .context(format!("Certificate {cert_id} not found"))?;
+        let merged_config = crate::modify_certificate_config(current_cert_config, cmd.new_config)?;
+
+        let new_config = self
+            .interactive_edit_cert_configuration(merged_config)
+            .await?;
+        self.client.replace_certificate(&cert_id, new_config)?;
+        println!(
+            "Successfully modified certificate configuration. The new configuration will become effective on the next renewal."
+        );
+        Ok(())
+    }
+
+    fn user_select_cert(&self) -> Result<String, Error> {
+        let certs: Vec<_> = self
+            .client
+            .certificates
+            .iter()
+            .map(|(cert_id, cert_config)| CertChoice {
+                id: cert_id.to_string(),
+                display_name: cert_config.display_name.to_string(),
+                domains: cert_config
+                    .domains
+                    .keys()
+                    .sorted()
+                    .map(std::string::ToString::to_string)
+                    .collect(),
+            })
+            .collect();
+        if certs.is_empty() {
+            bail!("No certificates found");
+        }
+        let choice = Select::new("Select a certificate", certs)
+            .prompt()
+            .context("No certificate selected")?;
+        Ok(choice.id)
     }
 
     async fn interactive_edit_cert_configuration(
@@ -266,12 +312,8 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let sorted_domains: Vec<_> = config
-                            .domains
-                            .keys()
-                            .map(|domain| Identifier::from(domain.clone()))
-                            .sorted()
-                            .collect();
+                        let sorted_domains: Vec<_> =
+                            config.domains.keys().cloned().sorted().collect();
                         let new_domains = Self::user_ask_cert_domains(sorted_domains.iter())?;
                         if new_domains.iter().sorted().eq(sorted_domains.iter()) {
                             // No change
@@ -283,11 +325,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             .choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
                         let new_authenticators = Self::user_ask_solvers(new_domains)?;
-                        config.domains = new_authenticators
-                            .domains
-                            .into_iter()
-                            .map(|(domain, solver)| (domain.to_string(), solver))
-                            .collect();
+                        config.domains = new_authenticators.domains;
                         config.solvers = new_authenticators.solvers;
                         Ok(config)
                     }
@@ -321,17 +359,9 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let domains = config
-                            .domains
-                            .keys()
-                            .map(|domain| Identifier::from(domain.clone()))
-                            .collect();
+                        let domains = config.domains.keys().sorted().cloned().collect();
                         let new_authenticators = Self::user_ask_solvers(domains)?;
-                        config.domains = new_authenticators
-                            .domains
-                            .into_iter()
-                            .map(|(domain, solver)| (domain.to_string(), solver))
-                            .collect();
+                        config.domains = new_authenticators.domains;
                         config.solvers = new_authenticators.solvers;
                         Ok(config)
                     }
@@ -477,15 +507,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         if issue_cmd.solver_configuration.is_empty() {
             Self::user_ask_solvers(domains)
         } else {
-            let mut built_solver_configs = Vec::new();
-            for cli_solver_config in &issue_cmd.solver_configuration {
-                built_solver_configs.push(
-                    cli_solver_config
-                        .solver
-                        .build_from_command_line(cli_solver_config.clone())?,
-                );
-            }
-            build_domain_solver_maps(built_solver_configs)
+            crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration.clone())
         }
     }
 
@@ -616,11 +638,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         issue_cmd: &IssueCommand,
     ) -> Result<HashSet<Identifier>, Error> {
         if let Some(domains) = &issue_cmd.domains {
-            return Ok(domains
-                .iter()
-                .map(|domain| Identifier::from(domain.trim().to_string()))
-                .sorted()
-                .collect());
+            return Ok(domains.iter().cloned().sorted().collect());
         }
         // Domains are given per-solver
         if !issue_cmd.solver_configuration.is_empty() {
@@ -998,12 +1016,12 @@ You may need to create an account at the CA's website first.",
                     "EAB_KID".dark_green().on_black(),
                     "EAB_HMAC_KEY".dark_green().on_black()
                 ))
-                .with_help_message(
-                    "If not, please review the CA's website to find these. They are required to proceed.",
-                )
-                .with_default(false)
-                .prompt()
-                .context("No answer to EAB check-question")?;
+                    .with_help_message(
+                        "If not, please review the CA's website to find these. They are required to proceed.",
+                    )
+                    .with_default(false)
+                    .prompt()
+                    .context("No answer to EAB check-question")?;
                 if has_eab {
                     todo!("EAB currently not implemented")
                 } else {
@@ -1213,6 +1231,22 @@ impl Display for AccountChoice {
             AccountChoice::NewAccount => write!(f, "Create new account")?,
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CertChoice {
+    id: String,
+    display_name: String,
+    domains: Vec<String>,
+}
+
+impl Display for CertChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let id = &self.id;
+        let display_name = &self.display_name;
+        let domains = self.domains.join(", ");
+        write!(f, "{display_name} (ID: {id}) ({domains})")
     }
 }
 

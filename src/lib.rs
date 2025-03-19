@@ -5,15 +5,16 @@ use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertific
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
 use crate::acme::object::{
-    AccountStatus, AuthorizationStatus, ChallengeStatus, Identifier, InnerChallenge,
-    NewOrderRequest, Order, OrderStatus,
+    AccountStatus, AuthorizationStatus, ChallengeStatus, InnerChallenge, NewOrderRequest, Order,
+    OrderStatus,
 };
 use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, KeyAuthorization};
+use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
     config_directory, AccountConfiguration,
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, Configuration, ConfigurationManager, InstallerConfiguration,
+    ConfigBackend, Configuration, ConfigurationManager, Identifier, InstallerConfiguration,
     MainConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
@@ -136,7 +137,7 @@ pub fn current_time_truncated() -> time::OffsetDateTime {
 // TODO: must-staple option
 fn create_and_sign_csr(
     cert_key: &rcgen::KeyPair,
-    identifiers: Vec<Identifier>,
+    identifiers: Vec<acme::object::Identifier>,
 ) -> Result<CertificateSigningRequest, Error> {
     let mut cert_params = rcgen::CertificateParams::new(
         identifiers
@@ -191,7 +192,7 @@ fn load_certificates_from_reader<R: BufRead + Seek>(
 }
 
 pub struct Authorizer {
-    identifier: Identifier,
+    identifier: acme::object::Identifier,
     solver: Box<dyn ChallengeSolver>,
 }
 
@@ -201,7 +202,7 @@ impl Authorizer {
     }
 
     pub fn new_boxed(identifier: Identifier, solver: Box<dyn ChallengeSolver>) -> Self {
-        Self { identifier, solver }
+        Self { identifier: identifier.into(), solver }
     }
 }
 
@@ -249,18 +250,32 @@ pub fn build_domain_solver_maps(
     Ok((domains, solvers).into())
 }
 
+pub fn domain_solver_maps_from_command_line(
+    cmd_line_config: Vec<CommandLineSolverConfiguration>,
+) -> anyhow::Result<DomainSolverMap> {
+    let mut solver_configs = Vec::with_capacity(cmd_line_config.len());
+    for solver_config in cmd_line_config {
+        solver_configs.push(
+            solver_config
+                .solver
+                .build_from_command_line(solver_config)?,
+        );
+    }
+    build_domain_solver_maps(solver_configs)
+}
+
 pub fn authorizers_from_config(
     config: CertificateConfiguration,
 ) -> anyhow::Result<Vec<Authorizer>> {
     let size = config.domains.len();
     let mut authorizers = Vec::with_capacity(size);
     for (domain, solver_name) in config.domains.into_iter().sorted() {
-        let id = Identifier::from(domain);
+        let acme_domain = domain.clone().into();
         if authorizers
             .iter()
-            .any(|authorizer: &Authorizer| authorizer.identifier == id)
+            .any(|authorizer: &Authorizer| authorizer.identifier == acme_domain)
         {
-            bail!("Duplicate domain {id} in config");
+            bail!("Duplicate domain {domain} in config");
         }
 
         let solver_config = config
@@ -269,9 +284,43 @@ pub fn authorizers_from_config(
             .cloned()
             .ok_or(anyhow!("Solver {solver_name} not found"))?;
         let solver = solver_config.to_solver()?;
-        authorizers.push(Authorizer::new_boxed(id, solver));
+        authorizers.push(Authorizer::new_boxed(domain, solver));
     }
     Ok(authorizers)
+}
+
+fn modify_certificate_config(
+    mut cert: CertificateConfiguration,
+    modify: IssueCommand,
+) -> anyhow::Result<CertificateConfiguration> {
+    if let Some(ca) = modify.ca {
+        cert.ca_identifier = ca;
+    }
+    if let Some(acc) = modify.account {
+        cert.account_identifier = acc;
+    }
+    if let Some(name) = modify.cert_name {
+        cert.display_name = name;
+    }
+    if let Some(install) = modify.install_script {
+        cert.installer = Some(InstallerConfiguration::Script { script: install })
+    }
+    if let Some(key_type) = modify.advanced.key_type {
+        cert.key_type = key_type.into();
+    }
+    if let Some(lifetime) = modify.advanced.lifetime {
+        cert.advanced.lifetime_seconds = Some(lifetime.as_secs())
+    }
+    if let Some(profile) = modify.advanced.profile {
+        cert.advanced.profile = Some(profile);
+    }
+    cert.advanced.reuse_key = modify.advanced.reuse_key;
+    let domains_and_solvers = domain_solver_maps_from_command_line(modify.solver_configuration)?;
+    if !domains_and_solvers.domains.is_empty() {
+        cert.domains = domains_and_solvers.domains;
+        cert.solvers = domains_and_solvers.solvers;
+    }
+    Ok(cert)
 }
 
 /// Note: This is not collision-free. Use `Certonaut::choose_cert_id_from_display_name` instead.
@@ -375,6 +424,23 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         self.issuers.values().find(|issuer| issuer.config.default)
     }
 
+    pub fn get_certificate(&self, id: &str) -> Option<&CertificateConfiguration> {
+        self.certificates.get(id)
+    }
+
+    pub fn replace_certificate(
+        &mut self,
+        id: &str,
+        new_certificate: CertificateConfiguration,
+    ) -> Result<(), Error> {
+        self.certificates
+            .insert(id.to_string(), new_certificate.clone());
+        self.config
+            .save_certificate_config(id, &new_certificate)
+            .context("Saving new configuration")?;
+        Ok(())
+    }
+
     pub fn get_issuer_with_account(
         &self,
         issuer: &str,
@@ -386,16 +452,20 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .ok_or(anyhow!("Account {account} not found"))
     }
 
+    pub fn current_main_config(&self) -> MainConfiguration {
+        MainConfiguration {
+            ca_list: self
+                .issuers
+                .values()
+                .sorted_by_key(|issuer| issuer.config.name.clone())
+                .map(AcmeIssuer::current_config)
+                .collect(),
+        }
+    }
+
     pub fn current_config(&self) -> Configuration {
         Configuration {
-            main: MainConfiguration {
-                ca_list: self
-                    .issuers
-                    .values()
-                    .sorted_by_key(|issuer| issuer.config.name.clone())
-                    .map(AcmeIssuer::current_config)
-                    .collect(),
-            },
+            main: self.current_main_config(),
             certificates: self.certificates.clone(),
         }
     }
@@ -462,7 +532,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         let issuer = AcmeIssuer::try_new(new_ca)?;
         self.issuers.insert(id, issuer);
         self.config
-            .save(&self.current_config())
+            .save_main(&self.current_main_config())
             .context("Saving new configuration")?;
         Ok(())
     }
@@ -473,7 +543,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
         ca.add_account(new_account);
         self.config
-            .save(&self.current_config())
+            .save_main(&self.current_main_config())
             .context("Saving new configuration")?;
         Ok(())
     }
@@ -540,7 +610,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .and_then(|issuer| issuer.remove_account(account_id));
         if let Some(deleted_account) = deleted_account {
             self.config
-                .save(&self.current_config())
+                .save_main(&self.current_main_config())
                 .context("Saving new configuration")?;
             if let Err(e) = std::fs::remove_file(deleted_account.config.key_file) {
                 warn!("Failed to delete account key: {}", e);
@@ -556,7 +626,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .remove(issuer_id)
             .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;
         self.config
-            .save(&self.current_config())
+            .save_main(&self.current_main_config())
             .context("Saving new configuration")?;
         Ok(())
     }
@@ -1036,7 +1106,7 @@ impl AcmeIssuerWithAccount<'_> {
         cert_lifetime: Option<Duration>,
         authorizers: Vec<Authorizer>,
     ) -> IssueResult<DownloadedCertificate> {
-        let identifiers: Vec<Identifier> = authorizers
+        let identifiers: Vec<_> = authorizers
             .iter()
             .map(|authorizer| authorizer.identifier.clone())
             .collect();
@@ -1292,6 +1362,7 @@ mod tests {
     use crate::challenge_solver::NullSolver;
     use crate::crypto::asymmetric::{new_key, Curve};
     use crate::util::serde_helper::PassthroughBytes;
+
     use std::path::PathBuf;
 
     fn setup_fake_ca(fake_url: &Url) -> anyhow::Result<AcmeIssuer> {
@@ -1403,7 +1474,7 @@ mod tests {
             },
         ));
         let pending_authorization = Ok(Authorization {
-            identifier: Identifier::from_str("example.com")?,
+            identifier: Identifier::from_str("example.com")?.into(),
             status: AuthorizationStatus::Pending,
             expires: None,
             challenges: vec![Challenge {

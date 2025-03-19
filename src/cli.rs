@@ -1,7 +1,6 @@
-use crate::acme::object::Identifier;
 use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::config;
-use crate::config::ConfigBackend;
+use crate::config::{ConfigBackend, Identifier};
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
@@ -111,6 +110,8 @@ pub enum CertificateCommand {
     Renew(RenewCommand),
     /// List available certificates
     List,
+    /// Change the renewal configuration of an existing certificate
+    Modify(CertificateModifyCommand),
 }
 
 impl Display for CertificateCommand {
@@ -119,6 +120,7 @@ impl Display for CertificateCommand {
             CertificateCommand::Issue(_) => write!(f, "Issue a new certificate"),
             CertificateCommand::Renew(_) => write!(f, "Renew your certificates"),
             CertificateCommand::List => write!(f, "List available certificates"),
+            CertificateCommand::Modify(_) => write!(f, "Modify existing certificate"),
         }
     }
 }
@@ -157,8 +159,9 @@ pub struct IssueCommand {
     #[clap(short, long, global = true)]
     pub account: Option<String>,
     /// Domain names to include in the certificate
+    // TODO: Consider removing the domains here as they're really just confusing for users (they conflict with per-solver domains)
     #[clap(short, long, value_delimiter = ',', num_args = 1..)]
-    pub domains: Option<Vec<String>>,
+    pub domains: Option<Vec<Identifier>>,
     /// The display name of the new certificate
     #[clap(long, global = true)]
     pub cert_name: Option<String>,
@@ -252,6 +255,15 @@ impl Debug for CommandLineSolverConfiguration {
     }
 }
 
+#[derive(Debug, Args, Default)]
+pub struct CertificateModifyCommand {
+    /// The identifier of the certificate to edit
+    #[clap(long = "cert", global = true)]
+    pub cert_id: Option<String>,
+    #[clap(flatten)]
+    pub new_config: IssueCommand,
+}
+
 pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     mut cmd: Option<Command>,
     matches: &ArgMatches,
@@ -310,6 +322,7 @@ pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                         CertificateCommand::List,
                         CertificateCommand::Issue(IssueCommand::default()),
                         CertificateCommand::Renew(RenewCommand::default()),
+                        CertificateCommand::Modify(CertificateModifyCommand::default()),
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
@@ -429,6 +442,16 @@ async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
         CertificateCommand::List => {
             client.print_certificates();
             Ok(())
+        }
+        CertificateCommand::Modify(mut modify) => {
+            modify.new_config = process_issue_cmd(modify.new_config, matches)?;
+            if interactive {
+                let mut service = InteractiveService::new(client);
+                service.interactive_modify_cert_configuration(modify).await
+            } else {
+                let mut service = NonInteractiveService::new(client);
+                service.modify_cert_config(modify)
+            }
         }
     }
 }
@@ -550,6 +573,24 @@ pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::
         .find(|sc| sc.get_name() == "issue")
         .expect("BUG: No issue alias subcommand found");
     *issue_cmd_ref_alias = issue_cmd.about("Shorthand for 'certificate issue'");
+
+    let modify_cmd_ref = main_cmd
+        .get_subcommands_mut()
+        .find(|sc| sc.get_name() == "certificate")
+        .and_then(|sc| {
+            sc.get_subcommands_mut()
+                .find(|sc| sc.get_name() == "modify")
+        })
+        .expect("BUG: No certificate modify subcommand found");
+    let modify_cmd = std::mem::replace(modify_cmd_ref, clap::Command::new("placeholder"));
+    *modify_cmd_ref = modify_cmd.subcommands(
+        CHALLENGE_SOLVER_REGISTRY
+            .iter()
+            .map(|solver_builder| {
+                AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line())
+            })
+            .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
+    );
 
     let matches = main_cmd.get_matches();
     let command_line = CommandLineArguments::from_arg_matches(&matches)?;

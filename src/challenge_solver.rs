@@ -1,11 +1,11 @@
-use crate::acme::object::{Identifier, InnerChallenge, Token};
+use crate::acme::object::{InnerChallenge, Token};
 use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration,
     SolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
-use crate::magic;
+use crate::{acme, config, magic};
 use anyhow::{bail, Error};
 use async_trait::async_trait;
 use clap::{value_parser, Arg, Command};
@@ -60,7 +60,7 @@ pub trait ChallengeSolver: Send {
     async fn deploy_challenge(
         &mut self,
         jwk: &JsonWebKey,
-        identifier: &Identifier,
+        identifier: &acme::object::Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error>;
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error>;
@@ -92,7 +92,7 @@ impl ChallengeSolver for NullSolver {
     async fn deploy_challenge(
         &mut self,
         _jwk: &JsonWebKey,
-        _identifier: &Identifier,
+        _identifier: &acme::object::Identifier,
         _challenge: InnerChallenge,
     ) -> Result<(), Error> {
         Ok(())
@@ -135,10 +135,10 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn description(&self) -> &'static str;
     fn category(&self) -> SolverCategory;
     fn preference(&self) -> usize;
-    fn supported(&self, domains: &HashSet<Identifier>) -> bool;
+    fn supported(&self, domains: &HashSet<config::Identifier>) -> bool;
     fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
+        domains: HashSet<config::Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration>;
     fn build_from_command_line(
         &self,
@@ -149,7 +149,7 @@ pub trait SolverConfigBuilder: Send + Sync {
 
 #[derive(Debug)]
 pub struct DomainsWithSolverConfiguration {
-    pub domains: HashSet<Identifier>,
+    pub domains: HashSet<config::Identifier>,
     pub config: SolverConfiguration,
     pub solver_name: Option<String>,
 }
@@ -207,13 +207,13 @@ with the CA. Will cause failures otherwise."
         100
     }
 
-    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
         true
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
+        domains: HashSet<config::Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains,
@@ -261,13 +261,13 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         90
     }
 
-    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
         cfg!(debug_assertions)
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
+        domains: HashSet<config::Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains,
@@ -315,13 +315,13 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         5
     }
 
-    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
         magic::is_supported()
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
+        domains: HashSet<config::Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         if !magic::is_supported() {
             bail!("The magic solver is not supported by your system");

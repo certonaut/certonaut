@@ -7,11 +7,13 @@ use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::CRATE_NAME;
+use crate::{acme, CRATE_NAME};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::Infallible;
+use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -213,7 +215,7 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
                         ErrorKind::NotFound => {
                             // Assume no config exists - overwrite with default
                             let default = DefaultConfig::default().get_config();
-                            self.save(&default)?;
+                            self.save_all(&default)?;
                             self.backend.load_main()?
                         }
                         _ => {
@@ -241,8 +243,12 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         })
     }
 
-    pub fn save(&self, config: &Configuration) -> Result<(), Error> {
-        self.backend.save_main(&config.main)?;
+    pub fn save_main(&self, config: &MainConfiguration) -> Result<(), Error> {
+        self.backend.save_main(config)
+    }
+
+    pub fn save_all(&self, config: &Configuration) -> Result<(), Error> {
+        self.save_main(&config.main)?;
         for (id, cert) in &config.certificates {
             self.backend.save_certificate_config(id, cert)?;
         }
@@ -353,14 +359,55 @@ pub struct CertificateConfiguration {
     pub account_identifier: String,
     #[serde(with = "key_type_config_serializer")]
     pub key_type: KeyType,
-    // TODO: Consider something like a ConfigIdentifier as key?
-    pub domains: HashMap<String, String>,
+    pub domains: HashMap<Identifier, String>,
     #[serde(rename = "solver")]
     pub solvers: HashMap<String, SolverConfiguration>,
     #[serde(flatten)]
     pub advanced: AdvancedCertificateConfiguration,
     #[serde(default)]
     pub installer: Option<InstallerConfiguration>,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Identifier(String);
+
+impl Identifier {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Identifier {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Identifier(s.to_string()))
+    }
+}
+
+impl From<Identifier> for acme::object::Identifier {
+    fn from(value: Identifier) -> Self {
+        acme::object::Identifier::from(value.0)
+    }
+}
+
+impl From<Identifier> for String {
+    fn from(value: Identifier) -> Self {
+        value.0
+    }
+}
+
+impl From<String> for Identifier {
+    fn from(value: String) -> Self {
+        Identifier(value)
+    }
+}
+
+impl Display for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -497,7 +544,7 @@ pub mod test_backend {
             Ok(MainConfiguration { ca_list: vec![] })
         }
 
-        fn save_main(&self, config: &MainConfiguration) -> Result<(), Error> {
+        fn save_main(&self, _config: &MainConfiguration) -> Result<(), Error> {
             Ok(())
         }
 
@@ -505,34 +552,34 @@ pub mod test_backend {
             unimplemented!("noop backend cannot load certificates")
         }
 
-        fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
+        fn load_certificate_private_key(&self, _id: &str) -> Result<KeyPair, Error> {
             unimplemented!("noop backend cannot load private keys")
         }
 
         fn load_certificate_files(
             &self,
-            id: &str,
-            limit: Option<usize>,
+            _id: &str,
+            _limit: Option<usize>,
         ) -> Result<Vec<ParsedX509Certificate>, Error> {
             unimplemented!("noop backend cannot load certificate files")
         }
 
         fn save_certificate_config(
             &self,
-            id: &str,
-            config: &CertificateConfiguration,
+            _id: &str,
+            _config: &CertificateConfiguration,
         ) -> Result<(), Error> {
             Ok(())
         }
 
-        fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error> {
+        fn save_certificate_private_key(&self, _id: &str, _key: &KeyPair) -> Result<(), Error> {
             Ok(())
         }
 
         fn save_certificate_file(
             &self,
-            id: &str,
-            cert: &DownloadedCertificate,
+            _id: &str,
+            _cert: &DownloadedCertificate,
         ) -> Result<(), Error> {
             Ok(())
         }

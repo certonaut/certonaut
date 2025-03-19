@@ -1,4 +1,4 @@
-use crate::cli::IssueCommand;
+use crate::cli::{CertificateModifyCommand, IssueCommand};
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateConfiguration, ConfigBackend,
     InstallerConfiguration,
@@ -20,6 +20,23 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         println!("{CRATE_NAME} non-interactive certificate issuance");
         let config = self.build_cert_config(issue_cmd)?;
         self.client.issue_new(config).await
+    }
+
+    pub fn modify_cert_config(&mut self, cmd: CertificateModifyCommand) -> Result<(), Error> {
+        let cert_id = cmd
+            .cert_id
+            .context("A certificate ID must be specified in non-interactive mode")?;
+        let current_config = self
+            .client
+            .get_certificate(&cert_id)
+            .cloned()
+            .context(format!("Certificate {cert_id} not found"))?;
+        let new_config = crate::modify_certificate_config(current_config, cmd.new_config)?;
+        self.client.replace_certificate(&cert_id, new_config)?;
+        println!(
+            "Successfully modified certificate configuration. The new configuration will become effective on the next renewal."
+        );
+        Ok(())
     }
 
     fn build_cert_config(
@@ -53,15 +70,8 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                 }
             })
             .context(format!("You must specify an account for CA {ca}"))?;
-        let mut solver_configs = Vec::with_capacity(issue_cmd.solver_configuration.len());
-        for solver_config in issue_cmd.solver_configuration {
-            solver_configs.push(
-                solver_config
-                    .solver
-                    .build_from_command_line(solver_config)?,
-            );
-        }
-        let domains_and_solvers = crate::build_domain_solver_maps(solver_configs)?;
+        let domains_and_solvers =
+            crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration)?;
         let domains = domains_and_solvers.domains;
         if domains.is_empty() {
             bail!(
@@ -80,10 +90,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             ca_identifier: ca,
             account_identifier: account,
             key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
-            domains: domains
-                .into_iter()
-                .map(|(id, solver)| (id.to_string(), solver))
-                .collect(),
+            domains,
             solvers,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,

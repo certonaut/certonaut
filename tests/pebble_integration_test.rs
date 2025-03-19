@@ -1,8 +1,7 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
-use certonaut::acme::object::Identifier;
 use certonaut::config::test_backend::new_configuration_manager_with_noop_backend;
-use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
+use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Identifier};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL};
