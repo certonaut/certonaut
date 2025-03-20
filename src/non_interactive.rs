@@ -1,11 +1,18 @@
-use crate::cli::{CertificateModifyCommand, IssueCommand};
+use crate::cli::{
+    AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
+};
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateConfiguration, ConfigBackend,
     InstallerConfiguration,
 };
-use crate::Certonaut;
+use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::CRATE_NAME;
+use crate::{Certonaut, NewAccountOptions};
 use anyhow::{bail, Context, Error};
+use crossterm::style::Stylize;
+use std::str::FromStr;
+use tracing::warn;
+use url::Url;
 
 pub struct NonInteractiveService<CB> {
     client: Certonaut<CB>,
@@ -36,6 +43,73 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         println!(
             "Successfully modified certificate configuration. The new configuration will become effective on the next renewal."
         );
+        Ok(())
+    }
+
+    pub async fn create_account(&mut self, cmd: AccountCreateCommand) -> Result<(), Error> {
+        let Some(ca_id) = cmd.ca_identifier else {
+            bail!("A certificate authority must be specified in noninteractive mode")
+        };
+        let issuer = self.client.get_ca(&ca_id).context("CA not found")?;
+        let ca_name = issuer.config.name.as_str().green();
+        let mut contacts = Vec::new();
+        for contact in cmd.contact {
+            contacts.push(
+                Url::from_str(&("mailto:".to_owned() + &contact))
+                    .context(format!("Parsing mail address {contact}"))?,
+            );
+        }
+        println!("Creating a new account at CA {ca_name}");
+        let acme_client = issuer.client().await?;
+        let ca_name = &issuer.config.name;
+        let account_num = issuer.accounts.len();
+        let account_name = cmd.account_name.unwrap_or_else(|| {
+            if account_num > 0 {
+                format!("{ca_name} ({account_num})")
+            } else {
+                ca_name.to_string()
+            }
+        });
+        let account_id = cmd
+            .account_id
+            .unwrap_or_else(|| format!("{ca_id}@{account_num}"));
+        let new_account = Certonaut::<CB>::create_account(
+            acme_client,
+            NewAccountOptions {
+                name: account_name,
+                identifier: account_id,
+                contacts,
+                key_type: KeyType::Ecdsa(Curve::P256),
+                terms_of_service_agreed: Some(cmd.terms_of_service_agreed),
+            },
+        )
+        .await?;
+        let acc_id = new_account.config.identifier.clone();
+        self.client.add_new_account(&ca_id, new_account)?;
+        let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
+        Certonaut::<CB>::print_account(&account).await;
+        println!("Successfully added new account");
+        Ok(())
+    }
+
+    pub async fn delete_account(&mut self, cmd: AccountDeleteCommand) -> Result<(), Error> {
+        let Some(ca_id) = cmd.ca_identifier else {
+            bail!("A certificate authority must be specified in noninteractive mode")
+        };
+        let issuer = self.client.get_ca(&ca_id).context("CA not found")?;
+        let Some(account_id) = cmd.account_id else {
+            bail!("An account ID must be specified in noninteractive mode")
+        };
+        let issuer = issuer
+            .with_account(&account_id)
+            .context(format!("Account {account_id} not found at CA {ca_id}"))?;
+        if let Err(e) = issuer.deactivate_account().await {
+            warn!("Account deactivation at CA failed: {e:#}");
+        } else {
+            println!("Account deactivated.");
+        }
+        self.client.remove_account(&ca_id, &account_id)?;
+        println!("Successfully removed account from configuration");
         Ok(())
     }
 

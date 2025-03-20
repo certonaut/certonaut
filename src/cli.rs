@@ -78,28 +78,58 @@ pub enum AccountCommand {
     /// List accounts
     List,
     /// Create a new account
-    Create,
-    /// Import an existing account from another ACME client software
-    Import,
-    /// Change settings of an existing account
-    Modify,
+    Create(AccountCreateCommand),
+    // /// Import an existing account from another ACME client software
+    // Import,
+    // /// Change settings of an existing account
+    // Modify,
     /// Delete and deactivate an account
-    Delete,
+    Delete(AccountDeleteCommand),
 }
 
 impl Display for AccountCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             AccountCommand::List => write!(f, "List accounts"),
-            AccountCommand::Create => write!(f, "Create new account"),
-            AccountCommand::Modify => write!(f, "Modify existing account"),
-            AccountCommand::Import => write!(
-                f,
-                "Import existing account from another installation or ACME client"
-            ),
-            AccountCommand::Delete => write!(f, "Delete (deactivate) account"),
+            AccountCommand::Create(_) => write!(f, "Create new account"),
+            // AccountCommand::Modify => write!(f, "Modify existing account"),
+            // AccountCommand::Import => write!(
+            //     f,
+            //     "Import existing account from another installation or ACME client"
+            // ),
+            AccountCommand::Delete(_) => write!(f, "Delete (deactivate) account"),
         }
     }
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AccountCreateCommand {
+    /// Display name of the new account
+    #[arg(short, long)]
+    pub account_name: Option<String>,
+    /// Unique identifier of the new account
+    #[arg(long = "id")]
+    pub account_id: Option<String>,
+    /// Identifier of the certificate authority where to create the account
+    #[arg(short, long = "ca")]
+    pub ca_identifier: Option<String>,
+    /// Contact address(es) to provide to the CA
+    #[arg(long)]
+    pub contact: Vec<String>,
+    /// Set to indicate that you agree to the CA's terms of service
+    #[arg(long)]
+    pub terms_of_service_agreed: bool,
+    // TODO: EAB, others?
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AccountDeleteCommand {
+    /// Unique identifier of the new account
+    #[arg(long = "id")]
+    pub account_id: Option<String>,
+    /// Identifier of the certificate authority to which the account belongs
+    #[arg(short, long = "ca")]
+    pub ca_identifier: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -264,7 +294,7 @@ pub struct CertificateModifyCommand {
     pub new_config: IssueCommand,
 }
 
-pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
+pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     mut cmd: Option<Command>,
     matches: &ArgMatches,
     client: Certonaut<CB>,
@@ -341,10 +371,10 @@ pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                 if interactive {
                     let selectable_commands = vec![
                         AccountCommand::List,
-                        AccountCommand::Create,
-                        AccountCommand::Modify,
-                        AccountCommand::Delete,
-                        AccountCommand::Import,
+                        AccountCommand::Create(AccountCreateCommand::default()),
+                        // AccountCommand::Modify,
+                        AccountCommand::Delete(AccountDeleteCommand::default()),
+                        // AccountCommand::Import,
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
@@ -360,7 +390,7 @@ pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                 );
             }
             Some(Command::Issue(issue_cmd)) => {
-                break process_certificate_command(
+                break handle_certificate_command(
                     CertificateCommand::Issue(issue_cmd),
                     matches,
                     client,
@@ -369,7 +399,7 @@ pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                 .await;
             }
             Some(Command::Renew(renew_cmd)) => {
-                break process_certificate_command(
+                break handle_certificate_command(
                     CertificateCommand::Renew(renew_cmd),
                     matches,
                     client,
@@ -378,20 +408,20 @@ pub async fn process_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                 .await;
             }
             Some(Command::Issuer(issuer_cmd)) => {
-                break process_issuer_command(issuer_cmd, client, interactive).await;
+                break handle_issuer_command(issuer_cmd, client, interactive).await;
             }
             Some(Command::Certificate(certificate_cmd)) => {
-                break process_certificate_command(certificate_cmd, matches, client, interactive)
+                break handle_certificate_command(certificate_cmd, matches, client, interactive)
                     .await;
             }
             Some(Command::Account(account_cmd)) => {
-                break process_account_command(account_cmd, client, interactive).await;
+                break handle_account_command(account_cmd, client, interactive).await;
             }
         }
     }
 }
 
-async fn process_issuer_command<CB: ConfigBackend + Send + Sync>(
+async fn handle_issuer_command<CB: ConfigBackend + Send + Sync>(
     cmd: IssuerCommand,
     client: Certonaut<CB>,
     interactive: bool,
@@ -418,7 +448,7 @@ async fn process_issuer_command<CB: ConfigBackend + Send + Sync>(
     }
 }
 
-async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
+async fn handle_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
     cmd: CertificateCommand,
     matches: &ArgMatches,
     client: Certonaut<CB>,
@@ -426,7 +456,7 @@ async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     match cmd {
         CertificateCommand::Issue(issue_cmd) => {
-            let issue_cmd = process_issue_cmd(issue_cmd, matches)?;
+            let issue_cmd = enhance_issue_cmd(issue_cmd, matches)?;
             if interactive {
                 let mut service = InteractiveService::new(client);
                 service.interactive_issuance(issue_cmd).await
@@ -444,7 +474,7 @@ async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
             Ok(())
         }
         CertificateCommand::Modify(mut modify) => {
-            modify.new_config = process_issue_cmd(modify.new_config, matches)?;
+            modify.new_config = enhance_issue_cmd(modify.new_config, matches)?;
             if interactive {
                 let mut service = InteractiveService::new(client);
                 service.interactive_modify_cert_configuration(modify).await
@@ -456,7 +486,7 @@ async fn process_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
     }
 }
 
-async fn process_account_command<CB: ConfigBackend + Send + Sync>(
+async fn handle_account_command<CB: ConfigBackend + Send + Sync>(
     cmd: AccountCommand,
     client: Certonaut<CB>,
     interactive: bool,
@@ -466,32 +496,37 @@ async fn process_account_command<CB: ConfigBackend + Send + Sync>(
             client.print_accounts().await;
             Ok(())
         }
-        AccountCommand::Create => {
+        AccountCommand::Create(create) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
+                // TODO: Honor create command
                 service.interactive_create_account().await
             } else {
-                todo!()
+                let mut service = NonInteractiveService::new(client);
+                service.create_account(create).await
             }
         }
-        AccountCommand::Import => {
-            todo!()
-        }
-        AccountCommand::Modify => {
-            todo!()
-        }
-        AccountCommand::Delete => {
+        // AccountCommand::Import => {
+        //     todo!()
+        // }
+        // AccountCommand::Modify => {
+        //     todo!()
+        // }
+        AccountCommand::Delete(delete) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
+                // TODO: Honor delete command
                 service.interactive_delete_account().await
             } else {
-                todo!()
+                let mut service = NonInteractiveService::new(client);
+                service.delete_account(delete).await
             }
         }
     }
 }
 
-fn process_issue_cmd(
+/// Extend a derive-based `IssueCommand` with dynamic information from clap `ArgMatches`
+fn enhance_issue_cmd(
     mut issue_cmd: IssueCommand,
     raw_matches: &ArgMatches,
 ) -> anyhow::Result<IssueCommand> {
@@ -536,7 +571,7 @@ static SOLVER_RECURSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Helper to recursively add solver subcommands to an existing solver subcommand, to allow for a chain of solvers
 fn recursive_solver_subcommands(subcommand: clap::Command) -> clap::Command {
-    if SOLVER_RECURSION_COUNTER.fetch_add(1, Ordering::SeqCst) > MAX_SOLVER_SUBCOMMAND_LENGTH {
+    if SOLVER_RECURSION_COUNTER.fetch_add(1, Ordering::Relaxed) > MAX_SOLVER_SUBCOMMAND_LENGTH {
         return subcommand;
     };
 
@@ -550,8 +585,29 @@ fn recursive_solver_subcommands(subcommand: clap::Command) -> clap::Command {
     )
 }
 
+/// Initialize the clap command line. Most of the command-line is pre-initialized by clap's derive API,
+/// but we have some custom tweaks that use clap's builder API as well. This function instantiates both
+/// and parses the process command line.
+///
+/// # Returns
+///
+/// The parsed command line (derive API) and `ArgMatches` (builder API), or an error if the user specified
+/// invalid arguments.
 #[allow(clippy::missing_panics_doc)]
 pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::Error> {
+    fn extend_command_with_solver_chain(cmd: clap::Command) -> clap::Command {
+        cmd.subcommands(
+            CHALLENGE_SOLVER_REGISTRY
+                .iter()
+                .map(|solver_builder| {
+                    AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line())
+                })
+                .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
+        )
+    }
+
+    // Fixup the IssueCommand: We want to extend it using the builder API.
+    // This is a bit annoying in clap's current design.
     let mut main_cmd = CommandLineArguments::command();
     let issue_cmd_ref = main_cmd
         .get_subcommands_mut()
@@ -559,14 +615,7 @@ pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::
         .and_then(|sc| sc.get_subcommands_mut().find(|sc| sc.get_name() == "issue"))
         .expect("BUG: No certificate issue subcommand found");
     let issue_cmd = std::mem::replace(issue_cmd_ref, clap::Command::new("placeholder"));
-    let issue_cmd = issue_cmd.subcommands(
-        CHALLENGE_SOLVER_REGISTRY
-            .iter()
-            .map(|solver_builder| {
-                AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line())
-            })
-            .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
-    );
+    let issue_cmd = extend_command_with_solver_chain(issue_cmd);
     *issue_cmd_ref = issue_cmd.clone();
     let issue_cmd_ref_alias = main_cmd
         .get_subcommands_mut()
@@ -583,14 +632,7 @@ pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::
         })
         .expect("BUG: No certificate modify subcommand found");
     let modify_cmd = std::mem::replace(modify_cmd_ref, clap::Command::new("placeholder"));
-    *modify_cmd_ref = modify_cmd.subcommands(
-        CHALLENGE_SOLVER_REGISTRY
-            .iter()
-            .map(|solver_builder| {
-                AuthenticatorBaseCommand::augment_args(solver_builder.get_command_line())
-            })
-            .map(|subcommand| subcommand.defer(recursive_solver_subcommands)),
-    );
+    *modify_cmd_ref = extend_command_with_solver_chain(modify_cmd);
 
     let matches = main_cmd.get_matches();
     let command_line = CommandLineArguments::from_arg_matches(&matches)?;
