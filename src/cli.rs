@@ -2,7 +2,7 @@ use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::config;
 use crate::config::{ConfigBackend, Identifier};
 use crate::crypto::asymmetric::{Curve, KeyType};
-use crate::interactive::InteractiveService;
+use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::CRATE_NAME;

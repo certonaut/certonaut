@@ -490,7 +490,7 @@ impl DefaultConfig {
                     CertificateAuthorityConfigurationWithAccounts {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt".to_string(),
-                            identifier: "lets-encrypt".to_string(),
+                            identifier: "letsencrypt".to_string(),
                             acme_directory: Url::from_str(
                                 "https://acme-v02.api.letsencrypt.org/directory",
                             )
@@ -504,7 +504,7 @@ impl DefaultConfig {
                     CertificateAuthorityConfigurationWithAccounts {
                         inner: CertificateAuthorityConfiguration {
                             name: "Let's Encrypt Staging".to_string(),
-                            identifier: "lets-encrypt-staging".to_string(),
+                            identifier: "letsencrypt-staging".to_string(),
                             acme_directory: Url::from_str(
                                 "https://acme-staging-v02.api.letsencrypt.org/directory",
                             )
