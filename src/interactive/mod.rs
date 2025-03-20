@@ -118,7 +118,6 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             .with_default(false)
             .prompt()
             .context("No answer to deletion prompt")?;
-        // TODO: Check if there are existing accounts or certs referencing the CA
         if delete {
             self.client.remove_ca(&ca_id)?;
             println!("Successfully removed CA from configuration");
@@ -853,12 +852,6 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             .prompt_skippable()
             .context("No answer to default CA prompt")?
             .unwrap_or(false);
-        if new_default {
-            client
-                .issuers
-                .values_mut()
-                .for_each(|ca| ca.config.default = false);
-        }
         Ok(CertificateAuthorityConfiguration {
             name: ca_name,
             identifier: ca_id,

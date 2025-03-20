@@ -1,9 +1,10 @@
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
+    IssuerAddCommand, IssuerRemoveCommand,
 };
 use crate::config::{
-    AdvancedCertificateConfiguration, CertificateConfiguration, ConfigBackend,
-    InstallerConfiguration,
+    AdvancedCertificateConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration,
+    ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::CRATE_NAME;
@@ -110,6 +111,42 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         }
         self.client.remove_account(&ca_id, &account_id)?;
         println!("Successfully removed account from configuration");
+        Ok(())
+    }
+
+    pub async fn add_new_ca(&mut self, cmd: IssuerAddCommand) -> Result<(), Error> {
+        let Some(name) = cmd.name else {
+            bail!("CA must be given a name on the command line in noninteractive mode");
+        };
+        let identifier = cmd
+            .id
+            .unwrap_or_else(|| self.client.choose_ca_id_from_name(&name));
+        let Some(acme_directory) = cmd.acme_directory else {
+            bail!("ACME directory URL must be specified in noninteractive mode");
+        };
+        let config = CertificateAuthorityConfiguration {
+            name,
+            identifier: identifier.clone(),
+            acme_directory,
+            public: cmd.public,
+            testing: cmd.testing,
+            default: cmd.default,
+        };
+        self.client.add_new_ca(config)?;
+        let new_issuer = self
+            .client
+            .get_ca(&identifier)
+            .context("BUG: Freshly created CA not found")?;
+        Certonaut::<CB>::print_issuer(new_issuer).await;
+        Ok(())
+    }
+
+    pub async fn remove_ca(&mut self, cmd: IssuerRemoveCommand) -> Result<(), Error> {
+        let Some(ca_id) = cmd.id else {
+            bail!("A CA identifier must be specified in non-interactive mode");
+        };
+        self.client.remove_ca(&ca_id)?;
+        println!("Successfully removed CA {ca_id} from configuration");
         Ok(())
     }
 

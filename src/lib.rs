@@ -202,7 +202,10 @@ impl Authorizer {
     }
 
     pub fn new_boxed(identifier: Identifier, solver: Box<dyn ChallengeSolver>) -> Self {
-        Self { identifier: identifier.into(), solver }
+        Self {
+            identifier: identifier.into(),
+            solver,
+        }
     }
 }
 
@@ -303,13 +306,13 @@ fn modify_certificate_config(
         cert.display_name = name;
     }
     if let Some(install) = modify.install_script {
-        cert.installer = Some(InstallerConfiguration::Script { script: install })
+        cert.installer = Some(InstallerConfiguration::Script { script: install });
     }
     if let Some(key_type) = modify.advanced.key_type {
         cert.key_type = key_type.into();
     }
     if let Some(lifetime) = modify.advanced.lifetime {
-        cert.advanced.lifetime_seconds = Some(lifetime.as_secs())
+        cert.advanced.lifetime_seconds = Some(lifetime.as_secs());
     }
     if let Some(profile) = modify.advanced.profile {
         cert.advanced.profile = Some(profile);
@@ -433,12 +436,12 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         id: &str,
         new_certificate: CertificateConfiguration,
     ) -> Result<(), Error> {
-        self.certificates
-            .insert(id.to_string(), new_certificate.clone());
-        self.config
+        let maybe_err = self
+            .config
             .save_certificate_config(id, &new_certificate)
-            .context("Saving new configuration")?;
-        Ok(())
+            .context("Saving new configuration");
+        self.certificates.insert(id.to_string(), new_certificate);
+        maybe_err
     }
 
     pub fn get_issuer_with_account(
@@ -530,6 +533,11 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             accounts: vec![],
         };
         let issuer = AcmeIssuer::try_new(new_ca)?;
+        if issuer.config.default {
+            self.issuers
+                .values_mut()
+                .for_each(|ca| ca.config.default = false);
+        }
         self.issuers.insert(id, issuer);
         self.config
             .save_main(&self.current_main_config())
@@ -622,6 +630,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
     }
 
     pub fn remove_ca(&mut self, issuer_id: &str) -> Result<(), Error> {
+        // TODO: Check if there are existing accounts or certs referencing the CA
         self.issuers
             .remove(issuer_id)
             .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;

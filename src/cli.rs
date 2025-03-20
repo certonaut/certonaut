@@ -160,19 +160,48 @@ pub enum IssuerCommand {
     /// List configured CAs
     List,
     /// Add a new CA
-    Add,
+    Add(IssuerAddCommand),
     /// Remove a CA
-    Remove,
+    Remove(IssuerRemoveCommand),
 }
 
 impl Display for IssuerCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
             IssuerCommand::List => write!(f, "List CAs"),
-            IssuerCommand::Add => write!(f, "Add CA"),
-            IssuerCommand::Remove => write!(f, "Remove CA"),
+            IssuerCommand::Add(_) => write!(f, "Add CA"),
+            IssuerCommand::Remove(_) => write!(f, "Remove CA"),
         }
     }
+}
+
+#[derive(Debug, Args, Default)]
+pub struct IssuerAddCommand {
+    /// Name of the new Certificate Authority
+    #[arg(short, long)]
+    pub name: Option<String>,
+    /// Unique identifier of the new Certificate Authority
+    #[arg(long)]
+    pub id: Option<String>,
+    /// ACME directory URL of the CA
+    #[arg[short = 'd', long]]
+    pub acme_directory: Option<url::Url>,
+    /// Set to indicate a public CA
+    #[arg(short, long)]
+    pub public: bool,
+    /// Set to indicate this CA is used for testing
+    #[arg(short, long)]
+    pub testing: bool,
+    /// Set to indicate this CA should be used as default from now on
+    #[arg(long)]
+    pub default: bool,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct IssuerRemoveCommand {
+    /// Identifier of the Certificate Authority to remove
+    #[arg(long)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Parser, Default)]
@@ -330,8 +359,8 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                 if interactive {
                     let selectable_commands = vec![
                         IssuerCommand::List,
-                        IssuerCommand::Add,
-                        IssuerCommand::Remove,
+                        IssuerCommand::Add(IssuerAddCommand::default()),
+                        IssuerCommand::Remove(IssuerRemoveCommand::default()),
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
@@ -431,19 +460,23 @@ async fn handle_issuer_command<CB: ConfigBackend + Send + Sync>(
             client.print_issuers().await;
             Ok(())
         }
-        IssuerCommand::Add => {
+        IssuerCommand::Add(add) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
+                // TODO: Honor add command
                 return service.interactive_add_ca().await;
             }
-            todo!("Non-interactive config")
+            let mut service = NonInteractiveService::new(client);
+            service.add_new_ca(add).await
         }
-        IssuerCommand::Remove => {
+        IssuerCommand::Remove(remove) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
+                // TODO: Honor remove command
                 return service.interactive_remove_ca().await;
             }
-            todo!("Non-interactive config")
+            let mut service = NonInteractiveService::new(client);
+            service.remove_ca(remove).await
         }
     }
 }
@@ -595,6 +628,13 @@ fn recursive_solver_subcommands(subcommand: clap::Command) -> clap::Command {
 /// invalid arguments.
 #[allow(clippy::missing_panics_doc)]
 pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::Error> {
+    let main_cmd = build_main_command();
+    let matches = main_cmd.get_matches();
+    let command_line = CommandLineArguments::from_arg_matches(&matches)?;
+    Ok((command_line, matches))
+}
+
+fn build_main_command() -> clap::Command {
     fn extend_command_with_solver_chain(cmd: clap::Command) -> clap::Command {
         cmd.subcommands(
             CHALLENGE_SOLVER_REGISTRY
@@ -633,8 +673,16 @@ pub fn setup_command_line() -> Result<(CommandLineArguments, ArgMatches), clap::
         .expect("BUG: No certificate modify subcommand found");
     let modify_cmd = std::mem::replace(modify_cmd_ref, clap::Command::new("placeholder"));
     *modify_cmd_ref = extend_command_with_solver_chain(modify_cmd);
+    main_cmd
+}
 
-    let matches = main_cmd.get_matches();
-    let command_line = CommandLineArguments::from_arg_matches(&matches)?;
-    Ok((command_line, matches))
+#[cfg(test)]
+mod tests {
+    use crate::cli::build_main_command;
+
+    #[test]
+    fn validate_clap_args() {
+        let cmd = build_main_command();
+        cmd.debug_assert();
+    }
 }
