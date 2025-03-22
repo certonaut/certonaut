@@ -1,7 +1,5 @@
 use crate::acme::object::{AcmeRenewalIdentifier, Identifier};
 use crate::crypto::{sha256, SHA256_LENGTH};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use base64::Engine;
 use std::net::IpAddr;
 use tracing::warn;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
@@ -21,7 +19,6 @@ pub struct ParsedX509Certificate {
 impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certificate {
     fn from(cert: x509_parser::certificate::X509Certificate) -> ParsedX509Certificate {
         let serial = cert.serial.clone();
-        let serial_base64 = BASE64_URL_SAFE_NO_PAD.encode(cert.raw_serial());
         let subject = cert.subject.to_string();
         let issuer = cert.issuer.to_string();
         let validity = (&cert.validity).into();
@@ -35,7 +32,7 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
                     // the base64url-encoding [RFC4648] of the keyIdentifier field of the certificate's
                     // Authority Key Identifier (AKI) [RFC5280] extension
                     if let Some(key_identifier) = &aki.key_identifier {
-                        ari_aki = Some(BASE64_URL_SAFE_NO_PAD.encode(key_identifier.0));
+                        ari_aki = Some(key_identifier.0);
                     }
                 }
                 ParsedExtension::SubjectAlternativeName(san) => {
@@ -86,10 +83,8 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
                 _ => {}
             }
         }
-        let acme_renewal_identifier = ari_aki.map(|aki| AcmeRenewalIdentifier {
-            key_identifier_base64: aki,
-            serial_base64,
-        });
+        let acme_renewal_identifier =
+            ari_aki.map(|aki| AcmeRenewalIdentifier::new(aki, cert.raw_serial()));
         Self {
             serial,
             subject,
@@ -149,10 +144,13 @@ mod tests {
                 .map(|s| Identifier::from(s.to_string()))
                 .map(Into::into)
                 .collect(),
-            acme_renewal_identifier: Some(AcmeRenewalIdentifier {
-                key_identifier_base64: "uPTZqCFXq0FoKhSzaGnnuI8ophk".to_string(),
-                serial_base64: "ErQyVvzFFvM".to_string(),
-            }),
+            acme_renewal_identifier: Some(AcmeRenewalIdentifier::new(
+                &[
+                    0xb8, 0xf4, 0xd9, 0xa8, 0x21, 0x57, 0xab, 0x41, 0x68, 0x2a, 0x14, 0xb3, 0x68,
+                    0x69, 0xe7, 0xb8, 0x8f, 0x28, 0xa6, 0x19,
+                ],
+                &[0x12, 0xb4, 0x32, 0x56, 0xfc, 0xc5, 0x16, 0xf3],
+            )),
             subject_public_key_sha256: [
                 85, 97, 188, 156, 44, 163, 170, 229, 177, 52, 164, 166, 172, 109, 186, 177, 21,
                 108, 85, 243, 203, 60, 7, 235, 145, 74, 167, 236, 87, 74, 88, 106,

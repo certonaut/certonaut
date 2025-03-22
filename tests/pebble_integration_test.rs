@@ -78,6 +78,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
             &asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?,
             None,
             authorizers,
+            None,
         )
         .await?;
     Ok(())
@@ -171,6 +172,6 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
         Identifier::from(test_host),
         certonaut::magic::MagicHttpSolver::new(5002),
     )];
-    let _cert = issuer.issue(&new_key, None, authorizers).await?;
+    let _cert = issuer.issue(&new_key, None, authorizers, None).await?;
     Ok(())
 }

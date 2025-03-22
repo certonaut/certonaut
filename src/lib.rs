@@ -5,8 +5,8 @@ use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertific
 use crate::acme::error::Problem;
 use crate::acme::http::HttpClient;
 use crate::acme::object::{
-    AccountStatus, AuthorizationStatus, ChallengeStatus, InnerChallenge, NewOrderRequest, Order,
-    OrderStatus,
+    AccountStatus, AcmeRenewalIdentifier, AuthorizationStatus, ChallengeStatus, InnerChallenge,
+    NewOrderRequest, Order, OrderStatus,
 };
 use crate::cert::ParsedX509Certificate;
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, KeyAuthorization};
@@ -660,7 +660,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .map(|lifetime| Some(Duration::from_secs(lifetime)))
             .unwrap_or_default();
         let cert = issuer
-            .issue(&cert_key, lifetime, authorizers)
+            .issue(&cert_key, lifetime, authorizers, None)
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!(
@@ -693,9 +693,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
 
     pub async fn renew_certificate(
         &self,
+        issuer: &AcmeIssuerWithAccount<'_>,
         cert_id: &str,
         cert_config: &CertificateConfiguration,
-        issuer: &AcmeIssuerWithAccount<'_>,
+        old_cert: &ParsedX509Certificate,
     ) -> IssueResult<()> {
         let inner_renewal_fn = async || {
             let cert_name = &cert_config.display_name;
@@ -714,7 +715,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 .lifetime_seconds
                 .map(|lifetime| Some(Duration::from_secs(lifetime)))
                 .unwrap_or_default();
-            let issue_result = issuer.issue(&cert_key, lifetime, authorizers).await;
+            let renewal_identifier = old_cert.acme_renewal_identifier.clone();
+            let issue_result = issuer
+                .issue(&cert_key, lifetime, authorizers, renewal_identifier)
+                .await;
             if let Ok(new_cert) = &issue_result {
                 self.config.save_certificate_and_config(
                     cert_id,
@@ -1162,6 +1166,7 @@ impl AcmeIssuerWithAccount<'_> {
         cert_key: &rcgen::KeyPair,
         cert_lifetime: Option<Duration>,
         authorizers: Vec<Authorizer>,
+        replaces: Option<AcmeRenewalIdentifier>,
     ) -> IssueResult<DownloadedCertificate> {
         let identifiers: Vec<_> = authorizers
             .iter()
@@ -1188,6 +1193,7 @@ impl AcmeIssuerWithAccount<'_> {
             identifiers,
             not_before,
             not_after,
+            replaces,
         };
         self.order_and_authorize(csr, request, authorizers).await
     }
@@ -1198,12 +1204,8 @@ impl AcmeIssuerWithAccount<'_> {
         request: NewOrderRequest,
         authorizers: Vec<Authorizer>,
     ) -> IssueResult<DownloadedCertificate> {
+        let (order_url, mut order) = self.new_order(request).await?;
         let client = self.client().await?;
-        let (order_url, mut order) = client
-            .new_order(&self.account.jwk, &request)
-            .await
-            .context("Error creating new order")?;
-        debug!("Order URL: {}", order_url);
         match order.status {
             OrderStatus::Valid => {
                 debug!("New order is already valid, downloading certificate");
@@ -1288,6 +1290,34 @@ impl AcmeIssuerWithAccount<'_> {
                 anyhow!("Order has invalid status (no error reported by CA)").ca_failure()
             }
         }
+    }
+
+    async fn new_order(&self, mut request: NewOrderRequest) -> IssueResult<(Url, Order)> {
+        let client = self.client().await?;
+        if client.get_directory().renewal_info.is_none() {
+            // draft-ietf-acme-ari-08: Clients SHOULD NOT include this field if the ACME Server has not indicated
+            // that it supports this protocol by advertising the renewalInfo resource in its Directory.
+            request.replaces = None;
+        }
+        let (order_url, order) = match client.new_order(&self.account.jwk, &request).await {
+            Ok(success) => Ok(success),
+            Err(e @ acme::error::Error::AcmeProblem(_)) => {
+                if request.replaces.is_some() {
+                    // If an order with a "replaces" field fails, the CA may be unhappy with the
+                    // replacement. Try again without.
+                    warn!("The CA refused a new order replacing an older certificate: {e}");
+                    warn!("Trying again without replacing the old certificate");
+                    request.replaces = None;
+                    client.new_order(&self.account.jwk, &request).await
+                } else {
+                    Err(e)
+                }
+            }
+            Err(e) => Err(e),
+        }
+        .context("Error creating new order")?;
+        debug!("Order URL: {}", order_url);
+        Ok((order_url, order))
     }
 
     async fn authorize(
@@ -1434,13 +1464,26 @@ impl AcmeIssuerWithAccount<'_> {
                     );
                     info!("{explanation_url}");
                 }
-                let window = renewal_info.renewal_info.suggested_window;
+                let mut window = renewal_info.renewal_info.suggested_window;
+                if window.end > cert.validity.not_after {
+                    warn!(
+                        "The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
+                    );
+                    window.end = cert.validity.not_after;
+                }
                 let start_unix = window.start.unix_timestamp();
                 let end_unix = window.end.unix_timestamp();
+                if start_unix >= end_unix {
+                    return Err(acme::error::Error::ProtocolViolation(
+                        "Window end time is at or after the start time",
+                    ))
+                    .context("Determining ARI window");
+                }
                 let mut rng = rand::rng();
                 let random_unix = rng.random_range(start_unix..=end_unix);
                 let random_time = time::OffsetDateTime::from_unix_timestamp(random_unix)
                     .context("Determining ARI window: Invalid time range provided by server")?;
+                debug!("Determined ARI random renewal time @ {random_time}");
                 Ok(Some(RenewalInformation {
                     cert_id,
                     fetched_at: now,
@@ -1464,8 +1507,10 @@ impl AcmeIssuerWithAccount<'_> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(unsafe_code)]
+
     use super::*;
-    use crate::acme::object::{Authorization, Challenge, HttpChallenge, Token};
+    use crate::acme::object::{Authorization, Challenge, Directory, HttpChallenge, Token};
     use crate::challenge_solver::NullSolver;
     use crate::crypto::asymmetric::{new_key, Curve};
     use crate::util::serde_helper::PassthroughBytes;
@@ -1499,6 +1544,16 @@ mod tests {
         let issuer_with_account = issuer.with_account("fake").unwrap();
         let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
         let mut mock_client = AcmeClient::faux();
+        let fake_directory = Directory {
+            new_nonce: fake_url.clone(),
+            new_account: fake_url.clone(),
+            new_order: fake_url.clone(),
+            new_authz: None,
+            revoke_cert: fake_url.clone(),
+            key_change: fake_url.clone(),
+            renewal_info: None,
+            meta: None,
+        };
         let new_order = Ok((
             fake_url.clone(),
             Order {
@@ -1528,6 +1583,10 @@ mod tests {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
+        // SAFETY: lifetime of &fake_directory is the entire test
+        unsafe {
+            faux::when!(mock_client.get_directory).then_unchecked(|_| &fake_directory);
+        }
         faux::when!(mock_client.new_order)
             .once()
             .then_return(new_order);
@@ -1547,6 +1606,7 @@ mod tests {
                     Identifier::from_str("example.com")?,
                     NullSolver::default(),
                 )],
+                None,
             )
             .await?;
 
@@ -1566,6 +1626,16 @@ mod tests {
         let issuer_with_account = issuer.with_account("fake").unwrap();
         let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
         let mut mock_client = AcmeClient::faux();
+        let fake_directory = Directory {
+            new_nonce: fake_url.clone(),
+            new_account: fake_url.clone(),
+            new_order: fake_url.clone(),
+            new_authz: None,
+            revoke_cert: fake_url.clone(),
+            key_change: fake_url.clone(),
+            renewal_info: None,
+            meta: None,
+        };
         let new_order = Ok((
             fake_order_url.clone(),
             Order {
@@ -1630,6 +1700,10 @@ mod tests {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
+        // SAFETY: lifetime of &fake_directory is the entire test
+        unsafe {
+            faux::when!(mock_client.get_directory).then_unchecked(|_| &fake_directory);
+        }
         faux::when!(mock_client.new_order)
             .once()
             .then_return(new_order);
@@ -1658,6 +1732,7 @@ mod tests {
                     Identifier::from_str("example.com")?,
                     NullSolver::default(),
                 )],
+                None,
             )
             .await?;
 

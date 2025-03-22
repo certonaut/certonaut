@@ -133,7 +133,7 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             info!("Certificate {cert_name} will be renewed in {renew_in_humanized}");
             tokio::time::sleep(renew_in.try_into().unwrap_or(std::time::Duration::ZERO)).await;
             self.client
-                .renew_certificate(cert_id, cert_config, &issuer)
+                .renew_certificate(&issuer, cert_id, cert_config, leaf)
                 .await?;
             self.client
                 .install_certificate(cert_id, cert_config)

@@ -1,6 +1,8 @@
 use crate::acme::error::{Error, Problem};
 use crate::util::serde_helper::optional_offset_date_time;
-use serde::{Deserialize, Serialize};
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
+use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::PartialEq;
 use std::convert::Infallible;
@@ -232,7 +234,8 @@ pub struct NewOrderRequest {
         with = "optional_offset_date_time"
     )]
     pub not_after: Option<time::OffsetDateTime>,
-    // TODO: ARI
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<AcmeRenewalIdentifier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -403,8 +406,17 @@ pub struct SuggestedWindow {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcmeRenewalIdentifier {
-    pub key_identifier_base64: String,
-    pub serial_base64: String,
+    key_identifier_base64: String,
+    serial_base64: String,
+}
+
+impl AcmeRenewalIdentifier {
+    pub fn new(key_identifier: &[u8], serial: &[u8]) -> Self {
+        Self {
+            key_identifier_base64: BASE64_URL_SAFE_NO_PAD.encode(key_identifier),
+            serial_base64: BASE64_URL_SAFE_NO_PAD.encode(serial),
+        }
+    }
 }
 
 impl Display for AcmeRenewalIdentifier {
@@ -412,6 +424,15 @@ impl Display for AcmeRenewalIdentifier {
         let aki = &self.key_identifier_base64;
         let serial = &self.serial_base64;
         write!(f, "{aki}.{serial}")
+    }
+}
+
+impl Serialize for AcmeRenewalIdentifier {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -682,18 +703,31 @@ mod tests {
             identifiers: vec![Identifier::from_str("example.com").unwrap()],
             not_before: None,
             not_after: None,
-        }, r#"{"identifiers":[{"type":"dns","value":"example.com"}]}"#)]
+        replaces: None,
+        },
+        r#"{"identifiers":[{"type":"dns","value":"example.com"}]}"#)]
     #[case(NewOrderRequest{
             identifiers: vec![Identifier::from_str("example.com").unwrap(), Identifier::from_str("api.example.com").unwrap()],
             not_before: None,
             not_after: None,
-        }, r#"{"identifiers":[{"type":"dns","value":"example.com"},{"type":"dns","value":"api.example.com"}]}"#)]
+        replaces: None,},
+        r#"{"identifiers":[{"type":"dns","value":"example.com"},{"type":"dns","value":"api.example.com"}]}"#)]
     #[case(
         NewOrderRequest{
             identifiers: vec![Identifier::from_str("example.com").unwrap()],
             not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
             not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
-            }, r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#
+            replaces: None,
+            },
+        r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#
+    )]
+    #[case(
+        NewOrderRequest{
+            identifiers: vec![Identifier::from_str("example.com").unwrap()],
+            not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
+            not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
+            replaces: Some(AcmeRenewalIdentifier::new(&[0xDE,0xAD], &[0xBE, 0xEF])),},
+        r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z","replaces":"3q0.vu8"}"#
     )]
     fn test_serialize_new_order_request(#[case] request: NewOrderRequest, #[case] expected: &str) {
         let serialized = serde_json::to_string(&request).expect("serialization must not fail");

@@ -819,10 +819,13 @@ mod tests {
             ),
         );
         let client = build_acme_client(&server).await;
-        let identifier = AcmeRenewalIdentifier {
-            key_identifier_base64: "aYhba4dGQEHhs3uEe6CuLN4ByNQ".to_string(),
-            serial_base64: "AIdlQyE".to_string(),
-        };
+        let identifier = AcmeRenewalIdentifier::new(
+            &[
+                0x69, 0x88, 0x5b, 0x6b, 0x87, 0x46, 0x40, 0x41, 0xe1, 0xb3, 0x7b, 0x84, 0x7b, 0xa0,
+                0xae, 0x2c, 0xde, 0x01, 0xc8, 0xd4,
+            ],
+            &[0x00, 0x87, 0x65, 0x43, 0x21],
+        );
 
         let response = client.get_renewal_info(&identifier).await.unwrap();
         assert_eq!(
