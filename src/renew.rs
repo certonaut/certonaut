@@ -14,7 +14,7 @@ use std::ops::Sub;
 use std::sync::Arc;
 use strum::IntoDiscriminant;
 use time::{Duration, OffsetDateTime};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 const MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS: i64 = 300;
 
@@ -105,7 +105,7 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             .client
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         if let Some(leaf) = certificates.first() {
-            let renew_in = Self::renew_in(&issuer, leaf).await;
+            let renew_in = self.renew_in(&issuer, leaf).await;
             let renew_in_humanized = humanize_duration(renew_in);
             if renew_in > Duration::new(MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS, 0) {
                 info!("Certificate {cert_name} is not due for renewal for {renew_in_humanized}");
@@ -208,30 +208,80 @@ impl<CB: ConfigBackend> RenewTask<CB> {
         }
     }
 
-    #[allow(clippy::unused_async)]
     async fn renew_in(
-        _issuer: &AcmeIssuerWithAccount<'_>,
+        &self,
+        issuer: &AcmeIssuerWithAccount<'_>,
         cert: &ParsedX509Certificate,
     ) -> Duration {
-        let cert_serial = &cert.serial;
-        // TODO: Check ARI first, if available
-        // Fallback to 2/3 parsing
+        // As per ARI draft, we must not query ARI for expired certificates, so check that first.
         let now = OffsetDateTime::now_utc();
-        let not_after = cert.validity.not_after.to_datetime();
+        let not_after = cert.validity.not_after;
         if now >= not_after {
-            debug!("Certificate with serial {cert_serial} expired, suggesting renewal now");
+            let serial = &cert.serial;
+            debug!("Certificate with serial {serial} expired, suggesting renewal now");
+            return Duration::ZERO;
+        }
+
+        // Check ARI next (both cached in database, and online if needed)
+        let renewal_info = match self
+            .client
+            .database
+            .get_renewal_information(&self.cert_id)
+            .await
+        {
+            Ok(Some(stored_renewal_info)) => {
+                if now >= stored_renewal_info.next_update {
+                    // Try updating ARI
+                    self.client
+                        .try_fetch_and_store_ari(issuer, self.cert_id.clone(), cert)
+                        .await
+                } else {
+                    // Stored is still current
+                    Some(stored_renewal_info)
+                }
+            }
+            Ok(None) => {
+                // Never successfully fetched ARI for this cert
+                self.client
+                    .try_fetch_and_store_ari(issuer, self.cert_id.clone(), cert)
+                    .await
+            }
+            Err(e) => {
+                error!(
+                    "Failed to fetch latest ACME Renewal Information result from local database: {e:#}"
+                );
+                None
+            }
+        };
+
+        if let Some(renewal_info) = renewal_info {
+            debug!(
+                "ARI determined random renewal time @ {}",
+                renewal_info.renewal_time
+            );
+            if now > renewal_info.renewal_time {
+                debug!("ARI determined time is in the past, suggesting renewal now");
+                return Duration::ZERO;
+            }
+            let time_until_renew = renewal_info.renewal_time - now;
+            let next_update = renewal_info.next_update;
+            let fetched_at = renewal_info.fetched_at;
+            debug!(
+                "ARI suggested renewal time is in {time_until_renew}, next ARI update scheduled for {next_update}. This window was queried @ {fetched_at}"
+            );
+            return time_until_renew;
+        }
+
+        // Fallback to 2/3 parsing
+        // TODO: Fix possible underflow panics
+        let total_lifetime = not_after - cert.validity.not_before;
+        let remaining_lifetime = not_after - now;
+        let one_third_lifetime = total_lifetime / 3;
+        let time_until_renew = remaining_lifetime - one_third_lifetime;
+        if time_until_renew < Duration::ZERO {
             Duration::ZERO
         } else {
-            // TODO: Fix possible underflow panics
-            let total_lifetime = not_after - cert.validity.not_before.to_datetime();
-            let remaining_lifetime = not_after - now;
-            let one_third_lifetime = total_lifetime / 3;
-            let time_until_renew = remaining_lifetime - one_third_lifetime;
-            if time_until_renew < Duration::ZERO {
-                Duration::ZERO
-            } else {
-                time_until_renew
-            }
+            time_until_renew
         }
     }
 }

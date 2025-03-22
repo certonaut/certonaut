@@ -92,6 +92,40 @@ impl crate::state::Database {
         Ok(renewals)
     }
 
+    pub async fn get_renewal_information(
+        &self,
+        cert_id: &str,
+    ) -> anyhow::Result<Option<external::RenewalInformation>> {
+        let renewal_info = sqlx::query_as!(
+            internal::RenewalInformation,
+            "SELECT * FROM renewal_info WHERE cert_id = $1;",
+            cert_id
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(std::convert::Into::into);
+        Ok(renewal_info)
+    }
+
+    pub async fn set_renewal_information(
+        &self,
+        renewal_info: external::RenewalInformation,
+    ) -> anyhow::Result<()> {
+        let renewal_info: internal::RenewalInformation = renewal_info.into();
+        sqlx::query!(
+            "INSERT INTO renewal_info (cert_id, fetched_at, renewal_time, next_update) VALUES ($1, $2, $3, $4) \
+            ON CONFLICT(cert_id) DO UPDATE \
+            SET fetched_at = $2, renewal_time = $3, next_update = $4;",
+            renewal_info.cert_id,
+            renewal_info.fetched_at,
+            renewal_info.renewal_time,
+            renewal_info.next_update
+        )
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn close(&self) {
         self.pool.close().await;
     }
@@ -167,7 +201,7 @@ mod tests {
     use crate::state::db::test_helper::open_db;
     use crate::state::types::external::RenewalOutcome;
     use rstest::rstest;
-    use std::ops::Sub;
+    use std::ops::{Add, Sub};
 
     #[tokio::test]
     async fn test_open_file_database() {
@@ -227,10 +261,16 @@ mod tests {
 
     #[tokio::test]
     #[rstest]
-    #[case(IssueError::CAFailure(anyhow!("Houston, we have a problem")), RenewalOutcome::CAFailure("Error: Houston, we have a problem".into()))]
-    #[case(IssueError::RateLimited(anyhow!("I’m givin’ her all she’s got, Captain!")), RenewalOutcome::RateLimit("Error: I’m givin’ her all she’s got, Captain!".into()))]
-    #[case(IssueError::AuthFailure(anyhow!("I’m sorry, Dave. I’m afraid I can’t do that.")), RenewalOutcome::AuthorizationFailure("Error: I’m sorry, Dave. I’m afraid I can’t do that.".into()))]
-    #[case(IssueError::ClientFailure(anyhow!("You had one job!")), RenewalOutcome::ClientFailure("Error: You had one job!".into()))]
+    #[case(IssueError::CAFailure(anyhow!("Houston, we have a problem")), RenewalOutcome::CAFailure("Error: Houston, we have a problem".into()
+    ))]
+    #[case(IssueError::RateLimited(anyhow!("I’m givin’ her all she’s got, Captain!")), RenewalOutcome::RateLimit("Error: I’m givin’ her all she’s got, Captain!".into()
+    ))]
+    #[case(
+        IssueError::AuthFailure(anyhow!("I’m sorry, Dave. I’m afraid I can’t do that.")),
+        RenewalOutcome::AuthorizationFailure("Error: I’m sorry, Dave. I’m afraid I can’t do that.".into())
+    )]
+    #[case(IssueError::ClientFailure(anyhow!("You had one job!")), RenewalOutcome::ClientFailure("Error: You had one job!".into()
+    ))]
     async fn test_add_new_renewal_with_err(
         #[case] error: IssueError,
         #[case] outcome: RenewalOutcome,
@@ -309,5 +349,63 @@ mod tests {
                 .unwrap();
             assert_eq!(latest_renewals.len(), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_information() {
+        let db = open_db().await;
+        let renewal_info = external::RenewalInformation {
+            cert_id: "test-cert".to_string(),
+            fetched_at: OffsetDateTime::now_utc(),
+            renewal_time: OffsetDateTime::now_utc(),
+            next_update: OffsetDateTime::now_utc(),
+        };
+        db.set_renewal_information(renewal_info.clone())
+            .await
+            .unwrap();
+
+        let stored_renewal_info = db
+            .get_renewal_information(&renewal_info.cert_id)
+            .await
+            .unwrap();
+
+        assert_eq!(renewal_info, stored_renewal_info.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_information_with_empty_result() {
+        let db = open_db().await;
+
+        let stored_renewal_info = db.get_renewal_information("does-not-exist").await.unwrap();
+
+        assert_eq!(stored_renewal_info, None);
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_information_with_multiple_sets() {
+        let db = open_db().await;
+        let renewal_info_1 = external::RenewalInformation {
+            cert_id: "test-cert".to_string(),
+            fetched_at: OffsetDateTime::now_utc(),
+            renewal_time: OffsetDateTime::now_utc(),
+            next_update: OffsetDateTime::now_utc(),
+        };
+        let renewal_info_2 = external::RenewalInformation {
+            cert_id: "test-cert".to_string(),
+            fetched_at: OffsetDateTime::now_utc().add(time::Duration::hours(1)),
+            renewal_time: OffsetDateTime::now_utc().add(time::Duration::hours(2)),
+            next_update: OffsetDateTime::now_utc().add(time::Duration::hours(3)),
+        };
+        db.set_renewal_information(renewal_info_1).await.unwrap();
+        db.set_renewal_information(renewal_info_2.clone())
+            .await
+            .unwrap();
+
+        let stored_renewal_info = db
+            .get_renewal_information(&renewal_info_2.cert_id)
+            .await
+            .unwrap();
+
+        assert_eq!(renewal_info_2, stored_renewal_info.unwrap());
     }
 }

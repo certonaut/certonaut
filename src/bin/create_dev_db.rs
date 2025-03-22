@@ -8,7 +8,7 @@ pub async fn main() -> anyhow::Result<()> {
     std::fs::remove_file(db_file)?;
     let _ = Database::open(Path::new("."), "development.sqlite").await?;
     println!(
-        "Successfully created development database {}. Remember to set environment variable DATABASE_URL={}",
+        "Successfully created development database {}. Remember to set environment variable DATABASE_URL=sqlite://{}",
         db_file.display(),
         db_file.display()
     );

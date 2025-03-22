@@ -68,7 +68,8 @@ impl From<anyhow::Error> for IssueError {
                 | Error::CryptoFailure(_)
                 | Error::DeserializationFailed(_)
                 | Error::Http(_)
-                | Error::TimedOut(_) => IssueError::ClientFailure(err),
+                | Error::TimedOut(_)
+                | Error::FeatureNotSupported => IssueError::ClientFailure(err),
                 // TODO: Remember the retry_after value and honor it for renewals
                 Error::RateLimited(_) => IssueError::RateLimited(err),
             },

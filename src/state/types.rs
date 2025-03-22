@@ -4,10 +4,11 @@ pub(super) mod internal {
     use time::OffsetDateTime;
 
     #[derive(Debug, sqlx::FromRow)]
-    struct Ari {
-        fetched_at: OffsetDateTime,
-        result: String,
-        next_update: OffsetDateTime,
+    pub(in crate::state) struct RenewalInformation {
+        pub cert_id: String,
+        pub fetched_at: OffsetDateTime,
+        pub renewal_time: OffsetDateTime,
+        pub next_update: OffsetDateTime,
     }
 
     #[derive(Debug, sqlx::Type, FromRepr, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -133,6 +134,36 @@ pub mod external {
                 | RenewalOutcome::ClientFailure(msg) => {
                     write!(f, "{}", msg)
                 }
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct RenewalInformation {
+        pub cert_id: String,
+        pub fetched_at: OffsetDateTime,
+        pub renewal_time: OffsetDateTime,
+        pub next_update: OffsetDateTime,
+    }
+
+    impl From<internal::RenewalInformation> for RenewalInformation {
+        fn from(value: internal::RenewalInformation) -> Self {
+            Self {
+                cert_id: value.cert_id,
+                fetched_at: value.fetched_at,
+                renewal_time: value.renewal_time,
+                next_update: value.next_update,
+            }
+        }
+    }
+
+    impl From<RenewalInformation> for internal::RenewalInformation {
+        fn from(value: RenewalInformation) -> Self {
+            Self {
+                cert_id: value.cert_id,
+                fetched_at: value.fetched_at,
+                renewal_time: value.renewal_time,
+                next_update: value.next_update,
             }
         }
     }

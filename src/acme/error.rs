@@ -17,6 +17,7 @@ pub enum Error {
     DeserializationFailed(serde::de::value::Error),
     RateLimited(RateLimitError),
     TimedOut(&'static str),
+    FeatureNotSupported,
 }
 
 impl Error {
@@ -104,6 +105,9 @@ impl Display for Error {
             Error::TimedOut(msg) => {
                 write!(f, "timeout: {msg}")
             }
+            Error::FeatureNotSupported => {
+                write!(f, "The CA does not support the requested feature")
+            }
         }
     }
 }
@@ -118,7 +122,10 @@ impl std::error::Error for Error {
             Error::DeserializationFailed(serde) => serde.source(),
             Error::CryptoFailure(crypto) => crypto.source(),
             Error::RateLimited(rate_limit) => rate_limit.source(),
-            Error::AcmeProblem(_) | Error::ProtocolViolation(_) | Error::TimedOut(_) => None,
+            Error::AcmeProblem(_)
+            | Error::ProtocolViolation(_)
+            | Error::TimedOut(_)
+            | Error::FeatureNotSupported => None,
         }
     }
 }

@@ -6,6 +6,7 @@ use std::cmp::PartialEq;
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
+use time::serde::rfc3339;
 use url::Url;
 
 #[derive(Debug, Deserialize)]
@@ -380,6 +381,40 @@ impl Default for Deactivation {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(Serialize, PartialEq, Eq))]
+#[serde(rename_all = "camelCase")]
+pub struct RenewalInfo {
+    pub suggested_window: SuggestedWindow,
+    // Annoying spec bug: Capitalising all URL letters is not camelCase, as is usually used in ACME
+    #[serde(rename = "explanationURL")]
+    pub explanation_url: Option<Url>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(test, derive(Serialize, PartialEq, Eq))]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedWindow {
+    #[serde(with = "rfc3339")]
+    pub start: time::OffsetDateTime,
+    #[serde(with = "rfc3339")]
+    pub end: time::OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcmeRenewalIdentifier {
+    pub key_identifier_base64: String,
+    pub serial_base64: String,
+}
+
+impl Display for AcmeRenewalIdentifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let aki = &self.key_identifier_base64;
+        let serial = &self.serial_base64;
+        write!(f, "{aki}.{serial}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,9 +619,15 @@ mod tests {
     }
 
     #[rstest]
-    #[case(r#"{"type":"http-01","token":"QWERTZ"}"#,  InnerChallenge::Http(HttpChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
-    #[case(r#"{"type":"dns-01","token":"QWERTZ"}"#,  InnerChallenge::Dns(DnsChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
-    #[case(r#"{"type":"tls-alpn-01","token":"QWERTZ"}"#,  InnerChallenge::Alpn(AlpnChallenge{ token: Token::from_str("QWERTZ").unwrap() }))]
+    #[case(r#"{"type":"http-01","token":"QWERTZ"}"#, InnerChallenge::Http(
+        HttpChallenge{ token: Token::from_str("QWERTZ").unwrap() }
+    ))]
+    #[case(r#"{"type":"dns-01","token":"QWERTZ"}"#, InnerChallenge::Dns(
+        DnsChallenge{ token: Token::from_str("QWERTZ").unwrap() }
+    ))]
+    #[case(r#"{"type":"tls-alpn-01","token":"QWERTZ"}"#, InnerChallenge::Alpn(
+        AlpnChallenge{ token: Token::from_str("QWERTZ").unwrap() }
+    ))]
     fn test_deserialize_inner_challenge(
         #[case] test_value: &str,
         #[case] expected: InnerChallenge,
@@ -603,17 +644,19 @@ mod tests {
     }
 
     #[rstest]
-    #[case(AccountRequest {
+    #[case(AccountRequest{
             contact: vec!(Url::parse("mailto:admin@example.org").unwrap()),
             terms_of_service_agreed: Some(true),
             external_account_binding: None,
         }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true}"#)]
-    #[case(AccountRequest {
+    #[case(
+        AccountRequest{
             contact: vec!(Url::parse("mailto:admin@example.org").unwrap()),
             terms_of_service_agreed: Some(true),
             external_account_binding: Some("ThisIsAPlaceholderForAnURLEncodedEABObject".to_string()),
-        }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true,"externalAccountBinding":"ThisIsAPlaceholderForAnURLEncodedEABObject"}"#)]
-    #[case(AccountRequest {
+            }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true,"externalAccountBinding":"ThisIsAPlaceholderForAnURLEncodedEABObject"}"#
+    )]
+    #[case(AccountRequest{
             contact: vec!(),
             terms_of_service_agreed: None,
             external_account_binding: None,
@@ -635,21 +678,23 @@ mod tests {
     }
 
     #[rstest]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
             identifiers: vec![Identifier::from_str("example.com").unwrap()],
             not_before: None,
             not_after: None,
         }, r#"{"identifiers":[{"type":"dns","value":"example.com"}]}"#)]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
             identifiers: vec![Identifier::from_str("example.com").unwrap(), Identifier::from_str("api.example.com").unwrap()],
             not_before: None,
             not_after: None,
         }, r#"{"identifiers":[{"type":"dns","value":"example.com"},{"type":"dns","value":"api.example.com"}]}"#)]
-    #[case(NewOrderRequest {
+    #[case(
+        NewOrderRequest{
             identifiers: vec![Identifier::from_str("example.com").unwrap()],
             not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
             not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
-        }, r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#)]
+            }, r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#
+    )]
     fn test_serialize_new_order_request(#[case] request: NewOrderRequest, #[case] expected: &str) {
         let serialized = serde_json::to_string(&request).expect("serialization must not fail");
         assert_eq!(serialized, expected);
@@ -663,7 +708,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(FinalizeRequest {
+    #[case(FinalizeRequest{
             csr: "CSRPlaceholder".to_string(),
         }, r#"{"csr":"CSRPlaceholder"}"#)]
     fn test_serialize_finalize_request(
@@ -687,6 +732,23 @@ mod tests {
         let serialized =
             serde_json::to_string(&Deactivation::new()).expect("serialization must not fail");
         assert_eq!(serialized, r#"{"status":"deactivated"}"#);
+    }
+
+    #[rstest]
+    fn test_deserialize_renewal_info_valid(
+        #[files("testdata/deserialize_test_renewalInfo_*.json")] testfile: PathBuf,
+    ) {
+        let file = File::open(testfile).unwrap();
+        let _: RenewalInfo = serde_json::from_reader(file).expect("Deserialization must not fail");
+    }
+
+    #[rstest]
+    fn test_deserialize_renewal_info_invalid(
+        #[files("testdata/deserialize_invalid_test_renewalInfo_*.json")] testfile: PathBuf,
+    ) {
+        let file = File::open(testfile).unwrap();
+        let maybe_err: serde_json::Result<RenewalInfo> = serde_json::from_reader(file);
+        maybe_err.expect_err("Deserialization must fail");
     }
 
     // TODO: Add RFC tests where provided

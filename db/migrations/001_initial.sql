@@ -1,8 +1,9 @@
-CREATE TABLE ari
+CREATE TABLE renewal_info
 (
-    fetched_at  DATETIME NOT NULL,
-    result      TEXT     NOT NULL,
-    next_update DATETIME NOT NULL
+    cert_id      TEXT PRIMARY KEY NOT NULL,
+    fetched_at   DATETIME         NOT NULL,
+    renewal_time DATETIME         NOT NULL,
+    next_update  DATETIME         NOT NULL
 );
 CREATE TABLE renewals
 (

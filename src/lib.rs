@@ -22,17 +22,19 @@ use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
 use crate::error::{IssueContext, IssueResult};
 use crate::pebble::pebble_root;
+use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
 use crate::util::humanize_duration_core;
 use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
+use rand::Rng;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::{Debug, Display};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
-use std::ops::Deref;
+use std::ops::{Deref, Neg};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
@@ -667,6 +669,19 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         );
         self.config
             .save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
+        match load_certificates_from_memory(&cert.pem, Some(1)) {
+            Ok(parsed_certs) => {
+                if let Some(parsed_cert) = parsed_certs.first() {
+                    self.try_fetch_and_store_ari(&issuer, cert_id.to_string(), parsed_cert)
+                        .await;
+                } else {
+                    warn!("No certificate found in new certificate from CA");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to parse new certificate from CA: {e:#}");
+            }
+        }
         self.install_certificate(&cert_id, &cert_config)
             .await
             .context(format!(
@@ -707,6 +722,19 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                     &cert_key,
                     new_cert,
                 )?;
+                match load_certificates_from_memory(&new_cert.pem, Some(1)) {
+                    Ok(parsed_certs) => {
+                        if let Some(parsed_cert) = parsed_certs.first() {
+                            self.try_fetch_and_store_ari(issuer, cert_id.to_string(), parsed_cert)
+                                .await;
+                        } else {
+                            warn!("No certificate found in renewed certificate from CA");
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse renewed certificate from CA: {e:#}");
+                    }
+                }
             }
             issue_result
         };
@@ -775,6 +803,31 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         } else {
             Ok(())
         }
+    }
+
+    pub async fn try_fetch_and_store_ari(
+        &self,
+        issuer: &AcmeIssuerWithAccount<'_>,
+        cert_id: String,
+        cert: &ParsedX509Certificate,
+    ) -> Option<RenewalInformation> {
+        let new_renewal_info = issuer
+            .get_renewal_info(cert_id, cert)
+            .await
+            .unwrap_or_else(|e| {
+                warn!("{e:#}");
+                None
+            });
+        if let Some(new_renewal_info) = new_renewal_info.clone() {
+            if let Err(e) = self
+                .database
+                .set_renewal_information(new_renewal_info)
+                .await
+            {
+                error!("Failed to store latest ARI result: {e:#}");
+            }
+        }
+        new_renewal_info
     }
 
     pub async fn print_accounts(&self) {
@@ -956,20 +1009,15 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                             util::format_hex_with_colon(spki)
                         );
 
-                        let not_after = cert
-                            .validity
-                            .not_after
-                            .to_rfc2822()
-                            .unwrap_or_else(|_| cert.validity.not_after.to_string());
+                        let not_after = cert.validity.not_after.to_string();
                         let time_until_expired = cert.validity.time_to_expiration();
-                        if let Some(time_until_expired) = time_until_expired {
+                        if time_until_expired > time::Duration::ZERO {
                             let time_until_expired = util::humanize_duration(time_until_expired);
                             println!(
                                 "Certificate is valid until: {not_after} (Expires in {time_until_expired})",
                             );
                         } else {
-                            let now = time::OffsetDateTime::now_utc();
-                            let expired_since = now - cert.validity.not_after.to_datetime();
+                            let expired_since = time_until_expired.neg();
                             let expired_since = util::humanize_duration(expired_since);
                             println!(
                                 "Certificate is valid until: {not_after} (EXPIRED {expired_since} ago)"
@@ -1360,6 +1408,56 @@ impl AcmeIssuerWithAccount<'_> {
                 "ACME account has invalid status {} after deactivation",
                 deactivated_account.status
             )
+        }
+    }
+
+    pub async fn get_renewal_info(
+        &self,
+        cert_id: String,
+        cert: &ParsedX509Certificate,
+    ) -> anyhow::Result<Option<RenewalInformation>> {
+        let Some(renewal_identifier) = &cert.acme_renewal_identifier else {
+            let serial = &cert.serial;
+            debug!(
+                "Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
+            );
+            return Ok(None);
+        };
+        let client = self.client().await?;
+        match client.get_renewal_info(renewal_identifier).await {
+            Ok(renewal_info) => {
+                debug!("ARI server response: {renewal_info}");
+                let now = time::OffsetDateTime::now_utc();
+                if let Some(explanation_url) = renewal_info.renewal_info.explanation_url {
+                    info!(
+                        "The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
+                    );
+                    info!("{explanation_url}");
+                }
+                let window = renewal_info.renewal_info.suggested_window;
+                let start_unix = window.start.unix_timestamp();
+                let end_unix = window.end.unix_timestamp();
+                let mut rng = rand::rng();
+                let random_unix = rng.random_range(start_unix..=end_unix);
+                let random_time = time::OffsetDateTime::from_unix_timestamp(random_unix)
+                    .context("Determining ARI window: Invalid time range provided by server")?;
+                Ok(Some(RenewalInformation {
+                    cert_id,
+                    fetched_at: now,
+                    renewal_time: random_time,
+                    next_update: renewal_info.retry_after.into(),
+                }))
+            }
+            Err(acme::error::Error::FeatureNotSupported) => {
+                let ca = &self.issuer.config.name;
+                debug!(
+                    "CA {ca} does not support ACME Renewal Information, can not fetch online renewal information"
+                );
+                Ok(None)
+            }
+            Err(e) => {
+                Err(Error::new(e).context("Failed to fetch ACME Renewal Information from CA"))
+            }
         }
     }
 }

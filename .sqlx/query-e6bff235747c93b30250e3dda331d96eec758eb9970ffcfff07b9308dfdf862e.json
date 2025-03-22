@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT * FROM renewal_info WHERE cert_id = $1;",
+  "describe": {
+    "columns": [
+      {
+        "name": "cert_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "fetched_at",
+        "ordinal": 1,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "renewal_time",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      },
+      {
+        "name": "next_update",
+        "ordinal": 3,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e6bff235747c93b30250e3dda331d96eec758eb9970ffcfff07b9308dfdf862e"
+}

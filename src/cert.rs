@@ -1,13 +1,13 @@
-use crate::acme::object::Identifier;
-use crate::crypto::{SHA256_LENGTH, sha256};
-use base64::Engine;
+use crate::acme::object::{AcmeRenewalIdentifier, Identifier};
+use crate::crypto::{sha256, SHA256_LENGTH};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use std::net::IpAddr;
 use tracing::warn;
-use x509_parser::certificate::Validity;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::num_bigint::BigUint;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedX509Certificate {
     pub serial: BigUint,
     pub subject: String,
@@ -24,14 +24,19 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
         let serial_base64 = BASE64_URL_SAFE_NO_PAD.encode(cert.raw_serial());
         let subject = cert.subject.to_string();
         let issuer = cert.issuer.to_string();
-        let validity = cert.validity.clone();
+        let validity = (&cert.validity).into();
         let mut subject_alternative_names = Vec::new();
         let subject_public_key_sha256 = sha256(cert.public_key().raw);
         let mut ari_aki = None;
         for extension in cert.extensions() {
             match extension.parsed_extension() {
-                ParsedExtension::AuthorityKeyIdentifier(_aki) => {
-                    ari_aki = Some(BASE64_URL_SAFE_NO_PAD.encode(extension.value));
+                ParsedExtension::AuthorityKeyIdentifier(aki) => {
+                    // draft-ietf-acme-ari-08: The unique identifier is constructed by concatenating
+                    // the base64url-encoding [RFC4648] of the keyIdentifier field of the certificate's
+                    // Authority Key Identifier (AKI) [RFC5280] extension
+                    if let Some(key_identifier) = &aki.key_identifier {
+                        ari_aki = Some(BASE64_URL_SAFE_NO_PAD.encode(key_identifier.0));
+                    }
                 }
                 ParsedExtension::SubjectAlternativeName(san) => {
                     for general_name in &san.general_names {
@@ -97,7 +102,68 @@ impl From<x509_parser::certificate::X509Certificate<'_>> for ParsedX509Certifica
     }
 }
 
-pub struct AcmeRenewalIdentifier {
-    pub key_identifier_base64: String,
-    pub serial_base64: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Validity {
+    pub not_before: time::OffsetDateTime,
+    pub not_after: time::OffsetDateTime,
+}
+
+impl Validity {
+    pub fn time_to_expiration(&self) -> time::Duration {
+        let now = time::OffsetDateTime::now_utc();
+        self.not_after - now
+    }
+}
+
+impl From<&x509_parser::certificate::Validity> for Validity {
+    fn from(value: &x509_parser::certificate::Validity) -> Self {
+        Self {
+            not_before: value.not_before.to_datetime(),
+            not_after: value.not_after.to_datetime(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::acme::object::AcmeRenewalIdentifier;
+    use crate::cert::{ParsedX509Certificate, Validity};
+    use crate::config::Identifier;
+    use crate::load_certificates_from_file;
+    use std::path::Path;
+    use time::macros::datetime;
+    use x509_parser::num_bigint::BigUint;
+
+    #[test]
+    fn test_from_x509_cert() -> anyhow::Result<()> {
+        let expected_cert = ParsedX509Certificate {
+            serial: BigUint::from(0x12b4_3256_fcc5_16f3_u128),
+            subject: String::new(),
+            issuer: "CN=Pebble Intermediate CA 05e38a".to_string(),
+            validity: Validity {
+                not_before: datetime!(2025-03-21 16:57:27 UTC),
+                not_after: datetime!(2025-03-21 17:27:27 UTC),
+            },
+            subject_alternative_names: ["extended.subdomain", "my.first.cert", "www.my.first.cert"]
+                .into_iter()
+                .map(|s| Identifier::from(s.to_string()))
+                .map(Into::into)
+                .collect(),
+            acme_renewal_identifier: Some(AcmeRenewalIdentifier {
+                key_identifier_base64: "uPTZqCFXq0FoKhSzaGnnuI8ophk".to_string(),
+                serial_base64: "ErQyVvzFFvM".to_string(),
+            }),
+            subject_public_key_sha256: [
+                85, 97, 188, 156, 44, 163, 170, 229, 177, 52, 164, 166, 172, 109, 186, 177, 21,
+                108, 85, 243, 203, 60, 7, 235, 145, 74, 167, 236, 87, 74, 88, 106,
+            ],
+        };
+        let test_file = Path::new("./testdata/testcert.pem");
+        let mut parsed_certs = load_certificates_from_file(test_file, Some(1))?;
+        assert_eq!(parsed_certs.len(), 1);
+        let actual_cert = parsed_certs.remove(0);
+
+        assert_eq!(actual_cert, expected_cert);
+        Ok(())
+    }
 }

@@ -32,9 +32,12 @@ async fn main() -> anyhow::Result<()> {
     CONFIG_FILE
         .set(cli.config)
         .expect("Config file already set");
-    let config = config::new_configuration_manager_with_default_config()?;
-    let database = Database::open(config_directory(), "database.sqlite").await?;
-    let client = Certonaut::try_new(config, database).context("Loading configuration failed")?;
+    let config = config::new_configuration_manager_with_default_config()
+        .context("Loading configuration data from filesystem")?;
+    let database = Database::open(config_directory(), "database.sqlite")
+        .await
+        .context("Opening local database")?;
+    let client = Certonaut::try_new(config, database).context("Applying configuration failed")?;
     let result = handle_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal

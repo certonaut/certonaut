@@ -3,8 +3,9 @@ use crate::acme::error::{Error, RateLimitError};
 use crate::acme::http::HttpClient;
 use crate::acme::http::RelationLink;
 use crate::acme::object::{
-    Account, AccountRequest, Authorization, Challenge, ChallengeStatus, Deactivation, Directory,
-    EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order, OrderStatus,
+    Account, AccountRequest, AcmeRenewalIdentifier, Authorization, Challenge, ChallengeStatus,
+    Deactivation, Directory, EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order,
+    OrderStatus, RenewalInfo,
 };
 use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
@@ -19,8 +20,10 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::any::TypeId;
 use std::collections::VecDeque;
+use std::fmt::{Display, Formatter};
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
+use tracing::debug;
 use url::Url;
 
 /// The maximum number of retries we do, per request
@@ -463,6 +466,64 @@ impl AcmeClient {
             .await?;
         Ok(response.body)
     }
+
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn get_renewal_info(
+        &self,
+        identifier: &AcmeRenewalIdentifier,
+    ) -> ProtocolResult<RenewalResponse> {
+        if let Some(ari_base) = &self.get_directory().renewal_info {
+            let mut ari_base = ari_base.clone();
+            if !ari_base.path().ends_with('/') {
+                // Ensure trailing slash for correct join behavior
+                ari_base.set_path(&format!("{}/", ari_base.path()));
+            }
+            let fetch_url = ari_base
+                .join(&identifier.to_string())
+                .expect("BUG: URL joining with AcmeRenewalIdentifier must never fail");
+            // TODO: Retry with backoff
+            debug!("Retrieving ARI from ACME server @ {fetch_url}");
+            let response = self.http_client.get(fetch_url).await?;
+            let retry_after = HttpClient::extract_backoff(&response);
+            let retry_after = retry_after.map_or(
+                SystemTime::now() + time::Duration::hours(6),
+                |retry_after| {
+                    // Check for excessively large or small values
+                    if let Ok(backoff) = retry_after.duration_since(SystemTime::now()) {
+                        if backoff > time::Duration::hours(24) {
+                            // backoff is more than a full day, clamp to one day
+                            SystemTime::now() + time::Duration::hours(24)
+                        } else if backoff < time::Duration::minutes(1) {
+                            // time is < 1 minute, clamp to one minute
+                            SystemTime::now() + time::Duration::minutes(1)
+                        } else {
+                            // no clamping
+                            retry_after
+                        }
+                    } else {
+                        // now() is in the future, clamp to one minute
+                        SystemTime::now() + time::Duration::minutes(1)
+                    }
+                },
+            );
+
+            match response.status() {
+                StatusCode::OK => {
+                    let renewal_info = response.json().await?;
+                    Ok(RenewalResponse {
+                        retry_after,
+                        renewal_info,
+                    })
+                }
+                _ => {
+                    // TODO: What if there's a rate limit error here?
+                    Err(Error::get_error_from_http(response).await)
+                }
+            }
+        } else {
+            Err(Error::FeatureNotSupported)
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -487,6 +548,31 @@ pub struct DownloadedCertificate {
     pub alternate_chains: Vec<Url>,
 }
 
+#[derive(Debug)]
+pub struct RenewalResponse {
+    pub retry_after: SystemTime,
+    pub renewal_info: RenewalInfo,
+}
+
+impl Display for RenewalResponse {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Retry-After: {} | {:?}",
+            time::OffsetDateTime::from(self.retry_after),
+            self.renewal_info.suggested_window
+        )?;
+        match &self.renewal_info.explanation_url {
+            None => {
+                write!(f, " | Explanation URL: None")
+            }
+            Some(url) => {
+                write!(f, " | Explanation URL: {url}")
+            }
+        }
+    }
+}
+
 fn backoff_from_retry_after(retry_after: Option<SystemTime>) -> Duration {
     retry_after
         .and_then(|date| date.duration_since(SystemTime::now()).ok())
@@ -503,6 +589,7 @@ fn backoff_from_retry_after(retry_after: Option<SystemTime>) -> Duration {
 mod tests {
     use super::super::http::test_helper::*;
     use super::*;
+    use crate::acme::object::SuggestedWindow;
     use bstr::ByteSlice;
     use httptest::matchers::request::method_path;
     use httptest::matchers::{request, ExecutionContext, Matcher};
@@ -511,6 +598,7 @@ mod tests {
     use serde_json::json;
     use std::fmt::Formatter;
     use std::fs::File;
+    use time::macros::datetime;
 
     const NONCE_VALUE: &str = "notActuallyRandom";
     const ACCOUNT_URL: &str = "http://localhost/account-url";
@@ -524,7 +612,7 @@ mod tests {
             new_authz: None,
             revoke_cert: uri_to_url(server.url("/revoke-cert")),
             key_change: uri_to_url(server.url("/key-change")),
-            renewal_info: None,
+            renewal_info: Some(uri_to_url(server.url("/renewal-info"))),
             meta: None,
         };
         server.expect(
@@ -706,6 +794,49 @@ mod tests {
         let past = SystemTime::now() - Duration::from_secs(2);
         let backoff = backoff_from_retry_after(Some(past));
         assert_eq!(backoff, DEFAULT_RETRY_BACKOFF);
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_info() {
+        let server = create_acme_server();
+        server.expect(
+            Expectation::matching(method_path(
+                "GET",
+                "/renewal-info/aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE",
+            ))
+            .times(1)
+            .respond_with(
+                status_code(200).append_header("Retry-After", "21600").body(
+                    json!({
+                      "suggestedWindow": {
+                        "start": "2025-01-02T04:00:00Z",
+                        "end": "2025-01-03T04:00:00Z"
+                      },
+                      "explanationURL": "https://acme.example.com/docs/ari"
+                    })
+                    .to_string(),
+                ),
+            ),
+        );
+        let client = build_acme_client(&server).await;
+        let identifier = AcmeRenewalIdentifier {
+            key_identifier_base64: "aYhba4dGQEHhs3uEe6CuLN4ByNQ".to_string(),
+            serial_base64: "AIdlQyE".to_string(),
+        };
+
+        let response = client.get_renewal_info(&identifier).await.unwrap();
+        assert_eq!(
+            response.renewal_info,
+            RenewalInfo {
+                suggested_window: SuggestedWindow {
+                    start: datetime!(2025-01-02 04:00:00 UTC),
+                    end: datetime!(2025-01-03 04:00:00 UTC)
+                },
+                explanation_url: Some(Url::parse("https://acme.example.com/docs/ari").unwrap())
+            },
+        );
+        let time_delta = response.retry_after - time::OffsetDateTime::now_utc();
+        assert!(time_delta >= time::Duration::hours(5) && time_delta <= time::Duration::hours(7));
     }
 
     // TODO: Other methods
