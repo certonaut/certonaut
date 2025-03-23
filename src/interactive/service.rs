@@ -49,12 +49,10 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
         let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains)?;
-        let domains = domain_solver_map.domains;
-        let solvers = domain_solver_map.solvers;
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
             cert_name.to_string()
         } else {
-            self.client.choose_cert_name_from_domains(domains.keys())
+            self.client.choose_cert_name_from_domains(domain_solver_map.domains.keys())
         };
         let initial_config = CertificateConfiguration {
             display_name: cert_name,
@@ -62,8 +60,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ca_identifier: initial_issuer,
             account_identifier: initial_account,
             key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
-            domains,
-            solvers,
+            domains_and_solvers: domain_solver_map,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,
                 lifetime_seconds: issue_cmd
@@ -219,6 +216,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 id: cert_id.to_string(),
                 display_name: cert_config.display_name.to_string(),
                 domains: cert_config
+                    .domains_and_solvers
                     .domains
                     .keys()
                     .sorted()
@@ -305,12 +303,12 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ClosureEditor::new(
                 "Domains",
                 &|config: &CertificateConfiguration| {
-                    config.domains.keys().sorted().join(", ").into()
+                    config.domains_and_solvers.domains.keys().sorted().join(", ").into()
                 },
                 |mut config: CertificateConfiguration| {
                     async {
                         let sorted_domains: Vec<_> =
-                            config.domains.keys().cloned().sorted().collect();
+                            config.domains_and_solvers.domains.keys().cloned().sorted().collect();
                         let new_domains = Self::user_ask_cert_domains(sorted_domains.iter())?;
                         if new_domains.iter().sorted().eq(sorted_domains.iter()) {
                             // No change
@@ -321,9 +319,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             .client
                             .choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
-                        let new_authenticators = Self::user_ask_solvers(new_domains)?;
-                        config.domains = new_authenticators.domains;
-                        config.solvers = new_authenticators.solvers;
+                        config.domains_and_solvers = Self::user_ask_solvers(new_domains)?;
                         Ok(config)
                     }
                     .boxed()
@@ -333,11 +329,13 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 "Solvers",
                 &|config: &CertificateConfiguration| {
                     config
+                        .domains_and_solvers
                         .solvers
                         .keys()
                         .sorted()
                         .map(|solver| {
                             let domains = config
+                                .domains_and_solvers
                                 .domains
                                 .iter()
                                 .filter_map(|(candidate_domain, candidate_solver)| {
@@ -356,10 +354,8 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let domains = config.domains.keys().sorted().cloned().collect();
-                        let new_authenticators = Self::user_ask_solvers(domains)?;
-                        config.domains = new_authenticators.domains;
-                        config.solvers = new_authenticators.solvers;
+                        let domains = config.domains_and_solvers.domains.keys().sorted().cloned().collect();
+                        config.domains_and_solvers = Self::user_ask_solvers(domains)?;
                         Ok(config)
                     }
                     .boxed()

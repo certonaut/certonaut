@@ -1,5 +1,5 @@
 use crate::acme::client::DownloadedCertificate;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_file};
+use crate::cert::{load_certificates_from_file, ParsedX509Certificate};
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
@@ -7,7 +7,7 @@ use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::{CRATE_NAME, acme};
+use crate::{acme, CRATE_NAME};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
@@ -359,13 +359,35 @@ pub struct CertificateConfiguration {
     pub account_identifier: String,
     #[serde(with = "key_type_config_serializer")]
     pub key_type: KeyType,
-    pub domains: HashMap<Identifier, String>,
-    #[serde(rename = "solver")]
-    pub solvers: HashMap<String, SolverConfiguration>,
+    #[serde(flatten)]
+    pub domains_and_solvers: DomainSolverMap,
     #[serde(flatten)]
     pub advanced: AdvancedCertificateConfiguration,
     #[serde(default)]
     pub installer: Option<InstallerConfiguration>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainSolverMap {
+    pub domains: HashMap<Identifier, String>,
+    #[serde(rename = "solver")]
+    pub solvers: HashMap<String, SolverConfiguration>,
+}
+
+impl
+    From<(
+        HashMap<Identifier, String>,
+        HashMap<String, SolverConfiguration>,
+    )> for DomainSolverMap
+{
+    fn from(
+        (domains, solvers): (
+            HashMap<Identifier, String>,
+            HashMap<String, SolverConfiguration>,
+        ),
+    ) -> Self {
+        Self { domains, solvers }
+    }
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

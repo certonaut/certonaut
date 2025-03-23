@@ -1,4 +1,3 @@
-use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
     IssuerAddCommand, IssuerRemoveCommand,
@@ -8,8 +7,9 @@ use crate::config::{
     ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::CRATE_NAME;
 use crate::{Certonaut, NewAccountOptions};
-use anyhow::{Context, Error, bail};
+use anyhow::{bail, Context, Error};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;
@@ -183,17 +183,16 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             .context(format!("You must specify an account for CA {ca}"))?;
         let domains_and_solvers =
             crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration)?;
-        let domains = domains_and_solvers.domains;
-        if domains.is_empty() {
+        if domains_and_solvers.domains.is_empty() {
             bail!(
                 "In non-interactive mode you must specify both domains and solvers on the command line"
             );
         }
-        let solvers = domains_and_solvers.solvers;
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
             cert_name.to_string()
         } else {
-            self.client.choose_cert_name_from_domains(domains.keys())
+            self.client
+                .choose_cert_name_from_domains(domains_and_solvers.domains.keys())
         };
         Ok(CertificateConfiguration {
             display_name: cert_name,
@@ -201,8 +200,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             ca_identifier: ca,
             account_identifier: account,
             key_type: issue_cmd.advanced.key_type.unwrap_or_default().into(),
-            domains,
-            solvers,
+            domains_and_solvers,
             advanced: AdvancedCertificateConfiguration {
                 reuse_key: issue_cmd.advanced.reuse_key,
                 lifetime_seconds: issue_cmd

@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
+use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
-    Configuration, ConfigurationManager, Identifier, InstallerConfiguration, MainConfiguration,
-    SolverConfiguration, config_directory,
+    config_directory, AccountConfiguration,
+    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
+    ConfigBackend, Configuration, ConfigurationManager, DomainSolverMap, Identifier,
+    InstallerConfiguration, MainConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -18,10 +18,10 @@ use crate::crypto::jws::JsonWebKey;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::pebble::pebble_root;
-use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
+use crate::state::Database;
 use crate::time::humanize_duration;
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -52,27 +52,6 @@ pub mod util;
 
 /// The name of the application
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
-
-pub struct DomainSolverMap {
-    pub domains: HashMap<Identifier, String>,
-    pub solvers: HashMap<String, SolverConfiguration>,
-}
-
-impl
-    From<(
-        HashMap<Identifier, String>,
-        HashMap<String, SolverConfiguration>,
-    )> for DomainSolverMap
-{
-    fn from(
-        (domains, solvers): (
-            HashMap<Identifier, String>,
-            HashMap<String, SolverConfiguration>,
-        ),
-    ) -> Self {
-        Self { domains, solvers }
-    }
-}
 
 pub struct Authorizer {
     identifier: acme::object::Identifier,
@@ -153,9 +132,9 @@ pub fn domain_solver_maps_from_command_line(
 pub fn authorizers_from_config(
     config: CertificateConfiguration,
 ) -> anyhow::Result<Vec<Authorizer>> {
-    let size = config.domains.len();
+    let size = config.domains_and_solvers.domains.len();
     let mut authorizers = Vec::with_capacity(size);
-    for (domain, solver_name) in config.domains.into_iter().sorted() {
+    for (domain, solver_name) in config.domains_and_solvers.domains.into_iter().sorted() {
         let acme_domain = domain.clone().into();
         if authorizers
             .iter()
@@ -165,6 +144,7 @@ pub fn authorizers_from_config(
         }
 
         let solver_config = config
+            .domains_and_solvers
             .solvers
             .get(&solver_name)
             .cloned()
@@ -203,8 +183,7 @@ fn modify_certificate_config(
     cert.advanced.reuse_key = modify.advanced.reuse_key;
     let domains_and_solvers = domain_solver_maps_from_command_line(modify.solver_configuration)?;
     if !domains_and_solvers.domains.is_empty() {
-        cert.domains = domains_and_solvers.domains;
-        cert.solvers = domains_and_solvers.solvers;
+        cert.domains_and_solvers = domains_and_solvers;
     }
     Ok(cert)
 }
@@ -652,7 +631,12 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                         (
                             <str as AsRef<OsStr>>::as_ref("RENEWED_DOMAINS").to_os_string(),
                             <String as AsRef<OsStr>>::as_ref(
-                                &cert_config.domains.keys().sorted().join(" "),
+                                &cert_config
+                                    .domains_and_solvers
+                                    .domains
+                                    .keys()
+                                    .sorted()
+                                    .join(" "),
                             )
                             .to_os_string(),
                         ),
@@ -861,7 +845,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         {
             println!("=== {} ===", cert.display_name);
             println!("ID: {cert_id}");
-            println!("Domains: {}", cert.domains.keys().sorted().join(", "));
+            println!(
+                "Domains: {}",
+                cert.domains_and_solvers.domains.keys().sorted().join(", ")
+            );
             let ca_name = self
                 .issuers
                 .get(&cert.ca_identifier)
