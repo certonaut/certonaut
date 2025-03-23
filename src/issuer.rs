@@ -473,7 +473,11 @@ mod tests {
     #![allow(unsafe_code)]
 
     use super::*;
-    use crate::acme::object::{Authorization, Challenge, Directory, HttpChallenge, Token};
+    use crate::acme::client::RenewalResponse;
+    use crate::acme::object::{
+        Authorization, Challenge, Directory, HttpChallenge, RenewalInfo, SuggestedWindow, Token,
+    };
+    use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::{AccountConfiguration, Identifier};
     use crate::crypto::asymmetric::{new_key, Curve, KeyType};
@@ -481,6 +485,8 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::LazyLock;
+    use std::time::SystemTime;
+    use x509_parser::num_bigint::BigUint;
 
     fn test_url() -> Url {
         static TEST_URL: LazyLock<Url> =
@@ -542,6 +548,23 @@ mod tests {
         let issuer = AcmeIssuer::try_new(fake_config)?;
         issuer.override_client(mock_client)?;
         Ok(issuer)
+    }
+
+    fn fake_cert() -> ParsedX509Certificate {
+        let not_before = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+        let not_after = time::OffsetDateTime::now_utc() + time::Duration::hours(24);
+        ParsedX509Certificate {
+            serial: BigUint::default(),
+            subject: "My Cert".to_string(),
+            issuer: "My Issuer".to_string(),
+            validity: Validity {
+                not_before,
+                not_after,
+            },
+            subject_alternative_names: vec![],
+            acme_renewal_identifier: Some(AcmeRenewalIdentifier::new(&[0xDE, 0xAD], &[0xBE, 0xEF])),
+            subject_public_key_sha256: [0x00; 32],
+        }
     }
 
     #[tokio::test]
@@ -682,6 +705,77 @@ mod tests {
             .await?;
 
         assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_info() -> anyhow::Result<()> {
+        let fake_cert = fake_cert();
+        let now_system = SystemTime::now();
+        let now_offset = time::OffsetDateTime::now_utc();
+        let ari_start = now_offset - time::Duration::seconds(1);
+        let ari_end = now_offset + time::Duration::seconds(1);
+        let renewal_response = Ok(RenewalResponse {
+            retry_after: now_system.clone(),
+            renewal_info: RenewalInfo {
+                suggested_window: SuggestedWindow {
+                    start: ari_start,
+                    end: ari_end,
+                },
+                explanation_url: None,
+            },
+        });
+        let mut mock_client = AcmeClient::faux();
+        faux::when!(mock_client.get_renewal_info)
+            .once()
+            .then_return(renewal_response);
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let renewal_info = issuer_with_account
+            .get_renewal_info("my-cert".to_string(), &fake_cert)
+            .await?
+            .expect("Must return RenewalInformation");
+
+        assert!(
+            renewal_info.renewal_time >= ari_start,
+            "Renewal time can not be before ARI window start"
+        );
+        assert!(
+            renewal_info.renewal_time <= ari_end,
+            "Renewal time can not be after ARI window end"
+        );
+        assert_eq!(renewal_info.cert_id, "my-cert");
+        assert!(
+            renewal_info.fetched_at >= now_offset,
+            "fetched_at cannot be before test time (did the system clock go backwards during test?)"
+        );
+        assert_eq!(
+            renewal_info.next_update, now_system,
+            "next update should be precisely the not-after value"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_renewal_info_when_ca_does_not_support_ari() -> anyhow::Result<()> {
+        let fake_cert = fake_cert();
+        let renewal_response = Err(acme::error::Error::FeatureNotSupported);
+        let mut mock_client = AcmeClient::faux();
+        faux::when!(mock_client.get_renewal_info)
+            .once()
+            .then_return(renewal_response);
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let renewal_info = issuer_with_account
+            .get_renewal_info("my-cert".to_string(), &fake_cert)
+            .await?;
+
+        assert_eq!(
+            renewal_info, None,
+            "No RenewalInformation should be returned if the CA does not support the feature"
+        );
         Ok(())
     }
 }

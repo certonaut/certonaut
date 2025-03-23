@@ -559,7 +559,7 @@ pub struct DownloadedCertificate {
     pub alternate_chains: Vec<Url>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RenewalResponse {
     pub retry_after: SystemTime,
     pub renewal_info: RenewalInfo,
