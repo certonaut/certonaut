@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, AuthorizationStatus, ChallengeStatus, InnerChallenge,
     NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{ParsedX509Certificate, create_and_sign_csr};
+use crate::cert::{create_and_sign_csr, ParsedX509Certificate};
 use crate::challenge_solver::KeyAuthorization;
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
@@ -12,8 +12,8 @@ use crate::config::{
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{AcmeAccount, Authorizer, acme, new_acme_client};
-use anyhow::{Context, Error, anyhow, bail};
+use crate::{acme, new_acme_client, AcmeAccount, Authorizer};
+use anyhow::{anyhow, bail, Context, Error};
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
@@ -475,19 +475,55 @@ mod tests {
     use super::*;
     use crate::acme::object::{Authorization, Challenge, Directory, HttpChallenge, Token};
     use crate::challenge_solver::NullSolver;
-    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
-    use crate::util::serde_helper::PassthroughBytes;
-
     use crate::config::{AccountConfiguration, Identifier};
+    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
+    use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use std::sync::LazyLock;
 
-    fn setup_fake_ca(fake_url: &Url) -> anyhow::Result<AcmeIssuer> {
+    fn test_url() -> Url {
+        static TEST_URL: LazyLock<Url> =
+            LazyLock::new(|| Url::parse("https://fake.invalid/").unwrap());
+        TEST_URL.clone()
+    }
+
+    fn create_order(
+        status: OrderStatus,
+        authorizations: Vec<Url>,
+        error: Option<Problem>,
+        certificate: Option<Url>,
+    ) -> Order {
+        Order {
+            status,
+            expires: None,
+            identifiers: vec![],
+            not_before: None,
+            not_after: None,
+            error,
+            authorizations,
+            finalize: test_url().join("finalize").unwrap(),
+            certificate,
+        }
+    }
+
+    fn setup_fake_issuer(mut mock_client: AcmeClient) -> anyhow::Result<AcmeIssuer> {
+        let fake_directory = Box::new(Directory {
+            new_nonce: test_url(),
+            new_account: test_url(),
+            new_order: test_url(),
+            new_authz: None,
+            revoke_cert: test_url(),
+            key_change: test_url(),
+            renewal_info: None,
+            meta: None,
+        });
+        let fake_directory = Box::leak::<'static>(fake_directory);
         let fake_config = CertificateAuthorityConfigurationWithAccounts {
             inner: CertificateAuthorityConfiguration {
                 name: "Fake CA".to_string(),
                 identifier: "fake".to_string(),
-                acme_directory: fake_url.clone(),
+                acme_directory: test_url(),
                 public: false,
                 testing: false,
                 default: false,
@@ -496,72 +532,48 @@ mod tests {
                 name: "Fake Account".to_string(),
                 identifier: "fake".to_string(),
                 key_file: PathBuf::from("testdata/account.key"),
-                url: fake_url.clone(),
+                url: test_url().join("fake-account")?,
             }],
         };
-        AcmeIssuer::try_new(fake_config)
+        // SAFETY: Directory has 'static lifetime
+        unsafe {
+            faux::when!(mock_client.get_directory).then_unchecked(|()| fake_directory);
+        }
+        let issuer = AcmeIssuer::try_new(fake_config)?;
+        issuer.override_client(mock_client)?;
+        Ok(issuer)
     }
 
     #[tokio::test]
     async fn test_issue_with_cached_authz() -> Result<(), Error> {
-        let fake_url = Url::parse("https://fake.invalid")?;
-        let issuer = setup_fake_ca(&fake_url)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
-        let mut mock_client = AcmeClient::faux();
-        let fake_directory = Directory {
-            new_nonce: fake_url.clone(),
-            new_account: fake_url.clone(),
-            new_order: fake_url.clone(),
-            new_authz: None,
-            revoke_cert: fake_url.clone(),
-            key_change: fake_url.clone(),
-            renewal_info: None,
-            meta: None,
-        };
-        let new_order = Ok((
-            fake_url.clone(),
-            Order {
-                status: OrderStatus::Ready,
-                expires: None,
-                identifiers: vec![],
-                not_before: None,
-                not_after: None,
-                error: None,
-                authorizations: vec![],
-                finalize: fake_url.clone(),
-                certificate: None,
-            },
+        let order_url = test_url().join("cached-auth-order")?;
+        let fresh_order = Ok((
+            order_url.clone(),
+            create_order(OrderStatus::Ready, vec![], None, None),
         ));
-        let finalized_order = Ok(Order {
-            status: OrderStatus::Valid,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![],
-            finalize: fake_url.clone(),
-            certificate: Some(fake_url.clone()),
-        });
+        let finalized_order = Ok(create_order(
+            OrderStatus::Valid,
+            vec![],
+            None,
+            Some(test_url().join("get-cert")?),
+        ));
         let certificate = Ok(DownloadedCertificate {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
-        // SAFETY: lifetime of &fake_directory is the entire test
-        unsafe {
-            faux::when!(mock_client.get_directory).then_unchecked(|()| &fake_directory);
-        }
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let mut mock_client = AcmeClient::faux();
         faux::when!(mock_client.new_order)
             .once()
-            .then_return(new_order);
+            .then_return(fresh_order);
         faux::when!(mock_client.finalize_order)
             .once()
             .then_return(finalized_order);
-        faux::when!(mock_client.download_certificate)
+        faux::when!(mock_client.download_certificate(_, test_url().join("get-cert")?))
             .once()
             .then_return(certificate);
-        issuer.override_client(mock_client)?;
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
 
         let cert = issuer_with_account
             .issue(
@@ -581,39 +593,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_issue_with_single_authz() -> Result<(), Error> {
-        let fake_url = Url::parse("https://fake.invalid")?;
         let fake_order_url = Url::parse("https://fake.invalid/order")?;
         let fake_authz_url = Url::parse("https://fake.invalid/authz")?;
         let fake_challenge_url = Url::parse("https://fake.invalid/challenge")?;
-        let fake_finalize_url = Url::parse("https://fake.invalid/finalize")?;
         let fake_cert_url = Url::parse("https://fake.invalid/cert")?;
-        let issuer = setup_fake_ca(&fake_url)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
-        let mut mock_client = AcmeClient::faux();
-        let fake_directory = Directory {
-            new_nonce: fake_url.clone(),
-            new_account: fake_url.clone(),
-            new_order: fake_url.clone(),
-            new_authz: None,
-            revoke_cert: fake_url.clone(),
-            key_change: fake_url.clone(),
-            renewal_info: None,
-            meta: None,
-        };
-        let new_order = Ok((
+        let fresh_order = Ok((
             fake_order_url.clone(),
-            Order {
-                status: OrderStatus::Pending,
-                expires: None,
-                identifiers: vec![],
-                not_before: None,
-                not_after: None,
-                error: None,
-                authorizations: vec![fake_authz_url.clone()],
-                finalize: fake_finalize_url.clone(),
-                certificate: None,
-            },
+            create_order(
+                OrderStatus::Pending,
+                vec![fake_authz_url.clone()],
+                None,
+                None,
+            ),
         ));
         let pending_authorization = Ok(Authorization {
             identifier: Identifier::from_str("example.com")?.into(),
@@ -639,39 +630,26 @@ mod tests {
                 token: Token::from_str("some-token")?,
             }),
         });
-        let ready_order = Ok(Order {
-            status: OrderStatus::Ready,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![fake_authz_url.clone()],
-            finalize: fake_finalize_url.clone(),
-            certificate: None,
-        });
-        let finalized_order = Ok(Order {
-            status: OrderStatus::Valid,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![fake_authz_url.clone()],
-            finalize: fake_finalize_url.clone(),
-            certificate: Some(fake_cert_url.clone()),
-        });
+        let ready_order = Ok(create_order(
+            OrderStatus::Ready,
+            vec![fake_authz_url.clone()],
+            None,
+            None,
+        ));
+        let finalized_order = Ok(create_order(
+            OrderStatus::Valid,
+            vec![fake_authz_url.clone()],
+            None,
+            Some(fake_cert_url.clone()),
+        ));
         let certificate = Ok(DownloadedCertificate {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
-        // SAFETY: lifetime of &fake_directory is the entire test
-        unsafe {
-            faux::when!(mock_client.get_directory).then_unchecked(|()| &fake_directory);
-        }
+        let mut mock_client = AcmeClient::faux();
         faux::when!(mock_client.new_order)
             .once()
-            .then_return(new_order);
+            .then_return(fresh_order);
         faux::when!(mock_client.get_authorization(_, fake_authz_url))
             .once()
             .then_return(pending_authorization);
@@ -687,7 +665,9 @@ mod tests {
         faux::when!(mock_client.download_certificate(_, fake_cert_url))
             .once()
             .then_return(certificate);
-        issuer.override_client(mock_client)?;
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
 
         let cert = issuer_with_account
             .issue(
