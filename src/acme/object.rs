@@ -1,7 +1,7 @@
 use crate::acme::error::{Error, Problem};
 use crate::util::serde_helper::optional_offset_date_time;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::PartialEq;

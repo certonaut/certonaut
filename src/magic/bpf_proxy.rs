@@ -1,6 +1,6 @@
-use crate::challenge_solver::HttpChallengeParameters;
 use crate::CRATE_NAME;
-use anyhow::{anyhow, Context};
+use crate::challenge_solver::HttpChallengeParameters;
+use anyhow::{Context, anyhow};
 use caps::{CapSet, Capability};
 use futures::future;
 use http::HeaderName;

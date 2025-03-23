@@ -1,3 +1,4 @@
+use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
     IssuerAddCommand, IssuerRemoveCommand,
@@ -7,9 +8,8 @@ use crate::config::{
     ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
-use crate::CRATE_NAME;
 use crate::{Certonaut, NewAccountOptions};
-use anyhow::{bail, Context, Error};
+use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;
@@ -63,7 +63,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         println!("Creating a new account at CA {ca_name}");
         let acme_client = issuer.client().await?;
         let ca_name = &issuer.config.name;
-        let account_num = issuer.accounts.len();
+        let account_num = issuer.num_accounts();
         let account_name = cmd.account_name.unwrap_or_else(|| {
             if account_num > 0 {
                 format!("{ca_name} ({account_num})")
@@ -141,7 +141,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         Ok(())
     }
 
-    pub async fn remove_ca(&mut self, cmd: IssuerRemoveCommand) -> Result<(), Error> {
+    pub fn remove_ca(&mut self, cmd: IssuerRemoveCommand) -> Result<(), Error> {
         let Some(ca_id) = cmd.id else {
             bail!("A CA identifier must be specified in non-interactive mode");
         };
@@ -169,9 +169,9 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         let account = issue_cmd
             .account
             .or_else(|| {
-                let accounts = &issuer.accounts;
-                if let Some(account) = accounts.values().next() {
-                    if accounts.len() == 1 {
+                let mut accounts = issuer.get_accounts();
+                if let Some(account) = accounts.next() {
+                    if issuer.num_accounts() == 1 {
                         Some(account.config.identifier.clone())
                     } else {
                         None

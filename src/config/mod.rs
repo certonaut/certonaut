@@ -1,5 +1,5 @@
 use crate::acme::client::DownloadedCertificate;
-use crate::cert::ParsedX509Certificate;
+use crate::cert::{ParsedX509Certificate, load_certificates_from_file};
 use crate::challenge_solver::{ChallengeSolver, NullSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
@@ -7,7 +7,7 @@ use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::{acme, CRATE_NAME};
+use crate::{CRATE_NAME, acme};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
     ) -> Result<Vec<ParsedX509Certificate>, Error> {
         let cert_path = self.certificate_path(id);
         let cert_file = cert_path.join("fullchain.pem");
-        crate::load_certificates_from_file(cert_file, limit)
+        load_certificates_from_file(cert_file, limit)
     }
 
     fn save_certificate_config(

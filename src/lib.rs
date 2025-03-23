@@ -1,46 +1,35 @@
 // Deny unsafe code in the project by default, allow for exceptions though
 #![deny(unsafe_code)]
 
-use crate::acme::client::{AccountRegisterOptions, AcmeClient, DownloadedCertificate};
-use crate::acme::error::Problem;
+use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::acme::object::{
-    AccountStatus, AcmeRenewalIdentifier, AuthorizationStatus, ChallengeStatus, InnerChallenge,
-    NewOrderRequest, Order, OrderStatus,
-};
-use crate::cert::ParsedX509Certificate;
-use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration, KeyAuthorization};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
+use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    config_directory, AccountConfiguration,
-    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, Configuration, ConfigurationManager, Identifier, InstallerConfiguration,
-    MainConfiguration, SolverConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration,
+    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
+    Configuration, ConfigurationManager, Identifier, InstallerConfiguration, MainConfiguration,
+    SolverConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
-use crate::error::{IssueContext, IssueResult};
+use crate::error::IssueResult;
+use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::pebble::pebble_root;
-use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
-use crate::util::humanize_duration_core;
-use anyhow::{anyhow, bail, Context, Error};
+use crate::state::types::external::RenewalInformation;
+use crate::time::humanize_duration;
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
-use rand::Rng;
-use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fmt::{Debug, Display};
+use std::fmt::Debug;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Seek};
-use std::ops::{Deref, Neg};
-use std::path::Path;
-use std::str::FromStr;
+use std::ops::Neg;
 use std::time::Duration;
-use time::error::ConversionRange;
-use tokio::sync::OnceCell;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use url::Url;
 
 pub mod acme;
@@ -52,17 +41,17 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod interactive;
+pub mod issuer;
 pub mod magic;
 pub mod non_interactive;
 pub mod pebble;
 pub mod renew;
 pub mod state;
+pub mod time;
 pub mod util;
 
 /// The name of the application
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
-/// The maximum number of certificates we will parse in a PEM-array of certificates by default
-const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
 
 pub struct DomainSolverMap {
     pub domains: HashMap<Identifier, String>,
@@ -83,114 +72,6 @@ impl
     ) -> Self {
         Self { domains, solvers }
     }
-}
-
-pub fn parse_duration(s: &str) -> Result<Duration, String> {
-    cyborgtime::parse_duration(s).map_err(|e| format!("Invalid duration: {e}"))
-}
-
-#[derive(Clone)]
-pub struct ParsedDuration {
-    inner: Duration,
-}
-
-impl From<Duration> for ParsedDuration {
-    fn from(inner: Duration) -> Self {
-        ParsedDuration { inner }
-    }
-}
-
-impl From<u64> for ParsedDuration {
-    fn from(seconds: u64) -> Self {
-        Duration::from_secs(seconds).into()
-    }
-}
-
-impl Deref for ParsedDuration {
-    type Target = Duration;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-impl FromStr for ParsedDuration {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_duration(s).map(ParsedDuration::from)
-    }
-}
-
-impl Display for ParsedDuration {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match humanize_duration_core(**self) {
-            Ok(duration) => write!(f, "{duration}"),
-            Err(_) => write!(f, "Time too long to display"),
-        }
-    }
-}
-
-#[allow(clippy::missing_panics_doc)]
-pub fn current_time_truncated() -> time::OffsetDateTime {
-    let now = time::OffsetDateTime::now_utc();
-    now.replace_nanosecond(0).unwrap(/* unreachable */)
-}
-
-// TODO: must-staple option
-fn create_and_sign_csr(
-    cert_key: &rcgen::KeyPair,
-    identifiers: Vec<acme::object::Identifier>,
-) -> Result<CertificateSigningRequest, Error> {
-    let mut cert_params = rcgen::CertificateParams::new(
-        identifiers
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<String>>(),
-    )
-    .context("CSR generation failed")?;
-    // Ensure the DN is empty
-    cert_params.distinguished_name = rcgen::DistinguishedName::default();
-    let csr = cert_params
-        .serialize_request(cert_key)
-        .context("Signing CSR failed")?;
-    Ok(csr)
-}
-
-pub fn load_certificates_from_file<P: AsRef<Path>>(
-    cert_file: P,
-    limit: Option<usize>,
-) -> anyhow::Result<Vec<ParsedX509Certificate>> {
-    let cert_file = cert_file.as_ref();
-    let cert_file_display = cert_file.display();
-    let cert_file = File::open(cert_file).context(format!("Opening {cert_file_display} failed"))?;
-    let reader = BufReader::new(cert_file);
-    load_certificates_from_reader(reader, limit)
-        .context(format!("Parsing certificate {cert_file_display} failed"))
-}
-
-pub fn load_certificates_from_memory<B: AsRef<[u8]>>(
-    pem_bytes: B,
-    limit: Option<usize>,
-) -> anyhow::Result<Vec<ParsedX509Certificate>> {
-    let reader = Cursor::new(pem_bytes);
-    load_certificates_from_reader(reader, limit)
-}
-
-fn load_certificates_from_reader<R: BufRead + Seek>(
-    reader: R,
-    limit: Option<usize>,
-) -> anyhow::Result<Vec<ParsedX509Certificate>> {
-    let mut certificates = Vec::new();
-    for pem in x509_parser::pem::Pem::iter_from_reader(reader)
-        .take(limit.unwrap_or(DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH))
-    {
-        let pem = pem.context("Reading PEM block failed")?;
-        let parser_x509 = pem
-            .parse_x509()
-            .context("Reading X509 structure: Decoding DER failed")?;
-        certificates.push(parser_x509.into());
-    }
-    Ok(certificates)
 }
 
 pub struct Authorizer {
@@ -351,8 +232,8 @@ pub struct NewAccountOptions {
 
 #[derive(Debug)]
 pub struct AcmeAccount {
-    config: AccountConfiguration,
-    jwk: JsonWebKey,
+    pub config: AccountConfiguration,
+    pub jwk: JsonWebKey,
 }
 
 impl AcmeAccount {
@@ -841,7 +722,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .values()
             .sorted_by_key(|issuer| issuer.config.name.clone())
         {
-            if issuer.accounts.is_empty() {
+            if issuer.num_accounts() == 0 {
                 continue;
             }
             has_accounts = true;
@@ -850,8 +731,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 issuer.config.name, issuer.config.identifier
             );
             for account_id in issuer
-                .accounts
-                .values()
+                .get_accounts()
                 .sorted_by_key(|account| account.config.name.clone())
                 .map(|account| &account.config.identifier)
             {
@@ -1015,14 +895,14 @@ impl<CB: ConfigBackend> Certonaut<CB> {
 
                         let not_after = cert.validity.not_after.to_string();
                         let time_until_expired = cert.validity.time_to_expiration();
-                        if time_until_expired > time::Duration::ZERO {
-                            let time_until_expired = util::humanize_duration(time_until_expired);
+                        if time_until_expired > ::time::Duration::ZERO {
+                            let time_until_expired = humanize_duration(time_until_expired);
                             println!(
                                 "Certificate is valid until: {not_after} (Expires in {time_until_expired})",
                             );
                         } else {
                             let expired_since = time_until_expired.neg();
-                            let expired_since = util::humanize_duration(expired_since);
+                            let expired_since = humanize_duration(expired_since);
                             println!(
                                 "Certificate is valid until: {not_after} (EXPIRED {expired_since} ago)"
                             );
@@ -1052,691 +932,5 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 config_dir.display()
             );
         }
-    }
-}
-
-#[derive(Debug)]
-pub struct AcmeIssuer {
-    pub config: CertificateAuthorityConfiguration,
-    client: OnceCell<AcmeClient>,
-    accounts: HashMap<String, AcmeAccount>,
-}
-
-impl AcmeIssuer {
-    pub fn try_new(config: CertificateAuthorityConfigurationWithAccounts) -> anyhow::Result<Self> {
-        let client = OnceCell::new();
-        let mut accounts = HashMap::new();
-        for account_config in config.accounts {
-            let account_id = account_config.identifier.clone();
-            let account = AcmeAccount::load_existing(account_config)?;
-            if let Some(old) = accounts.insert(account_id, account) {
-                let id = old.config.identifier;
-                bail!("Duplicate account id {id} in configuration");
-            }
-        }
-        Ok(Self {
-            client,
-            accounts,
-            config: config.inner,
-        })
-    }
-
-    #[cfg(test)]
-    fn override_client(&self, client: AcmeClient) -> anyhow::Result<()> {
-        self.client
-            .set(client)
-            .context("AcmeIssuer already initialized")
-    }
-
-    pub async fn client(&self) -> Result<&AcmeClient, Error> {
-        self.client
-            .get_or_try_init(|| async { new_acme_client(&self.config).await })
-            .await
-    }
-
-    pub fn current_config(&self) -> CertificateAuthorityConfigurationWithAccounts {
-        CertificateAuthorityConfigurationWithAccounts {
-            inner: self.config.clone(),
-            accounts: self
-                .accounts
-                .values()
-                .map(|account| &account.config)
-                .cloned()
-                .collect(),
-        }
-    }
-
-    pub fn with_account(&self, account_id: &str) -> Option<AcmeIssuerWithAccount> {
-        let account = self.accounts.get(account_id)?;
-        Some(AcmeIssuerWithAccount {
-            issuer: self,
-            account,
-        })
-    }
-
-    pub fn get_account(&self, account_id: &str) -> Option<&AcmeAccount> {
-        self.accounts.get(account_id)
-    }
-
-    pub fn get_accounts(&self) -> impl Iterator<Item = &AcmeAccount> {
-        self.accounts.values()
-    }
-
-    pub fn add_account(&mut self, account: AcmeAccount) {
-        self.accounts
-            .insert(account.config.identifier.clone(), account);
-    }
-
-    pub fn remove_account(&mut self, account_id: &str) -> Option<AcmeAccount> {
-        self.accounts.remove(account_id)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AcmeIssuerWithAccount<'a> {
-    pub issuer: &'a AcmeIssuer,
-    pub account: &'a AcmeAccount,
-}
-
-impl AcmeIssuerWithAccount<'_> {
-    async fn client(&self) -> Result<&AcmeClient, Error> {
-        self.issuer.client().await
-    }
-
-    pub async fn get_cert_from_finalized_order(
-        &self,
-        order: Order,
-    ) -> IssueResult<DownloadedCertificate> {
-        let certificate_url = order.certificate.ok_or(anyhow!(
-            "CA did not provide a certificate URL for final order"
-        ))?;
-        debug!("Final certificate available @ {certificate_url}");
-        let cert = self
-            .client()
-            .await?
-            .download_certificate(&self.account.jwk, &certificate_url)
-            .await
-            .context("Downloading certificate")?;
-        info!("Successfully issued a certificate!");
-        Ok(cert)
-    }
-
-    pub async fn issue(
-        &self,
-        cert_key: &rcgen::KeyPair,
-        cert_lifetime: Option<Duration>,
-        authorizers: Vec<Authorizer>,
-        replaces: Option<AcmeRenewalIdentifier>,
-    ) -> IssueResult<DownloadedCertificate> {
-        let identifiers: Vec<_> = authorizers
-            .iter()
-            .map(|authorizer| authorizer.identifier.clone())
-            .collect();
-        let names = identifiers.join(", ");
-        info!(
-            "Issuing certificate for {names} at CA {}",
-            self.issuer.config.name
-        );
-        let csr = create_and_sign_csr(cert_key, identifiers.clone())?;
-        let (not_before, not_after) = match cert_lifetime {
-            Some(lifetime) => {
-                let not_before = current_time_truncated();
-                let not_after = time::Duration::try_from(lifetime)
-                    .and_then(|lifetime| not_before.checked_add(lifetime).ok_or(ConversionRange))
-                    .context("Range error computing cert validity dates")
-                    .client_failure()?;
-                (Some(not_before), Some(not_after))
-            }
-            None => (None, None),
-        };
-        let request = NewOrderRequest {
-            identifiers,
-            not_before,
-            not_after,
-            replaces,
-        };
-        self.order_and_authorize(csr, request, authorizers).await
-    }
-
-    async fn order_and_authorize(
-        &self,
-        csr: CertificateSigningRequest,
-        request: NewOrderRequest,
-        authorizers: Vec<Authorizer>,
-    ) -> IssueResult<DownloadedCertificate> {
-        let (order_url, mut order) = self.new_order(request).await?;
-        let client = self.client().await?;
-        match order.status {
-            OrderStatus::Valid => {
-                debug!("New order is already valid, downloading certificate");
-                return self.get_cert_from_finalized_order(order).await;
-            }
-            OrderStatus::Processing => {
-                debug!(
-                    "New order is already processing, polling order and downloading certificate"
-                );
-                let final_order = client
-                    .poll_order(&self.account.jwk, order, &order_url)
-                    .await
-                    .context("Polling finalized order")?;
-                return self.get_cert_from_finalized_order(final_order).await;
-            }
-            OrderStatus::Ready => {
-                debug!("New order is already ready, finalizing order");
-                let final_order = client
-                    .finalize_order(&self.account.jwk, &order, &csr)
-                    .await
-                    .context("Error finalizing order")?;
-                return self.get_cert_from_finalized_order(final_order).await;
-            }
-            OrderStatus::Invalid => {
-                if let Some(error) = order.error {
-                    return Err((
-                        error,
-                        anyhow!("New order has unacceptable status (invalid)"),
-                    )
-                        .into());
-                }
-                return anyhow!("New order has unacceptable status (invalid)").ca_failure();
-            }
-            OrderStatus::Pending => {
-                self.authorize(order, authorizers)
-                    .await
-                    .context("Error authorizing certificate issuance")?;
-                info!("Finished authorizing all identifiers");
-            }
-        }
-        debug!("Re-fetching fully authorized order ({order_url})");
-        order = client
-            .get_order(&self.account.jwk, &order_url)
-            .await
-            .context("Re-fetching fully authorized order")?;
-        match order.status {
-            OrderStatus::Valid => {
-                debug!("CA claims order is already valid, downloading certificate");
-                self.get_cert_from_finalized_order(order).await
-            }
-            OrderStatus::Processing => {
-                debug!(
-                    "CA claims order is already processing, polling order and downloading certificate"
-                );
-                let final_order = client
-                    .poll_order(&self.account.jwk, order, &order_url)
-                    .await
-                    .context("Polling finalized order")?;
-                self.get_cert_from_finalized_order(final_order).await
-            }
-            OrderStatus::Ready => {
-                debug!("Finalizing order");
-                let final_order = client
-                    .finalize_order(&self.account.jwk, &order, &csr)
-                    .await
-                    .context("Error finalizing order")?;
-                self.get_cert_from_finalized_order(final_order).await
-            }
-            OrderStatus::Pending => {
-                if let Some(error) = order.error {
-                    error.into_result().context(
-                        "Order is still pending after having authorized all identifiers",
-                    )?;
-                }
-                anyhow!("Order is still pending after having authorized all identifiers")
-                    .ca_failure()
-            }
-            OrderStatus::Invalid => {
-                if let Some(error) = order.error {
-                    error.into_result().context("Order has invalid status")?;
-                }
-                anyhow!("Order has invalid status (no error reported by CA)").ca_failure()
-            }
-        }
-    }
-
-    async fn new_order(&self, mut request: NewOrderRequest) -> IssueResult<(Url, Order)> {
-        let client = self.client().await?;
-        if client.get_directory().renewal_info.is_none() {
-            // draft-ietf-acme-ari-08: Clients SHOULD NOT include this field if the ACME Server has not indicated
-            // that it supports this protocol by advertising the renewalInfo resource in its Directory.
-            request.replaces = None;
-        }
-        let (order_url, order) = match client.new_order(&self.account.jwk, &request).await {
-            Ok(success) => Ok(success),
-            Err(e @ acme::error::Error::AcmeProblem(_)) => {
-                if request.replaces.is_some() {
-                    // If an order with a "replaces" field fails, the CA may be unhappy with the
-                    // replacement. Try again without.
-                    warn!("The CA refused a new order replacing an older certificate: {e}");
-                    warn!("Trying again without replacing the old certificate");
-                    request.replaces = None;
-                    client.new_order(&self.account.jwk, &request).await
-                } else {
-                    Err(e)
-                }
-            }
-            Err(e) => Err(e),
-        }
-        .context("Error creating new order")?;
-        debug!("Order URL: {}", order_url);
-        Ok((order_url, order))
-    }
-
-    async fn authorize(
-        &self,
-        order: Order,
-        mut authorizers: Vec<Authorizer>,
-    ) -> anyhow::Result<()> {
-        let client = self.client().await?;
-        for authz_url in order.authorizations {
-            debug!("Checking authorization @ {authz_url}");
-            let authz = client
-                .get_authorization(&self.account.jwk, &authz_url)
-                .await
-                .context("Retrieving authorization from server")?;
-            match authz.status {
-                AuthorizationStatus::Valid => {
-                    debug!("Authorization already valid");
-                    // Skip
-                }
-                AuthorizationStatus::Pending => {
-                    let id = authz.identifier;
-                    info!("Found pending authorization for {id}, trying to authorize");
-                    let mut challenge_solver =
-                        authorizers.swap_remove(authorizers.iter().position(|authorizer| authorizer.identifier == id).ok_or(
-                            anyhow!(
-                                "Order contains pending authorization for {id}, but this identifier was not part of our requested order"
-                            ),
-                        )?);
-                    let solver_name_long = challenge_solver.solver.long_name();
-                    let solver_name_short = challenge_solver.solver.short_name();
-                    let chosen_challenge = authz
-                        .challenges
-                        .into_iter()
-                        .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
-                        .filter(|challenge| !matches!(challenge.inner_challenge, InnerChallenge::Unknown))
-                        .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
-                        .ok_or(anyhow!(
-                            "Authorization for {id} did not contain any pending challenge supported by {solver_name_long}"
-                        ))?;
-                    let challenge_type = chosen_challenge.inner_challenge.get_type().to_string();
-                    debug!(
-                        "{solver_name_short} selected {challenge_type} challenge @ {}",
-                        chosen_challenge.url
-                    );
-
-                    // TODO: Timeout solver?
-
-                    // Setup
-                    challenge_solver
-                        .solver
-                        .deploy_challenge(&self.account.jwk, &id, chosen_challenge.inner_challenge)
-                        .await
-                        .context(format!(
-                            "Setting up challenge solver {solver_name_long} for {id}"
-                        ))?;
-
-                    debug!(
-                        "{solver_name_short} reported successful challenge deployment, attempting validation now"
-                    );
-
-                    // TODO: Preflight checks? By us or by solver?
-
-                    // Validation
-                    client
-                        .validate_challenge(&self.account.jwk, &chosen_challenge.url)
-                        .await
-                        .context(format!(
-                            "Error validating {challenge_type} challenge for {id} with challenge solver {solver_name_long}"
-                        ))?;
-
-                    info!("Successfully validated challenge for {id}");
-
-                    // Cleanup
-                    if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
-                        warn!(
-                            "Challenge solver {solver_name_long} for {id} encountered an error during cleanup: {e:#}"
-                        );
-                    }
-                }
-                AuthorizationStatus::Invalid => {
-                    let id = &authz.identifier;
-                    let problems: Vec<Problem> = authz
-                        .challenges
-                        .into_iter()
-                        .filter_map(|challenge| challenge.error)
-                        .collect();
-                    let mut problem_string = String::new();
-                    for problem in problems {
-                        problem_string.push('\n');
-                        problem_string.push_str(&problem.to_string());
-                    }
-                    bail!(
-                        "Failed to authorize {id}. The CA reported these problems: {problem_string}"
-                    );
-                }
-                AuthorizationStatus::Deactivated
-                | AuthorizationStatus::Expired
-                | AuthorizationStatus::Revoked => {
-                    let id = &authz.identifier;
-                    bail!(
-                        "Authorization for {id} is in an invalid status (deactivated, expired, or revoked)"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn deactivate_account(&self) -> Result<(), Error> {
-        let client = self.client().await?;
-        let deactivated_account = client
-            .deactivate_account(&self.account.jwk, &self.account.config.url)
-            .await?;
-        if matches!(deactivated_account.status, AccountStatus::Deactivated) {
-            Ok(())
-        } else {
-            bail!(
-                "ACME account has invalid status {} after deactivation",
-                deactivated_account.status
-            )
-        }
-    }
-
-    pub async fn get_renewal_info(
-        &self,
-        cert_id: String,
-        cert: &ParsedX509Certificate,
-    ) -> anyhow::Result<Option<RenewalInformation>> {
-        let Some(renewal_identifier) = &cert.acme_renewal_identifier else {
-            let serial = &cert.serial;
-            debug!(
-                "Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
-            );
-            return Ok(None);
-        };
-        let client = self.client().await?;
-        match client.get_renewal_info(renewal_identifier).await {
-            Ok(renewal_info) => {
-                debug!("ARI server response: {renewal_info}");
-                let now = time::OffsetDateTime::now_utc();
-                if let Some(explanation_url) = renewal_info.renewal_info.explanation_url {
-                    info!(
-                        "The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
-                    );
-                    info!("{explanation_url}");
-                }
-                let mut window = renewal_info.renewal_info.suggested_window;
-                if window.end > cert.validity.not_after {
-                    warn!(
-                        "The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
-                    );
-                    window.end = cert.validity.not_after;
-                }
-                let start_unix = window.start.unix_timestamp();
-                let end_unix = window.end.unix_timestamp();
-                if start_unix >= end_unix {
-                    return Err(acme::error::Error::ProtocolViolation(
-                        "Window end time is at or after the start time",
-                    ))
-                    .context("Determining ARI window");
-                }
-                let mut rng = rand::rng();
-                let random_unix = rng.random_range(start_unix..=end_unix);
-                let random_time = time::OffsetDateTime::from_unix_timestamp(random_unix)
-                    .context("Determining ARI window: Invalid time range provided by server")?;
-                debug!("Determined ARI random renewal time @ {random_time}");
-                Ok(Some(RenewalInformation {
-                    cert_id,
-                    fetched_at: now,
-                    renewal_time: random_time,
-                    next_update: renewal_info.retry_after.into(),
-                }))
-            }
-            Err(acme::error::Error::FeatureNotSupported) => {
-                let ca = &self.issuer.config.name;
-                debug!(
-                    "CA {ca} does not support ACME Renewal Information, can not fetch online renewal information"
-                );
-                Ok(None)
-            }
-            Err(e) => {
-                Err(Error::new(e).context("Failed to fetch ACME Renewal Information from CA"))
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #![allow(unsafe_code)]
-
-    use super::*;
-    use crate::acme::object::{Authorization, Challenge, Directory, HttpChallenge, Token};
-    use crate::challenge_solver::NullSolver;
-    use crate::crypto::asymmetric::{new_key, Curve};
-    use crate::util::serde_helper::PassthroughBytes;
-
-    use std::path::PathBuf;
-
-    fn setup_fake_ca(fake_url: &Url) -> anyhow::Result<AcmeIssuer> {
-        let fake_config = CertificateAuthorityConfigurationWithAccounts {
-            inner: CertificateAuthorityConfiguration {
-                name: "Fake CA".to_string(),
-                identifier: "fake".to_string(),
-                acme_directory: fake_url.clone(),
-                public: false,
-                testing: false,
-                default: false,
-            },
-            accounts: vec![AccountConfiguration {
-                name: "Fake Account".to_string(),
-                identifier: "fake".to_string(),
-                key_file: PathBuf::from("testdata/account.key"),
-                url: fake_url.clone(),
-            }],
-        };
-        AcmeIssuer::try_new(fake_config)
-    }
-
-    #[tokio::test]
-    async fn test_issue_with_cached_authz() -> Result<(), Error> {
-        let fake_url = Url::parse("https://fake.invalid")?;
-        let issuer = setup_fake_ca(&fake_url)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
-        let mut mock_client = AcmeClient::faux();
-        let fake_directory = Directory {
-            new_nonce: fake_url.clone(),
-            new_account: fake_url.clone(),
-            new_order: fake_url.clone(),
-            new_authz: None,
-            revoke_cert: fake_url.clone(),
-            key_change: fake_url.clone(),
-            renewal_info: None,
-            meta: None,
-        };
-        let new_order = Ok((
-            fake_url.clone(),
-            Order {
-                status: OrderStatus::Ready,
-                expires: None,
-                identifiers: vec![],
-                not_before: None,
-                not_after: None,
-                error: None,
-                authorizations: vec![],
-                finalize: fake_url.clone(),
-                certificate: None,
-            },
-        ));
-        let finalized_order = Ok(Order {
-            status: OrderStatus::Valid,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![],
-            finalize: fake_url.clone(),
-            certificate: Some(fake_url.clone()),
-        });
-        let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
-            alternate_chains: vec![],
-        });
-        // SAFETY: lifetime of &fake_directory is the entire test
-        unsafe {
-            faux::when!(mock_client.get_directory).then_unchecked(|_| &fake_directory);
-        }
-        faux::when!(mock_client.new_order)
-            .once()
-            .then_return(new_order);
-        faux::when!(mock_client.finalize_order)
-            .once()
-            .then_return(finalized_order);
-        faux::when!(mock_client.download_certificate)
-            .once()
-            .then_return(certificate);
-        issuer.override_client(mock_client)?;
-
-        let cert = issuer_with_account
-            .issue(
-                &keypair,
-                None,
-                vec![Authorizer::new(
-                    Identifier::from_str("example.com")?,
-                    NullSolver::default(),
-                )],
-                None,
-            )
-            .await?;
-
-        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_issue_with_single_authz() -> Result<(), Error> {
-        let fake_url = Url::parse("https://fake.invalid")?;
-        let fake_order_url = Url::parse("https://fake.invalid/order")?;
-        let fake_authz_url = Url::parse("https://fake.invalid/authz")?;
-        let fake_challenge_url = Url::parse("https://fake.invalid/challenge")?;
-        let fake_finalize_url = Url::parse("https://fake.invalid/finalize")?;
-        let fake_cert_url = Url::parse("https://fake.invalid/cert")?;
-        let issuer = setup_fake_ca(&fake_url)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
-        let mut mock_client = AcmeClient::faux();
-        let fake_directory = Directory {
-            new_nonce: fake_url.clone(),
-            new_account: fake_url.clone(),
-            new_order: fake_url.clone(),
-            new_authz: None,
-            revoke_cert: fake_url.clone(),
-            key_change: fake_url.clone(),
-            renewal_info: None,
-            meta: None,
-        };
-        let new_order = Ok((
-            fake_order_url.clone(),
-            Order {
-                status: OrderStatus::Pending,
-                expires: None,
-                identifiers: vec![],
-                not_before: None,
-                not_after: None,
-                error: None,
-                authorizations: vec![fake_authz_url.clone()],
-                finalize: fake_finalize_url.clone(),
-                certificate: None,
-            },
-        ));
-        let pending_authorization = Ok(Authorization {
-            identifier: Identifier::from_str("example.com")?.into(),
-            status: AuthorizationStatus::Pending,
-            expires: None,
-            challenges: vec![Challenge {
-                url: fake_challenge_url.clone(),
-                status: ChallengeStatus::Pending,
-                validated: None,
-                error: None,
-                inner_challenge: InnerChallenge::Http(HttpChallenge {
-                    token: Token::from_str("some-token")?,
-                }),
-            }],
-            wildcard: false,
-        });
-        let validated_challenge = Ok(Challenge {
-            url: fake_challenge_url.clone(),
-            status: ChallengeStatus::Valid,
-            validated: None,
-            error: None,
-            inner_challenge: InnerChallenge::Http(HttpChallenge {
-                token: Token::from_str("some-token")?,
-            }),
-        });
-        let ready_order = Ok(Order {
-            status: OrderStatus::Ready,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![fake_authz_url.clone()],
-            finalize: fake_finalize_url.clone(),
-            certificate: None,
-        });
-        let finalized_order = Ok(Order {
-            status: OrderStatus::Valid,
-            expires: None,
-            identifiers: vec![],
-            not_before: None,
-            not_after: None,
-            error: None,
-            authorizations: vec![fake_authz_url.clone()],
-            finalize: fake_finalize_url.clone(),
-            certificate: Some(fake_cert_url.clone()),
-        });
-        let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
-            alternate_chains: vec![],
-        });
-        // SAFETY: lifetime of &fake_directory is the entire test
-        unsafe {
-            faux::when!(mock_client.get_directory).then_unchecked(|_| &fake_directory);
-        }
-        faux::when!(mock_client.new_order)
-            .once()
-            .then_return(new_order);
-        faux::when!(mock_client.get_authorization(_, fake_authz_url))
-            .once()
-            .then_return(pending_authorization);
-        faux::when!(mock_client.validate_challenge(_, fake_challenge_url))
-            .once()
-            .then_return(validated_challenge);
-        faux::when!(mock_client.get_order(_, fake_order_url))
-            .once()
-            .then_return(ready_order);
-        faux::when!(mock_client.finalize_order)
-            .once()
-            .then_return(finalized_order);
-        faux::when!(mock_client.download_certificate(_, fake_cert_url))
-            .once()
-            .then_return(certificate);
-        issuer.override_client(mock_client)?;
-
-        let cert = issuer_with_account
-            .issue(
-                &keypair,
-                None,
-                vec![Authorizer::new(
-                    Identifier::from_str("example.com")?,
-                    NullSolver::default(),
-                )],
-                None,
-            )
-            .await?;
-
-        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
-        Ok(())
     }
 }

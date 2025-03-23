@@ -8,16 +8,16 @@ use crate::acme::object::{
     OrderStatus, RenewalInfo,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
+use crate::crypto::jws::{EMPTY_PAYLOAD, JsonWebKey, ProtectedHeader};
 use crate::util::serde_helper::PassthroughBytes;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::de::value::BytesDeserializer;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::de::value::BytesDeserializer;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
@@ -385,26 +385,37 @@ impl AcmeClient {
     pub async fn finalize_order(
         &self,
         account_key: &JsonWebKey,
-        order: &Order,
+        order: Order,
+        order_url: &Url,
         csr: &CertificateSigningRequest,
     ) -> ProtocolResult<Order> {
-        let request = FinalizeRequest {
-            csr: BASE64_URL_SAFE_NO_PAD.encode(csr.der()),
-        };
-        let response = self
-            .post_with_retry(&order.finalize, account_key, Some(&request))
-            .await?;
-        let order_url = response.location.ok_or(Error::ProtocolViolation(
-            "Server did not provide an order URL upon finalizing",
-        ))?;
-        let retry_after = response.retry_after;
-        let backoff = backoff_from_retry_after(retry_after);
-        tokio::time::sleep(backoff).await;
-        self.poll_order(account_key, response.body, &order_url)
-            .await
+        match order.status {
+            OrderStatus::Ready => {
+                let request = FinalizeRequest {
+                    csr: BASE64_URL_SAFE_NO_PAD.encode(csr.der()),
+                };
+                let response = self
+                    .post_with_retry(&order.finalize, account_key, Some(&request))
+                    .await?;
+                let order_url = response.location.unwrap_or_else(|| order_url.clone());
+                let retry_after = response.retry_after;
+                let backoff = backoff_from_retry_after(retry_after);
+                tokio::time::sleep(backoff).await;
+                self.poll_finalized_order(account_key, response.body, &order_url)
+                    .await
+            }
+            OrderStatus::Processing => {
+                self.poll_finalized_order(account_key, order, &order_url)
+                    .await
+            }
+            OrderStatus::Valid => Ok(order),
+            _ => Err(Error::ProtocolViolation(
+                "Order with status that is neither ready nor processing cannot be finalized",
+            )),
+        }
     }
 
-    pub async fn poll_order(
+    async fn poll_finalized_order(
         &self,
         account_key: &JsonWebKey,
         mut order: Order,
@@ -415,12 +426,12 @@ impl AcmeClient {
             match order.status {
                 OrderStatus::Pending => {
                     return Err(Error::ProtocolViolation(
-                        "BUG: Requested finalized order polling but CA reported order is still pending",
+                        "CA flipped the order status unexpectedly: Order was ready/processing, but is now reset to pending",
                     ));
                 }
                 OrderStatus::Ready => {
                     return Err(Error::ProtocolViolation(
-                        "BUG: Requested finalized order polling but CA reported order has not been finalized yet",
+                        "CA flipped the order status unexpectedly: Order was ready/processing, but is now reset to ready",
                     ));
                 }
                 OrderStatus::Processing => {
@@ -592,9 +603,9 @@ mod tests {
     use crate::acme::object::SuggestedWindow;
     use bstr::ByteSlice;
     use httptest::matchers::request::method_path;
-    use httptest::matchers::{request, ExecutionContext, Matcher};
+    use httptest::matchers::{ExecutionContext, Matcher, request};
     use httptest::responders::{json_encoded, status_code};
-    use httptest::{all_of, cycle, Expectation, IntoTimes};
+    use httptest::{Expectation, IntoTimes, all_of, cycle};
     use serde_json::json;
     use std::fmt::Formatter;
     use std::fs::File;

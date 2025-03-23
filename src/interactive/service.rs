@@ -1,4 +1,4 @@
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
@@ -7,12 +7,12 @@ use crate::config::{
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
-use crate::util::humanize_duration;
+use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
-    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, Certonaut, DomainSolverMap,
-    NewAccountOptions, ParsedDuration, CRATE_NAME,
+    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, CRATE_NAME, Certonaut, DomainSolverMap,
+    NewAccountOptions, build_domain_solver_maps,
 };
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -132,14 +132,14 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         } else {
             None
         }
-            .ok_or(anyhow!("CA not found (are there any issuers configured?)"))?;
+        .ok_or(anyhow!("CA not found (are there any issuers configured?)"))?;
         let account_choice = Self::user_select_account(ca, false)?;
         let account = if let AccountChoice::ExistingAccount(config) = account_choice {
             ca.with_account(&config.identifier)
         } else {
             None
         }
-            .ok_or(anyhow!(
+        .ok_or(anyhow!(
             "No such account found at CA (are there any accounts for this CA?)"
         ))?;
         println!(
@@ -246,7 +246,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 None => "CA not found".into(),
                 Some(ca) => {
                     let ca_name = ca.config.name.clone();
-                    if ca.accounts.len() > 1 {
+                    if ca.num_accounts() > 1 {
                         let account_name = match ca.get_account(&config.account_identifier) {
                             None => "Account not found",
                             Some(account) => &account.config.name,
@@ -285,16 +285,16 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                                 *ca_display = new_ca_display;
                                 Ok(config)
                             }
-                                .boxed()
+                            .boxed()
                         },
                     )]
-                        .into_iter(),
+                    .into_iter(),
                 )
                 .chain(Self::cert_edit_advanced_editors(&self_locked)),
             |_c| async { Ok(true) }.boxed(),
         )
-            .edit_config()
-            .await?;
+        .edit_config()
+        .await?;
         Ok(final_config)
     }
 
@@ -326,7 +326,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.solvers = new_authenticators.solvers;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -362,7 +362,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.solvers = new_authenticators.solvers;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -373,11 +373,11 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.display_name = Self::user_ask_cert_name(config.display_name)?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
         ]
-            .into_iter()
+        .into_iter()
     }
 
     fn cert_edit_advanced_editors<'a>(
@@ -392,7 +392,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.key_type = Self::user_ask_key_type(config.key_type)?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -412,12 +412,12 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             ),
                             |_config| async { Ok(true) }.boxed(),
                         )
-                            .edit_config()
-                            .await?;
+                        .edit_config()
+                        .await?;
                         config.advanced = new_advanced;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -431,11 +431,11 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.installer = Self::user_ask_installer(config.installer)?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
         ]
-            .into_iter()
+        .into_iter()
     }
 
     fn cert_edit_advanced_inner_editors<'a>(
@@ -459,7 +459,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             Self::user_ask_cert_lifetime(config.lifetime_seconds)?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -477,7 +477,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             Self::user_ask_cert_profile(&issuer, config.profile).await?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
             ClosureEditor::new(
@@ -490,11 +490,11 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                         config.reuse_key = Self::user_ask_key_reuse(config.reuse_key)?;
                         Ok(config)
                     }
-                        .boxed()
+                    .boxed()
                 },
             ),
         ]
-            .into_iter()
+        .into_iter()
     }
 
     fn user_ask_initial_solvers(
@@ -525,9 +525,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             "Select a solver to authenticate all identifiers:",
             solver_options,
         )
-            // TODO: Allow to skip prompt in case we already have solvers (no change)
-            .prompt()
-            .context("No answer to solver prompt")?
+        // TODO: Allow to skip prompt in case we already have solvers (no change)
+        .prompt()
+        .context("No answer to solver prompt")?
         {
             SolverChoice::SingleSolver(single_solver_choice) => {
                 vec![single_solver_choice.build_interactive(domains)?]
@@ -537,14 +537,15 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         build_domain_solver_maps(domains_with_solvers)
     }
 
+    #[allow(clippy::unused_async)]
     async fn user_ask_cert_profile(
-        issuer: &AcmeIssuerWithAccount<'_>,
+        _issuer: &AcmeIssuerWithAccount<'_>,
         _current: Option<String>,
     ) -> Result<Option<String>, Error> {
-        let client = issuer.client().await?;
-        if let Some(_meta) = &client.get_directory().meta {
-            // TODO: Check profiles, allow selecting one
-        }
+        // let client = issuer.client().await?;
+        // if let Some(_meta) = &client.get_directory().meta {
+        //     // TODO: Check profiles, allow selecting one
+        // }
         Ok(None)
     }
 
@@ -595,10 +596,10 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                 .map(|k| (*k).into())
                 .collect(),
         )
-            .with_help_message(&format!("Press ESC to use current {current}"))
-            .prompt_skippable()
-            .context("No answer to key type prompt")?
-            .unwrap_or(current);
+        .with_help_message(&format!("Press ESC to use current {current}"))
+        .prompt_skippable()
+        .context("No answer to key type prompt")?
+        .unwrap_or(current);
         Ok(key_type)
     }
 
@@ -790,7 +791,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         } else {
             ca_choice.prompt()
         }
-            .context("No CA selected")?;
+        .context("No CA selected")?;
         Ok(user_choice)
     }
 
@@ -861,8 +862,8 @@ Currently, the following challenge \"solvers\" are available to prove control:".
     }
 
     fn user_select_account(ca: &AcmeIssuer, allow_creation: bool) -> Result<AccountChoice, Error> {
-        let configured_accounts_list = &ca.accounts;
-        if configured_accounts_list.is_empty() {
+        let num_accounts = ca.num_accounts();
+        if num_accounts == 0 {
             if allow_creation {
                 return Ok(AccountChoice::NewAccount);
             }
@@ -871,13 +872,13 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         // If the user has only a single account, we select that by default
         // because that's a very common setup. The user can still request for new accounts to be
         // created explicitly.
-        if configured_accounts_list.len() == 1 {
+        if num_accounts == 1 {
             return Ok(AccountChoice::ExistingAccount(
-                ca.accounts.values().next().unwrap().config.clone(),
+                ca.get_accounts().next().unwrap().config.clone(),
             ));
         }
-        let mut choices = configured_accounts_list
-            .values()
+        let mut choices = ca
+            .get_accounts()
             .map(|account| &account.config)
             .cloned()
             .map(AccountChoice::ExistingAccount)
@@ -948,7 +949,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
         }
         let ca_name = &ca.config.name;
         let ca_id = &ca.config.identifier;
-        let account_num = ca.accounts.len();
+        let account_num = ca.num_accounts();
         let account_name = if account_num > 0 {
             format!("{ca_name} ({account_num})")
         } else {
@@ -966,7 +967,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
                 terms_of_service_agreed: tos_status,
             },
         )
-            .await
+        .await
     }
 
     async fn user_create_account_ca_specific_features(
@@ -1301,8 +1302,8 @@ fn validate_solver_toml(domains: &HashSet<Identifier>, content: &str) -> Validat
             let solver_document = DocumentMut::from(solver.clone());
             let _test_config: SolverConfiguration = toml_edit::de::from_document(solver_document)
                 .map_err(|toml_err| {
-                    Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
-                })?;
+                Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
+            })?;
         }
         Ok(())
     }

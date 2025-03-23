@@ -1,8 +1,8 @@
 use anyhow::Context;
 use certonaut::cli::{handle_cli_command, setup_command_line};
-use certonaut::config::{config_directory, CONFIG_FILE};
+use certonaut::config::{CONFIG_FILE, config_directory};
 use certonaut::state::Database;
-use certonaut::{config, Certonaut};
+use certonaut::{Certonaut, config};
 use std::io::IsTerminal;
 use tracing_subscriber::EnvFilter;
 

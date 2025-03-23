@@ -6,11 +6,11 @@ use crate::config::{
 };
 use crate::crypto::jws::JsonWebKey;
 use crate::{acme, config, magic};
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use async_trait::async_trait;
-use clap::{value_parser, Arg, Command};
-use inquire::validator::Validation;
+use clap::{Arg, Command, value_parser};
 use inquire::CustomType;
+use inquire::validator::Validation;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::LazyLock;

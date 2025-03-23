@@ -1,6 +1,6 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::{ConnectOptions, Executor};
 use std::path::Path;

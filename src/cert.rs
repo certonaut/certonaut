@@ -1,9 +1,74 @@
 use crate::acme::object::{AcmeRenewalIdentifier, Identifier};
-use crate::crypto::{sha256, SHA256_LENGTH};
+use crate::crypto::{SHA256_LENGTH, sha256};
+use anyhow::{Context, Error};
+use rcgen::CertificateSigningRequest;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::net::IpAddr;
+use std::path::Path;
 use tracing::warn;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::num_bigint::BigUint;
+
+/// The maximum number of certificates we will parse in a PEM-array of certificates by default
+const DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH: usize = 100;
+
+// TODO: must-staple option
+pub fn create_and_sign_csr(
+    cert_key: &rcgen::KeyPair,
+    identifiers: Vec<Identifier>,
+) -> Result<CertificateSigningRequest, Error> {
+    let mut cert_params = rcgen::CertificateParams::new(
+        identifiers
+            .into_iter()
+            .map(Into::into)
+            .collect::<Vec<String>>(),
+    )
+    .context("CSR generation failed")?;
+    // Ensure the DN is empty
+    cert_params.distinguished_name = rcgen::DistinguishedName::default();
+    let csr = cert_params
+        .serialize_request(cert_key)
+        .context("Signing CSR failed")?;
+    Ok(csr)
+}
+
+pub fn load_certificates_from_file<P: AsRef<Path>>(
+    cert_file: P,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let cert_file = cert_file.as_ref();
+    let cert_file_display = cert_file.display();
+    let cert_file = File::open(cert_file).context(format!("Opening {cert_file_display} failed"))?;
+    let reader = BufReader::new(cert_file);
+    load_certificates_from_reader(reader, limit)
+        .context(format!("Parsing certificate {cert_file_display} failed"))
+}
+
+pub fn load_certificates_from_memory<B: AsRef<[u8]>>(
+    pem_bytes: B,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let reader = Cursor::new(pem_bytes);
+    load_certificates_from_reader(reader, limit)
+}
+
+fn load_certificates_from_reader<R: BufRead + Seek>(
+    reader: R,
+    limit: Option<usize>,
+) -> anyhow::Result<Vec<ParsedX509Certificate>> {
+    let mut certificates = Vec::new();
+    for pem in x509_parser::pem::Pem::iter_from_reader(reader)
+        .take(limit.unwrap_or(DEFAULT_MAX_CERTIFICATE_CHAIN_LENGTH))
+    {
+        let pem = pem.context("Reading PEM block failed")?;
+        let parser_x509 = pem
+            .parse_x509()
+            .context("Reading X509 structure: Decoding DER failed")?;
+        certificates.push(parser_x509.into());
+    }
+    Ok(certificates)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedX509Certificate {
@@ -122,9 +187,8 @@ impl From<&x509_parser::certificate::Validity> for Validity {
 #[cfg(test)]
 mod tests {
     use crate::acme::object::AcmeRenewalIdentifier;
-    use crate::cert::{ParsedX509Certificate, Validity};
+    use crate::cert::{ParsedX509Certificate, Validity, load_certificates_from_file};
     use crate::config::Identifier;
-    use crate::load_certificates_from_file;
     use std::path::Path;
     use time::macros::datetime;
     use x509_parser::num_bigint::BigUint;

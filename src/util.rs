@@ -1,5 +1,4 @@
 use itertools::Itertools;
-use std::ops::Neg;
 
 pub(crate) mod serde_helper {
     use core::fmt;
@@ -10,8 +9,8 @@ pub(crate) mod serde_helper {
     pub(crate) mod optional_offset_date_time {
         use serde::{self, Deserializer, Serializer};
         use std::option::Option;
-        use time::serde::rfc3339;
         use time::OffsetDateTime;
+        use time::serde::rfc3339;
 
         #[allow(clippy::ref_option)]
         pub fn serialize<S>(
@@ -202,80 +201,6 @@ pub(crate) mod serde_helper {
     }
 }
 
-pub fn humanize_duration_core(
-    duration: core::time::Duration,
-) -> Result<String, time::error::ConversionRange> {
-    Ok(humanize_duration(duration.try_into()?))
-}
-
-pub fn humanize_duration(mut duration: time::Duration) -> String {
-    const SECONDS_IN_MINUTE: i64 = 60;
-    const SECONDS_IN_HOUR: i64 = 3600;
-    const SECONDS_IN_DAY: i64 = 86400;
-    const SECONDS_IN_MONTH: i64 = 2_630_016; // Approximation (30.44 days)
-    const SECONDS_IN_YEAR: i64 = 31_557_600; // Approximation (365.25 days)
-
-    if duration.is_negative() {
-        duration = duration.neg();
-    }
-
-    let mut remaining_seconds = duration.whole_seconds();
-
-    let years = remaining_seconds / SECONDS_IN_YEAR;
-    remaining_seconds %= SECONDS_IN_YEAR;
-    let months = remaining_seconds / SECONDS_IN_MONTH;
-    remaining_seconds %= SECONDS_IN_MONTH;
-    let days = remaining_seconds / SECONDS_IN_DAY;
-    remaining_seconds %= SECONDS_IN_DAY;
-    let hours = remaining_seconds / SECONDS_IN_HOUR;
-    remaining_seconds %= SECONDS_IN_HOUR;
-    let minutes = remaining_seconds / SECONDS_IN_MINUTE;
-    remaining_seconds %= SECONDS_IN_MINUTE;
-    let seconds = remaining_seconds;
-
-    let mut components = Vec::new();
-    if years > 0 {
-        components.push(format!(
-            "{} year{}",
-            years,
-            if years > 1 { "s" } else { "" }
-        ));
-    }
-    if months > 0 {
-        components.push(format!(
-            "{} month{}",
-            months,
-            if months > 1 { "s" } else { "" }
-        ));
-    }
-    if days > 0 {
-        components.push(format!("{} day{}", days, if days > 1 { "s" } else { "" }));
-    }
-    if hours > 0 {
-        components.push(format!(
-            "{} hour{}",
-            hours,
-            if hours > 1 { "s" } else { "" }
-        ));
-    }
-    if minutes > 0 {
-        components.push(format!(
-            "{} minute{}",
-            minutes,
-            if minutes > 1 { "s" } else { "" }
-        ));
-    }
-    if seconds > 0 || components.is_empty() {
-        components.push(format!(
-            "{} second{}",
-            seconds,
-            if seconds == 1 { "" } else { "s" }
-        ));
-    }
-
-    components.join(", ")
-}
-
 pub fn format_hex_with_colon<T: AsRef<[u8]>>(bytes: T) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).join(":")
 }
@@ -283,10 +208,10 @@ pub fn format_hex_with_colon<T: AsRef<[u8]>>(bytes: T) -> String {
 #[cfg(test)]
 mod tests {
     use super::serde_helper::optional_offset_date_time;
-    use crate::util::{format_hex_with_colon, humanize_duration};
+    use crate::util::format_hex_with_colon;
     use rstest::rstest;
-    use time::macros::datetime;
     use time::OffsetDateTime;
+    use time::macros::datetime;
 
     #[rstest]
     #[case("\"1985-04-12T23:20:50.52Z\"", Some(datetime!(1985-04-12 23:20:50.52 UTC)))]
@@ -313,22 +238,6 @@ mod tests {
         let mut serializer = serde_json::Serializer::new(&mut serialized);
         optional_offset_date_time::serialize(&test_value, &mut serializer).unwrap();
         assert_eq!(String::from_utf8_lossy(&serialized), expected);
-    }
-
-    #[rstest]
-    #[case(time::Duration::ZERO, "0 seconds")]
-    #[case(std::time::Duration::from_secs(60).try_into().unwrap(), "1 minute")]
-    #[case(std::time::Duration::from_secs(61).try_into().unwrap(), "1 minute, 1 second")]
-    #[case(std::time::Duration::from_secs(60 * 60).try_into().unwrap(), "1 hour")]
-    #[case(std::time::Duration::from_secs(60 * 60 * 24).try_into().unwrap(), "1 day")]
-    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 30.44).try_into().unwrap(), "1 month")]
-    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 365.25).try_into().unwrap(), "1 year")]
-    #[case(std::time::Duration::from_nanos(1).try_into().unwrap(), "0 seconds")]
-    #[case(std::time::Duration::from_secs_f64(62.321).try_into().unwrap(), "1 minute, 2 seconds")]
-    #[case(std::time::Duration::from_secs_f64(60f64 * 60f64 * 24f64 * 90f64 * 1.1111).try_into().unwrap(), "3 months, 8 days, 16 hours, 17 minutes, 45 seconds")]
-    fn test_humanize_duration(#[case] test_value: time::Duration, #[case] expected: &str) {
-        let humanized = humanize_duration(test_value);
-        assert_eq!(humanized, expected);
     }
 
     #[rstest]

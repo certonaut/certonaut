@@ -1,9 +1,9 @@
+use crate::ChallengeSolver;
 use crate::acme::object::{Identifier, InnerChallenge, Token};
 use crate::challenge_solver::KeyAuthorization;
 use crate::config::PebbleHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use crate::ChallengeSolver;
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::LazyLock;

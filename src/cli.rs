@@ -1,13 +1,14 @@
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::CRATE_NAME;
+use crate::Certonaut;
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::config;
 use crate::config::{ConfigBackend, Identifier};
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
-use crate::CRATE_NAME;
-use crate::{parse_duration, Certonaut};
-use anyhow::{bail, Context};
+use crate::time::parse_duration;
+use anyhow::{Context, bail};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;
@@ -476,7 +477,7 @@ async fn handle_issuer_command<CB: ConfigBackend + Send + Sync>(
                 return service.interactive_remove_ca().await;
             }
             let mut service = NonInteractiveService::new(client);
-            service.remove_ca(remove).await
+            service.remove_ca(remove)
         }
     }
 }

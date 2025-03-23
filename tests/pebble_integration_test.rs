@@ -4,7 +4,7 @@ use certonaut::config::test_backend::new_configuration_manager_with_noop_backend
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Identifier};
 use certonaut::crypto::asymmetric;
 use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
-use certonaut::pebble::{pebble_root, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL};
+use certonaut::pebble::{ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL, pebble_root};
 use certonaut::{AcmeAccount, Authorizer, Certonaut};
 use serde::Serialize;
 use std::fs::File;
