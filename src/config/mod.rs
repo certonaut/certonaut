@@ -1,13 +1,13 @@
 use crate::acme::client::DownloadedCertificate;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_file};
-use crate::challenge_solver::{ChallengeSolver, NullSolver};
+use crate::cert::{load_certificates_from_file, ParsedX509Certificate};
+use crate::challenge_solver::{ChallengeSolver, NullSolver, WebrootSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::{CRATE_NAME, acme};
+use crate::{acme, CRATE_NAME};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
@@ -453,6 +453,7 @@ pub enum SolverConfiguration {
     Null(NullSolverConfiguration),
     PebbleHttp(PebbleHttpSolverConfiguration),
     MagicHttp(MagicHttpSolverConfiguration),
+    Webroot(WebrootSolverConfiguration),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -467,12 +468,18 @@ pub struct MagicHttpSolverConfiguration {
     pub(crate) validation_port: Option<u16>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebrootSolverConfiguration {
+    pub(crate) webroot: PathBuf,
+}
+
 impl SolverConfiguration {
     pub fn to_solver(self) -> Result<Box<dyn ChallengeSolver>, Error> {
         Ok(match self {
             SolverConfiguration::Null(solver) => NullSolver::from_config(solver),
             SolverConfiguration::PebbleHttp(solver) => ChallengeTestHttpSolver::from_config(solver),
             SolverConfiguration::MagicHttp(solver) => MagicHttpSolver::try_from_config(solver)?,
+            SolverConfiguration::Webroot(solver) => WebrootSolver::from_config(solver),
         })
     }
 
@@ -481,6 +488,7 @@ impl SolverConfiguration {
             SolverConfiguration::Null(_) => "null",
             SolverConfiguration::PebbleHttp(_) => "pebble-http",
             SolverConfiguration::MagicHttp(_) => "magic-http",
+            SolverConfiguration::Webroot(_) => "webroot",
         }
     }
 }

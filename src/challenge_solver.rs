@@ -2,18 +2,21 @@ use crate::acme::object::{InnerChallenge, Token};
 use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration,
-    SolverConfiguration,
+    SolverConfiguration, WebrootSolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
 use crate::{acme, config, magic};
-use anyhow::{Error, bail};
+use anyhow::{bail, Context, Error};
 use async_trait::async_trait;
-use clap::{Arg, Command, value_parser};
-use inquire::CustomType;
+use clap::{value_parser, Arg, Command, CommandFactory, FromArgMatches, Parser};
 use inquire::validator::Validation;
+use inquire::CustomType;
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
 
 pub trait KeyAuthorization {
     fn get_type(&self) -> &str;
@@ -103,6 +106,82 @@ impl ChallengeSolver for NullSolver {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct WebrootSolver {
+    webroot: PathBuf,
+    challenge_file: Option<PathBuf>,
+}
+
+impl WebrootSolver {
+    pub fn from_config(config: WebrootSolverConfiguration) -> Box<Self> {
+        Box::new(WebrootSolver {
+            webroot: config.webroot,
+            challenge_file: None,
+        })
+    }
+
+    pub fn challenge_path(&self, token: &Token) -> PathBuf {
+        self.webroot
+            .join(Path::new(".well-known/acme-challenge/"))
+            .join(token.as_str())
+    }
+}
+
+#[async_trait]
+impl ChallengeSolver for WebrootSolver {
+    fn long_name(&self) -> &'static str {
+        "webroot"
+    }
+
+    fn short_name(&self) -> &'static str {
+        "webroot"
+    }
+
+    fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {
+        matches!(challenge, InnerChallenge::Http(_))
+    }
+
+    async fn deploy_challenge(
+        &mut self,
+        jwk: &JsonWebKey,
+        _identifier: &acme::object::Identifier,
+        challenge: InnerChallenge,
+    ) -> Result<(), Error> {
+        let token = challenge.get_token();
+        let authorization = challenge.get_key_authorization(jwk);
+        let challenge_path = self.challenge_path(token);
+        if let Some(parent) = challenge_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .context(format!("Failed to create directory {}", parent.display()))?;
+        }
+        let mut challenge_file = File::create(&challenge_path).await.context(format!(
+            "Failed to create challenge file {}",
+            challenge_path.display()
+        ))?;
+        challenge_file
+            .write_all(authorization.as_bytes())
+            .await
+            .context(format!(
+                "Writing to challenge file {} failed",
+                challenge_path.display()
+            ))?;
+        self.challenge_file = Some(challenge_path);
+        Ok(())
+    }
+
+    async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
+        if let Some(path) = self.challenge_file {
+            tokio::fs::remove_file(&path).await.context(format!(
+                "Failed to remove challenge file {}",
+                path.display()
+            ))
+        } else {
+            bail!("No challenge to cleanup")
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HttpChallengeParameters {
     pub token: Token,
@@ -153,35 +232,6 @@ pub struct DomainsWithSolverConfiguration {
     pub config: SolverConfiguration,
     pub solver_name: Option<String>,
 }
-
-// impl From<(HashSet<Identifier>, SolverConfiguration)> for BuiltSolverConfiguration {
-//     fn from(value: (HashSet<Identifier>, SolverConfiguration)) -> Self {
-//         Self::SingleConfig(value)
-//     }
-// }
-//
-// impl From<Vec<Authorizer>> for BuiltSolverConfiguration {
-//     fn from(value: Vec<Authorizer>) -> Self {
-//         Self::MultipleConfigs(value)
-//     }
-// }
-//
-// impl TryInto<Vec<Authorizer>> for BuiltSolverConfiguration {
-//     type Error = Error;
-//
-//     fn try_into(self) -> Result<Vec<Authorizer>, Self::Error> {
-//         Ok(match self {
-//             BuiltSolverConfiguration::SingleConfig((domains, config)) => {
-//                 let mut authorizers = Vec::with_capacity(domains.len());
-//                 for domain in domains.into_iter().sorted() {
-//                     authorizers.push(Authorizer::new_boxed(domain, None, config.clone().to_solver()?));
-//                 }
-//                 authorizers
-//             }
-//             BuiltSolverConfiguration::MultipleConfigs(authorizer) => authorizer,
-//         })
-//     }
-// }
 
 struct NullSolverBuilder;
 
@@ -389,12 +439,107 @@ impl SolverConfigBuilder for MagicHttpBuilder {
     }
 }
 
+/// Webroot uses your existing webserver to serve a (single) static file that solves the HTTP-01 challenge.
+#[derive(Debug, Parser)]
+#[command(name = "webroot")]
+struct WebrootCommand {
+    /// The "webroot" (or "document root") of your existing webserver, from where static files can be served
+    webroot: PathBuf,
+}
+
+struct WebrootBuilder;
+
+impl SolverConfigBuilder for WebrootBuilder {
+    fn new() -> Box<Self> {
+        Box::new(WebrootBuilder {})
+    }
+
+    fn name(&self) -> &'static str {
+        "Webroot"
+    }
+
+    fn description(&self) -> &'static str {
+        "Webroot uses your existing webserver to serve a (single) static file that solves the HTTP-01 challenge. Your webserver must support serving static files from the filesystem."
+    }
+
+    fn category(&self) -> SolverCategory {
+        SolverCategory::Http
+    }
+
+    fn preference(&self) -> usize {
+        10
+    }
+
+    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
+        true
+    }
+
+    fn build_interactive(
+        &self,
+        domains: HashSet<config::Identifier>,
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        println!(
+            "The webroot solver needs to know from where your webserver serves static files (the \"webroot\" of your webserver)."
+        );
+        println!(
+            "The solver will place a static file in this directory to solve the CA's challenge."
+        );
+        println!(
+            "Please provide the top-level directory from where your domain(s) (i.e. https://example.com/) is/are served."
+        );
+        println!("If you have more than one webroot, please use the multi-solver option instead.");
+        let webroot = CustomType::<String>::new(
+            "Enter the directory path to your webserver's root directory:",
+        )
+        .with_validator(|path: &String| {
+            Ok(match std::fs::exists(path) {
+                Ok(true) => Validation::Valid,
+                Ok(false) => {
+                    Validation::Invalid(format!("Path {path} is not a valid path on-disk").into())
+                }
+                Err(e) => Validation::Invalid(
+                    format!("Failed to determine if {path} exists on-disk: {e:#}").into(),
+                ),
+            })
+        })
+        .with_help_message("Enter a directory path")
+        .prompt()
+        .context("No webroot entered")?;
+        let webroot = PathBuf::from(webroot);
+        Ok(DomainsWithSolverConfiguration {
+            domains,
+            config: SolverConfiguration::Webroot(WebrootSolverConfiguration { webroot }),
+            solver_name: None,
+        })
+    }
+
+    fn build_from_command_line(
+        &self,
+        cmd_line_config: CommandLineSolverConfiguration,
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        let webroot_command = WebrootCommand::from_arg_matches(&cmd_line_config.matches)
+            .context("Failed to parse webroot command line")?;
+        Ok(DomainsWithSolverConfiguration {
+            domains: cmd_line_config.base.domains.into_iter().collect(),
+            config: SolverConfiguration::Webroot(WebrootSolverConfiguration {
+                webroot: webroot_command.webroot,
+            }),
+            solver_name: None,
+        })
+    }
+
+    fn get_command_line(&self) -> Command {
+        WebrootCommand::command()
+    }
+}
+
 pub static CHALLENGE_SOLVER_REGISTRY: LazyLock<Vec<Box<dyn SolverConfigBuilder>>> =
     LazyLock::new(|| {
         let mut builders: Vec<Box<dyn SolverConfigBuilder>> = vec![
             NullSolverBuilder::new(),
             ChallengeTestHttpBuilder::new(),
             MagicHttpBuilder::new(),
+            WebrootBuilder::new(),
         ];
         builders.sort_by_key(|b| b.preference());
         builders
