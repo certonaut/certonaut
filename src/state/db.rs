@@ -1,6 +1,6 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::{ConnectOptions, Executor};
 use std::path::Path;
@@ -78,6 +78,8 @@ impl crate::state::Database {
         cert_id: &str,
         since: &OffsetDateTime,
     ) -> anyhow::Result<Vec<external::Renewal>> {
+        // TODO: There's a minor bug here where the timestamp filtering doesn't work correctly with < second precision
+        // because we actually store a variable number of fractional seconds, which doesn't compare lexicographically
         let renewals = sqlx::query_as!(
             internal::Renewal,
             "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2 ORDER BY id;",
@@ -297,6 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_latest_renewals_with_multiple_renewals() {
+        let epoch = OffsetDateTime::from_unix_timestamp(0).unwrap();
         let db = open_db().await;
         let results = [
             Ok(()),
@@ -306,19 +309,33 @@ mod tests {
         let cert_name = "cert_1";
 
         db.add_new_renewal(cert_name, &results[0]).await.unwrap();
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let insert_time = db
+            .get_latest_renewals(cert_name, &epoch)
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .timestamp;
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Ensure that the system time has actually moved forward... *sigh*, clock issues are fun...
+            if OffsetDateTime::now_utc() - Duration::from_secs(1) >= insert_time {
+                break;
+            }
+        }
         for result in results.iter().skip(1) {
             db.add_new_renewal(cert_name, result).await.unwrap();
         }
 
         let latest_renewals = db
-            .get_latest_renewals(
-                cert_name,
-                &OffsetDateTime::now_utc().sub(Duration::from_millis(900)),
-            )
+            .get_latest_renewals(cert_name, &insert_time.add(time::Duration::seconds(1)))
             .await
             .unwrap();
-        assert_eq!(latest_renewals.len(), 2);
+        assert_eq!(
+            latest_renewals.len(),
+            2,
+            "Unexpected num of renewals, found {latest_renewals:?}, insert_time {insert_time}"
+        );
         assert_eq!(
             latest_renewals[0].outcome,
             RenewalOutcome::AuthorizationFailure("Error: Failure 1".into())
