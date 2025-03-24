@@ -434,17 +434,17 @@ impl AcmeIssuerWithAccount<'_> {
                     );
                     window.end = cert.validity.not_after;
                 }
-                let start_unix = window.start.unix_timestamp();
-                let end_unix = window.end.unix_timestamp();
+                let start_unix = window.start.unix_timestamp_nanos();
+                let end_unix = window.end.unix_timestamp_nanos();
                 if start_unix >= end_unix {
                     return Err(acme::error::Error::ProtocolViolation(
                         "Window end time is at or after the start time",
                     ))
-                    .context("Determining ARI window");
+                        .context("Determining ARI window");
                 }
                 let mut rng = rand::rng();
                 let random_unix = rng.random_range(start_unix..=end_unix);
-                let random_time = ::time::OffsetDateTime::from_unix_timestamp(random_unix)
+                let random_time = ::time::OffsetDateTime::from_unix_timestamp_nanos(random_unix)
                     .context("Determining ARI window: Invalid time range provided by server")?;
                 debug!("Determined ARI random renewal time @ {random_time}");
                 Ok(Some(RenewalInformation {
@@ -475,7 +475,8 @@ mod tests {
     use super::*;
     use crate::acme::client::RenewalResponse;
     use crate::acme::object::{
-        Authorization, Challenge, Directory, HttpChallenge, RenewalInfo, SuggestedWindow, Token,
+        Authorization, Challenge, Directory, HttpChallenge, Metadata, RenewalInfo, SuggestedWindow,
+        Token,
     };
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
@@ -521,7 +522,7 @@ mod tests {
             new_authz: None,
             revoke_cert: test_url(),
             key_change: test_url(),
-            renewal_info: None,
+            renewal_info: Some(test_url()),
             meta: None,
         });
         let fake_directory = Box::leak::<'static>(fake_directory);
@@ -716,7 +717,7 @@ mod tests {
         let ari_start = now_offset - time::Duration::seconds(1);
         let ari_end = now_offset + time::Duration::seconds(1);
         let renewal_response = Ok(RenewalResponse {
-            retry_after: now_system.clone(),
+            retry_after: now_system,
             renewal_info: RenewalInfo {
                 suggested_window: SuggestedWindow {
                     start: ari_start,
@@ -730,25 +731,27 @@ mod tests {
             .once()
             .then_return(renewal_response);
         let issuer = setup_fake_issuer(mock_client)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
 
-        let renewal_info = issuer_with_account
+        let renewal_info = issuer
             .get_renewal_info("my-cert".to_string(), &fake_cert)
             .await?
             .expect("Must return RenewalInformation");
 
         assert!(
             renewal_info.renewal_time >= ari_start,
-            "Renewal time can not be before ARI window start"
+            "Renewal time {} can not be before ARI window start {ari_start}",
+            renewal_info.renewal_time
         );
         assert!(
             renewal_info.renewal_time <= ari_end,
-            "Renewal time can not be after ARI window end"
+            "Renewal time {} can not be after ARI window end {ari_end}",
+            renewal_info.renewal_time
         );
         assert_eq!(renewal_info.cert_id, "my-cert");
         assert!(
             renewal_info.fetched_at >= now_offset,
-            "fetched_at cannot be before test time (did the system clock go backwards during test?)"
+            "fetched_at {} cannot be before test time {now_offset} (did the system clock go backwards during test?)",
+            renewal_info.fetched_at
         );
         assert_eq!(
             renewal_info.next_update, now_system,
@@ -766,9 +769,8 @@ mod tests {
             .once()
             .then_return(renewal_response);
         let issuer = setup_fake_issuer(mock_client)?;
-        let issuer_with_account = issuer.with_account("fake").unwrap();
 
-        let renewal_info = issuer_with_account
+        let renewal_info = issuer
             .get_renewal_info("my-cert".to_string(), &fake_cert)
             .await?;
 
