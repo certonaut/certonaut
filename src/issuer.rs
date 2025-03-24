@@ -442,14 +442,12 @@ impl AcmeIssuerWithAccount<'_> {
                     // TODO: Preflight checks? By us or by solver?
 
                     // Validation
-                    client
+                    let maybe_err = client
                         .validate_challenge(&self.account.jwk, &chosen_challenge.url)
                         .await
                         .context(format!(
                             "Error validating {challenge_type} challenge for {id} with challenge solver {solver_name_long}"
-                        ))?;
-
-                    info!("Successfully validated challenge for {id}");
+                        ));
 
                     // Cleanup
                     if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
@@ -457,6 +455,9 @@ impl AcmeIssuerWithAccount<'_> {
                             "Challenge solver {solver_name_long} for {id} encountered an error during cleanup: {e:#}"
                         );
                     }
+
+                    let _validated_challenge = maybe_err?;
+                    info!("Successfully validated challenge for {id}");
                 }
                 AuthorizationStatus::Invalid => {
                     let id = &authz.identifier;
