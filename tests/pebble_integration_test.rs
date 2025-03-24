@@ -79,6 +79,7 @@ async fn pebble_e2e_test() -> anyhow::Result<()> {
             None,
             authorizers,
             None,
+            None,
         )
         .await?;
     Ok(())
@@ -172,6 +173,8 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
         Identifier::from(test_host),
         certonaut::magic::MagicHttpSolver::new(5002),
     )];
-    let _cert = issuer.issue(&new_key, None, authorizers, None).await?;
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
     Ok(())
 }

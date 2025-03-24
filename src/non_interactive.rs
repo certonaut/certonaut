@@ -1,3 +1,4 @@
+use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
     IssuerAddCommand, IssuerRemoveCommand,
@@ -7,9 +8,8 @@ use crate::config::{
     ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
-use crate::CRATE_NAME;
 use crate::{Certonaut, NewAccountOptions};
-use anyhow::{bail, Context, Error};
+use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;
@@ -26,7 +26,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
 
     pub async fn noninteractive_issuance(&mut self, issue_cmd: IssueCommand) -> Result<(), Error> {
         println!("{CRATE_NAME} non-interactive certificate issuance");
-        let config = self.build_cert_config(issue_cmd)?;
+        let config = self.build_cert_config(issue_cmd).await?;
         self.client.issue_new(config).await
     }
 
@@ -150,7 +150,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         Ok(())
     }
 
-    fn build_cert_config(
+    async fn build_cert_config(
         &mut self,
         issue_cmd: IssueCommand,
     ) -> Result<CertificateConfiguration, Error> {
@@ -194,6 +194,9 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             self.client
                 .choose_cert_name_from_domains(domains_and_solvers.domains.keys())
         };
+        issuer
+            .validate_profile(issue_cmd.advanced.profile.as_ref())
+            .await?;
         Ok(CertificateConfiguration {
             display_name: cert_name,
             auto_renew: true,

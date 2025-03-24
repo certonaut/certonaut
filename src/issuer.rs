@@ -14,9 +14,11 @@ use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
 use crate::{acme, new_acme_client, AcmeAccount, Authorizer};
 use anyhow::{anyhow, bail, Context, Error};
+use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::time::Duration;
 use time::error::ConversionRange;
 use tokio::sync::OnceCell;
@@ -102,6 +104,100 @@ impl AcmeIssuer {
     pub fn remove_account(&mut self, account_id: &str) -> Option<AcmeAccount> {
         self.accounts.remove(account_id)
     }
+
+    pub async fn get_renewal_info(
+        &self,
+        cert_id: String,
+        cert: &ParsedX509Certificate,
+    ) -> anyhow::Result<Option<RenewalInformation>> {
+        let Some(renewal_identifier) = &cert.acme_renewal_identifier else {
+            let serial = &cert.serial;
+            debug!(
+                "Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
+            );
+            return Ok(None);
+        };
+        let client = self.client().await?;
+        match client.get_renewal_info(renewal_identifier).await {
+            Ok(renewal_info) => {
+                debug!("ARI server response: {renewal_info}");
+                let now = ::time::OffsetDateTime::now_utc();
+                if let Some(explanation_url) = renewal_info.renewal_info.explanation_url {
+                    info!(
+                        "The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
+                    );
+                    info!("{explanation_url}");
+                }
+                let mut window = renewal_info.renewal_info.suggested_window;
+                if window.end > cert.validity.not_after {
+                    warn!(
+                        "The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
+                    );
+                    window.end = cert.validity.not_after;
+                }
+                let start_unix = window.start.unix_timestamp_nanos();
+                let end_unix = window.end.unix_timestamp_nanos();
+                if start_unix >= end_unix {
+                    return Err(acme::error::Error::ProtocolViolation(
+                        "Window end time is at or after the start time",
+                    ))
+                    .context("Determining ARI window");
+                }
+                let mut rng = rand::rng();
+                let random_unix = rng.random_range(start_unix..=end_unix);
+                let random_time = ::time::OffsetDateTime::from_unix_timestamp_nanos(random_unix)
+                    .context("Determining ARI window: Invalid time range provided by server")?;
+                debug!("Determined ARI random renewal time @ {random_time}");
+                Ok(Some(RenewalInformation {
+                    cert_id,
+                    fetched_at: now,
+                    renewal_time: random_time,
+                    next_update: renewal_info.retry_after.into(),
+                }))
+            }
+            Err(acme::error::Error::FeatureNotSupported) => {
+                let ca = &self.config.name;
+                debug!(
+                    "CA {ca} does not support ACME Renewal Information, can not fetch online renewal information"
+                );
+                Ok(None)
+            }
+            Err(e) => {
+                Err(Error::new(e).context("Failed to fetch ACME Renewal Information from CA"))
+            }
+        }
+    }
+
+    pub async fn get_profiles(&self) -> anyhow::Result<&HashMap<String, String>> {
+        static EMPTY_HASHMAP: LazyLock<HashMap<String, String>> = LazyLock::new(HashMap::new);
+        let client = self.client().await?;
+        let profiles = client
+            .get_directory()
+            .meta
+            .as_ref()
+            .map(|meta| &meta.profiles);
+        Ok(match profiles {
+            Some(profiles) => profiles,
+            None => &EMPTY_HASHMAP,
+        })
+    }
+
+    pub async fn validate_profile(&self, profile: Option<&String>) -> anyhow::Result<()> {
+        let ca = &self.config.name;
+        if let Some(profile) = profile {
+            let profiles = self.get_profiles().await?;
+            if profiles.get(profile).is_none() {
+                let mut options = profiles.keys().join(", ");
+                if options.is_empty() {
+                    options = "(the CA does not offer any profiles)".into();
+                }
+                bail!(
+                    "{profile} is not a profile currently offered by CA {ca}. Available profiles are {options}"
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +240,7 @@ impl AcmeIssuerWithAccount<'_> {
         cert_lifetime: Option<Duration>,
         authorizers: Vec<Authorizer>,
         replaces: Option<AcmeRenewalIdentifier>,
+        profile: Option<String>,
     ) -> IssueResult<DownloadedCertificate> {
         let identifiers: Vec<_> = authorizers
             .iter()
@@ -171,6 +268,7 @@ impl AcmeIssuerWithAccount<'_> {
             not_before,
             not_after,
             replaces,
+            profile,
         };
         self.order_and_authorize(csr, request, authorizers).await
     }
@@ -409,62 +507,11 @@ impl AcmeIssuerWithAccount<'_> {
         cert_id: String,
         cert: &ParsedX509Certificate,
     ) -> anyhow::Result<Option<RenewalInformation>> {
-        let Some(renewal_identifier) = &cert.acme_renewal_identifier else {
-            let serial = &cert.serial;
-            debug!(
-                "Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
-            );
-            return Ok(None);
-        };
-        let client = self.client().await?;
-        match client.get_renewal_info(renewal_identifier).await {
-            Ok(renewal_info) => {
-                debug!("ARI server response: {renewal_info}");
-                let now = ::time::OffsetDateTime::now_utc();
-                if let Some(explanation_url) = renewal_info.renewal_info.explanation_url {
-                    info!(
-                        "The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
-                    );
-                    info!("{explanation_url}");
-                }
-                let mut window = renewal_info.renewal_info.suggested_window;
-                if window.end > cert.validity.not_after {
-                    warn!(
-                        "The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
-                    );
-                    window.end = cert.validity.not_after;
-                }
-                let start_unix = window.start.unix_timestamp_nanos();
-                let end_unix = window.end.unix_timestamp_nanos();
-                if start_unix >= end_unix {
-                    return Err(acme::error::Error::ProtocolViolation(
-                        "Window end time is at or after the start time",
-                    ))
-                        .context("Determining ARI window");
-                }
-                let mut rng = rand::rng();
-                let random_unix = rng.random_range(start_unix..=end_unix);
-                let random_time = ::time::OffsetDateTime::from_unix_timestamp_nanos(random_unix)
-                    .context("Determining ARI window: Invalid time range provided by server")?;
-                debug!("Determined ARI random renewal time @ {random_time}");
-                Ok(Some(RenewalInformation {
-                    cert_id,
-                    fetched_at: now,
-                    renewal_time: random_time,
-                    next_update: renewal_info.retry_after.into(),
-                }))
-            }
-            Err(acme::error::Error::FeatureNotSupported) => {
-                let ca = &self.issuer.config.name;
-                debug!(
-                    "CA {ca} does not support ACME Renewal Information, can not fetch online renewal information"
-                );
-                Ok(None)
-            }
-            Err(e) => {
-                Err(Error::new(e).context("Failed to fetch ACME Renewal Information from CA"))
-            }
-        }
+        self.issuer.get_renewal_info(cert_id, cert).await
+    }
+
+    pub async fn get_profiles(&self) -> anyhow::Result<&HashMap<String, String>> {
+        self.issuer.get_profiles().await
     }
 }
 
@@ -511,6 +558,8 @@ mod tests {
             authorizations,
             finalize: test_url().join("finalize").unwrap(),
             certificate,
+            replaces: None,
+            profile: None,
         }
     }
 
@@ -608,6 +657,7 @@ mod tests {
                     NullSolver::default(),
                 )],
                 None,
+                None,
             )
             .await?;
 
@@ -702,6 +752,117 @@ mod tests {
                     NullSolver::default(),
                 )],
                 None,
+                None,
+            )
+            .await?;
+
+        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_issue_with_ari_replaces() -> Result<(), Error> {
+        let order_url = test_url().join("cached-auth-order")?;
+        let fresh_order = Ok((
+            order_url.clone(),
+            create_order(OrderStatus::Ready, vec![], None, None),
+        ));
+        let finalized_order = Ok(create_order(
+            OrderStatus::Valid,
+            vec![],
+            None,
+            Some(test_url().join("get-cert")?),
+        ));
+        let certificate = Ok(DownloadedCertificate {
+            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            alternate_chains: vec![],
+        });
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let new_order_request = NewOrderRequest {
+            identifiers: vec![Identifier::from_str("example.com")?.into()],
+            not_before: None,
+            not_after: None,
+            replaces: Some(AcmeRenewalIdentifier::new(&[0xDE, 0xAD], &[0xBE, 0xEF])),
+            profile: None,
+        };
+        let mut mock_client = AcmeClient::faux();
+        faux::when!(mock_client.new_order(_, new_order_request))
+            .once()
+            .then_return(fresh_order);
+        faux::when!(mock_client.finalize_order)
+            .once()
+            .then_return(finalized_order);
+        faux::when!(mock_client.download_certificate(_, test_url().join("get-cert")?))
+            .once()
+            .then_return(certificate);
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let cert = issuer_with_account
+            .issue(
+                &keypair,
+                None,
+                vec![Authorizer::new(
+                    Identifier::from_str("example.com")?,
+                    NullSolver::default(),
+                )],
+                Some(AcmeRenewalIdentifier::new(&[0xDE, 0xAD], &[0xBE, 0xEF])),
+                None,
+            )
+            .await?;
+
+        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_issue_with_profile() -> Result<(), Error> {
+        let order_url = test_url().join("cached-auth-order")?;
+        let fresh_order = Ok((
+            order_url.clone(),
+            create_order(OrderStatus::Ready, vec![], None, None),
+        ));
+        let finalized_order = Ok(create_order(
+            OrderStatus::Valid,
+            vec![],
+            None,
+            Some(test_url().join("get-cert")?),
+        ));
+        let certificate = Ok(DownloadedCertificate {
+            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            alternate_chains: vec![],
+        });
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let new_order_request = NewOrderRequest {
+            identifiers: vec![Identifier::from_str("example.com")?.into()],
+            not_before: None,
+            not_after: None,
+            replaces: None,
+            profile: Some("profile-test".into()),
+        };
+        let mut mock_client = AcmeClient::faux();
+        faux::when!(mock_client.new_order(_, new_order_request))
+            .once()
+            .then_return(fresh_order);
+        faux::when!(mock_client.finalize_order)
+            .once()
+            .then_return(finalized_order);
+        faux::when!(mock_client.download_certificate(_, test_url().join("get-cert")?))
+            .once()
+            .then_return(certificate);
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let cert = issuer_with_account
+            .issue(
+                &keypair,
+                None,
+                vec![Authorizer::new(
+                    Identifier::from_str("example.com")?,
+                    NullSolver::default(),
+                )],
+                None,
+                Some("profile-test".into()),
             )
             .await?;
 
@@ -778,6 +939,81 @@ mod tests {
             renewal_info, None,
             "No RenewalInformation should be returned if the CA does not support the feature"
         );
+        Ok(())
+    }
+
+    fn setup_issuer_with_profiles() -> anyhow::Result<(HashMap<String, String>, AcmeIssuer)> {
+        let mut mock_client = AcmeClient::faux();
+        let expected_profiles: HashMap<_, _> = [
+            ("first-profile", "this is the first profile"),
+            ("second-profile", "https://example.com/second-profile"),
+        ]
+        .into_iter()
+        .map(|(name, description)| (name.to_string(), description.to_string()))
+        .collect();
+        let directory = Box::new(Directory {
+            new_nonce: test_url(),
+            new_account: test_url(),
+            new_order: test_url(),
+            new_authz: None,
+            revoke_cert: test_url(),
+            key_change: test_url(),
+            renewal_info: None,
+            meta: Some(Metadata {
+                terms_of_service: None,
+                website: None,
+                caa_identities: vec![],
+                external_account_required: false,
+                profiles: expected_profiles.clone(),
+            }),
+        });
+        let directory = Box::leak::<'static>(directory);
+        // SAFETY: lifetime of directory is 'static
+        unsafe {
+            faux::when!(mock_client.get_directory).then_unchecked_return(directory);
+        }
+        let issuer = AcmeIssuer::try_new(CertificateAuthorityConfigurationWithAccounts {
+            inner: CertificateAuthorityConfiguration {
+                name: "test".to_string(),
+                identifier: "test".to_string(),
+                acme_directory: test_url(),
+                public: false,
+                testing: false,
+                default: false,
+            },
+            accounts: vec![],
+        })?;
+        issuer.override_client(mock_client)?;
+        Ok((expected_profiles, issuer))
+    }
+
+    #[tokio::test]
+    async fn test_get_profiles() -> anyhow::Result<()> {
+        let (expected_profiles, issuer) = setup_issuer_with_profiles()?;
+
+        let profiles = issuer.get_profiles().await?;
+
+        assert_eq!(profiles, &expected_profiles,);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_validate_profile() -> anyhow::Result<()> {
+        let (expected_profiles, issuer) = setup_issuer_with_profiles()?;
+
+        issuer
+            .validate_profile(Some(expected_profiles.keys().next().unwrap()))
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_validate_profile_with_nonexistent_profile() -> anyhow::Result<()> {
+        let (_, issuer) = setup_issuer_with_profiles()?;
+
+        issuer
+            .validate_profile(Some(&"this-does-not-exist".into()))
+            .await
+            .expect_err("Profile should not exist, validation should fail");
         Ok(())
     }
 }

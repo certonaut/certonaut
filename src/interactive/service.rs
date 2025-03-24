@@ -9,8 +9,8 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
-    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, CRATE_NAME, Certonaut, DomainSolverMap,
-    NewAccountOptions, build_domain_solver_maps,
+    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
+    DomainSolverMap, NewAccountOptions, build_domain_solver_maps,
 };
 use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
@@ -52,8 +52,16 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
             cert_name.to_string()
         } else {
-            self.client.choose_cert_name_from_domains(domain_solver_map.domains.keys())
+            self.client
+                .choose_cert_name_from_domains(domain_solver_map.domains.keys())
         };
+        let issuer = self
+            .client
+            .get_ca(&initial_issuer)
+            .context(format!("CA {initial_issuer} not found"))?;
+        issuer
+            .validate_profile(issue_cmd.advanced.profile.as_ref())
+            .await?;
         let initial_config = CertificateConfiguration {
             display_name: cert_name,
             auto_renew: true,
@@ -303,12 +311,23 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ClosureEditor::new(
                 "Domains",
                 &|config: &CertificateConfiguration| {
-                    config.domains_and_solvers.domains.keys().sorted().join(", ").into()
+                    config
+                        .domains_and_solvers
+                        .domains
+                        .keys()
+                        .sorted()
+                        .join(", ")
+                        .into()
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let sorted_domains: Vec<_> =
-                            config.domains_and_solvers.domains.keys().cloned().sorted().collect();
+                        let sorted_domains: Vec<_> = config
+                            .domains_and_solvers
+                            .domains
+                            .keys()
+                            .cloned()
+                            .sorted()
+                            .collect();
                         let new_domains = Self::user_ask_cert_domains(sorted_domains.iter())?;
                         if new_domains.iter().sorted().eq(sorted_domains.iter()) {
                             // No change
@@ -354,7 +373,13 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let domains = config.domains_and_solvers.domains.keys().sorted().cloned().collect();
+                        let domains = config
+                            .domains_and_solvers
+                            .domains
+                            .keys()
+                            .sorted()
+                            .cloned()
+                            .collect();
                         config.domains_and_solvers = Self::user_ask_solvers(domains)?;
                         Ok(config)
                     }
@@ -521,7 +546,6 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             "Select a solver to authenticate all identifiers:",
             solver_options,
         )
-        // TODO: Allow to skip prompt in case we already have solvers (no change)
         .prompt()
         .context("No answer to solver prompt")?
         {
@@ -533,16 +557,46 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         build_domain_solver_maps(domains_with_solvers)
     }
 
-    #[allow(clippy::unused_async)]
     async fn user_ask_cert_profile(
-        _issuer: &AcmeIssuerWithAccount<'_>,
-        _current: Option<String>,
+        issuer: &AcmeIssuerWithAccount<'_>,
+        current: Option<String>,
     ) -> Result<Option<String>, Error> {
-        // let client = issuer.client().await?;
-        // if let Some(_meta) = &client.get_directory().meta {
-        //     // TODO: Check profiles, allow selecting one
-        // }
-        Ok(None)
+        let profiles = issuer.get_profiles().await?;
+        if profiles.is_empty() {
+            println!(
+                "This CA does not support the ACME profiles extension. No profile can be selected."
+            );
+            return Ok(None);
+        }
+        let mut profile_options = Vec::with_capacity(profiles.len() + 1);
+        for (name, description) in profiles {
+            profile_options.push(AcmeProfile::new(name.clone(), description.clone()));
+        }
+        profile_options.push(AcmeProfile::new(
+            "No profile".into(),
+            "Choose this option to not use any of the above".into(),
+        ));
+        println!(
+            "This CA offers several predefined profiles that affect the characteristics of the certificate."
+        );
+        println!(
+            "Consult the CA documentation on what these profiles do exactly, and which profile to choose."
+        );
+        let selected_profile = Select::new("Choose a profile", profile_options)
+            .with_help_message("↑↓ to move, enter to select, ESC to use current setting")
+            .prompt_skippable()
+            .context("No profile selected")?
+            .map(|profile| profile.name);
+        Ok(match selected_profile {
+            None => current,
+            Some(selected) => {
+                if selected == "No profile" {
+                    None
+                } else {
+                    Some(selected)
+                }
+            }
+        })
     }
 
     fn user_ask_cert_lifetime(current: Option<u64>) -> Result<Option<u64>, Error> {

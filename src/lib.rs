@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    config_directory, AccountConfiguration,
-    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, Configuration, ConfigurationManager, DomainSolverMap, Identifier,
-    InstallerConfiguration, MainConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration,
+    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
+    Configuration, ConfigurationManager, DomainSolverMap, Identifier, InstallerConfiguration,
+    MainConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -18,14 +18,14 @@ use crate::crypto::jws::JsonWebKey;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::pebble::pebble_root;
-use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
+use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::ops::Neg;
 use std::time::Duration;
@@ -178,6 +178,7 @@ fn modify_certificate_config(
         cert.advanced.lifetime_seconds = Some(lifetime.as_secs());
     }
     if let Some(profile) = modify.advanced.profile {
+        // TODO: Profile validation
         cert.advanced.profile = Some(profile);
     }
     cert.advanced.reuse_key = modify.advanced.reuse_key;
@@ -199,6 +200,26 @@ fn cert_id_from_display_name(display_name: &str) -> String {
         }
     }
     id_str
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcmeProfile {
+    name: String,
+    description: String,
+}
+
+impl AcmeProfile {
+    pub fn new(name: String, description: String) -> Self {
+        Self { name, description }
+    }
+}
+
+impl Display for AcmeProfile {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let name = &self.name;
+        let description = &self.description;
+        write!(f, "{name}: {description}")
+    }
 }
 
 pub struct NewAccountOptions {
@@ -520,7 +541,13 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .map(|lifetime| Some(Duration::from_secs(lifetime)))
             .unwrap_or_default();
         let cert = issuer
-            .issue(&cert_key, lifetime, authorizers, None)
+            .issue(
+                &cert_key,
+                lifetime,
+                authorizers,
+                None,
+                cert_config.advanced.profile.clone(),
+            )
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
         println!(
@@ -577,7 +604,13 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 .unwrap_or_default();
             let renewal_identifier = old_cert.acme_renewal_identifier.clone();
             let issue_result = issuer
-                .issue(&cert_key, lifetime, authorizers, renewal_identifier)
+                .issue(
+                    &cert_key,
+                    lifetime,
+                    authorizers,
+                    renewal_identifier,
+                    cert_config.advanced.profile.clone(),
+                )
                 .await;
             if let Ok(new_cert) = &issue_result {
                 self.config.save_certificate_and_config(

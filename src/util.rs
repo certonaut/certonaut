@@ -199,6 +199,62 @@ pub(crate) mod serde_helper {
             })
         }
     }
+
+    pub(crate) mod renewal_identifier_serializer {
+        use crate::acme::object::AcmeRenewalIdentifier;
+        use serde::de::{Error, Visitor};
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+        use std::fmt::Formatter;
+
+        impl Serialize for AcmeRenewalIdentifier {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.to_string())
+            }
+        }
+
+        pub(crate) struct AcmeRenewalIdentifierVisitor;
+
+        impl<'de> Visitor<'de> for AcmeRenewalIdentifierVisitor {
+            type Value = AcmeRenewalIdentifier;
+
+            fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                AcmeRenewalIdentifier::try_from_string_raw(v).map_err(|e| Error::custom(e))
+            }
+
+            fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                AcmeRenewalIdentifier::try_from_string_raw(v).map_err(|e| Error::custom(e))
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                AcmeRenewalIdentifier::try_from_string_raw(&v).map_err(|e| Error::custom(e))
+            }
+        }
+
+        impl<'de> Deserialize<'de> for AcmeRenewalIdentifier {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_str(AcmeRenewalIdentifierVisitor)
+            }
+        }
+    }
 }
 
 pub fn format_hex_with_colon<T: AsRef<[u8]>>(bytes: T) -> String {
