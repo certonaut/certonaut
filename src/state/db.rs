@@ -314,7 +314,7 @@ mod tests {
         let latest_renewals = db
             .get_latest_renewals(
                 cert_name,
-                &OffsetDateTime::now_utc().sub(Duration::from_millis(999)),
+                &OffsetDateTime::now_utc().sub(Duration::from_millis(900)),
             )
             .await
             .unwrap();
