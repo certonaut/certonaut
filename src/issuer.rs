@@ -117,7 +117,7 @@ impl AcmeIssuer {
             );
             return Ok(None);
         };
-        let client = self.client().await?;
+        let client = self.client().await.context(format!("Failed to fetch ACME Renewal Information for {cert_id} from CA"))?;
         match client.get_renewal_info(renewal_identifier).await {
             Ok(renewal_info) => {
                 debug!("ARI server response: {renewal_info}");
@@ -163,7 +163,7 @@ impl AcmeIssuer {
                 Ok(None)
             }
             Err(e) => {
-                Err(Error::new(e).context("Failed to fetch ACME Renewal Information from CA"))
+                Err(Error::new(e).context(format!("Failed to fetch ACME Renewal Information for cert {cert_id} from CA")))
             }
         }
     }

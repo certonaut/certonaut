@@ -190,6 +190,7 @@ mod tests {
     use crate::cert::{ParsedX509Certificate, Validity, load_certificates_from_file};
     use crate::config::Identifier;
     use std::path::Path;
+    use std::str::FromStr;
     use time::macros::datetime;
     use x509_parser::num_bigint::BigUint;
 
@@ -205,7 +206,7 @@ mod tests {
             },
             subject_alternative_names: ["extended.subdomain", "my.first.cert", "www.my.first.cert"]
                 .into_iter()
-                .map(|s| Identifier::from(s.to_string()))
+                .map(|s| Identifier::from_str(s).unwrap())
                 .map(Into::into)
                 .collect(),
             acme_renewal_identifier: Some(AcmeRenewalIdentifier::new(

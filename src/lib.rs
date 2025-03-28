@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
+use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
-    Configuration, ConfigurationManager, DomainSolverMap, Identifier, InstallerConfiguration,
-    MainConfiguration, config_directory,
+    config_directory, AccountConfiguration,
+    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
+    ConfigBackend, Configuration, ConfigurationManager, DomainSolverMap, Identifier,
+    InstallerConfiguration, MainConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -18,10 +18,10 @@ use crate::crypto::jws::JsonWebKey;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::pebble::pebble_root;
-use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
+use crate::state::Database;
 use crate::time::humanize_duration;
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -39,6 +39,7 @@ pub mod cli;
 pub mod cmd_runner;
 pub mod config;
 pub mod crypto;
+pub mod dns;
 pub mod error;
 pub mod interactive;
 pub mod issuer;

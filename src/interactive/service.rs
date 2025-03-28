@@ -1,4 +1,4 @@
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
@@ -7,12 +7,12 @@ use crate::config::{
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
-use crate::time::{ParsedDuration, humanize_duration};
+use crate::time::{humanize_duration, ParsedDuration};
 use crate::{
-    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
-    DomainSolverMap, NewAccountOptions, build_domain_solver_maps,
+    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, Certonaut,
+    DomainSolverMap, NewAccountOptions, CRATE_NAME,
 };
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -744,9 +744,9 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         if domains.len() == 1 {
             let domain = domains.iter().next().unwrap(/* Infallible */);
             if domain.as_str().starts_with("www.") {
-                let base_name = Identifier::from(
-                    domain.as_str().strip_prefix("www.").unwrap(/* Infallible */).to_string(),
-                );
+                let base_name = Identifier::from_str(
+                    domain.as_str().strip_prefix("www.").unwrap(/* Infallible */),
+                )?;
                 let add_base_name = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the base domain to your certificate?", base_name.to_string().green().on_black()))
                     .with_default(false)
                     .prompt_skippable()?.unwrap_or(false);
@@ -754,7 +754,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
                     domains.insert(base_name);
                 }
             } else {
-                let www_name = Identifier::from("www.".to_string() + domain.as_str());
+                let www_name = Identifier::from_str(&("www.".to_string() + domain.as_str()))?;
                 let add_www = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the www subdomain to your certificate?", www_name.to_string().green().on_black()))
                     .with_default(false)
                     .prompt_skippable()?.unwrap_or(false);
@@ -1122,7 +1122,7 @@ web_index = \"/var/www/html\""
                 .map(ToString::to_string)
                 .ok_or(anyhow!("Domain value for key {domain} must be a string"))?;
             domains.push(IdentifierConfiguration {
-                domain: domain.to_string(),
+                domain: Identifier::from_str(domain)?,
                 solver_identifier,
             });
         }
@@ -1143,7 +1143,7 @@ web_index = \"/var/www/html\""
         Ok(DomainSolverMap {
             domains: domains
                 .into_iter()
-                .map(|ic| (Identifier::from(ic.domain), ic.solver_identifier))
+                .map(|ic| (ic.domain, ic.solver_identifier))
                 .collect(),
             solvers,
         })

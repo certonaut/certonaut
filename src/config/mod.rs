@@ -4,15 +4,15 @@ use crate::challenge_solver::{ChallengeSolver, NullSolver, WebrootSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
+use crate::dns::name::DnsName;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::{acme, CRATE_NAME};
+use crate::{acme, dns, CRATE_NAME};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::ErrorKind;
@@ -391,44 +391,50 @@ impl
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Identifier(String);
+#[serde(untagged)]
+pub enum Identifier {
+    Dns(DnsName),
+}
 
 impl Identifier {
     pub fn as_str(&self) -> &str {
-        &self.0
+        match self {
+            Identifier::Dns(name) => name.as_ascii(),
+        }
     }
 }
 
 impl FromStr for Identifier {
-    type Err = Infallible;
+    type Err = dns::name::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Identifier(s.to_string()))
+        Ok(Identifier::Dns(s.try_into()?))
     }
 }
 
 impl From<Identifier> for acme::object::Identifier {
     fn from(value: Identifier) -> Self {
-        acme::object::Identifier::from(value.0)
+        match value {
+            Identifier::Dns(name) => acme::object::Identifier::Dns {
+                value: name.as_ascii().to_string(),
+            },
+        }
     }
 }
 
 impl From<Identifier> for String {
     fn from(value: Identifier) -> Self {
-        value.0
-    }
-}
-
-impl From<String> for Identifier {
-    fn from(value: String) -> Self {
-        Identifier(value)
+        match value {
+            Identifier::Dns(name) => name.as_ascii().to_string(),
+        }
     }
 }
 
 impl Display for Identifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
+        match self {
+            Identifier::Dns(name) => Display::fmt(name, f),
+        }
     }
 }
 
@@ -441,7 +447,7 @@ pub struct AdvancedCertificateConfiguration {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentifierConfiguration {
-    pub domain: String,
+    pub domain: Identifier,
     #[serde(rename = "solver")]
     pub solver_identifier: String,
 }
