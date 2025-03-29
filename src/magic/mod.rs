@@ -1,8 +1,8 @@
 use crate::acme::object::{Identifier, InnerChallenge};
-use crate::challenge_solver::{ChallengeSolver, HttpChallengeParameters, KeyAuthorization};
+use crate::challenge_solver::{ChallengeSolver, HttpChallengeParameters};
 use crate::config::MagicHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use anyhow::{Error, bail};
+use anyhow::{bail, Error};
 use async_trait::async_trait;
 use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -77,18 +77,22 @@ impl ChallengeSolver for MagicHttpSolver {
         _identifier: &Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error> {
-        let params = HttpChallengeParameters {
-            token: challenge.get_token().clone(),
-            key_authorization: challenge.get_key_authorization(jwk),
-            challenge_port: self.challenge_port,
-        };
-        let cancellation_token = CancellationToken::new();
-        let task = deploy_challenge(params, cancellation_token.clone()).await?;
-        self.inner = Some(MagicHttpSolverChallengeData {
-            task,
-            cancellation: cancellation_token.drop_guard(),
-        });
-        Ok(())
+        if let InnerChallenge::Http(http_challenge) = challenge {
+            let params = HttpChallengeParameters {
+                token: http_challenge.get_token().clone(),
+                key_authorization: http_challenge.get_key_authorization(jwk),
+                challenge_port: self.challenge_port,
+            };
+            let cancellation_token = CancellationToken::new();
+            let task = deploy_challenge(params, cancellation_token.clone()).await?;
+            self.inner = Some(MagicHttpSolverChallengeData {
+                task,
+                cancellation: cancellation_token.drop_guard(),
+            });
+            Ok(())
+        } else {
+            bail!("Unsupported challenge type {}", challenge.get_type())
+        }
     }
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {

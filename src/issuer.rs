@@ -5,7 +5,6 @@ use crate::acme::object::{
     NewOrderRequest, Order, OrderStatus,
 };
 use crate::cert::{create_and_sign_csr, ParsedX509Certificate};
-use crate::challenge_solver::KeyAuthorization;
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };

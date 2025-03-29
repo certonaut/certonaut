@@ -1,9 +1,8 @@
-use crate::ChallengeSolver;
-use crate::acme::object::{Identifier, InnerChallenge, Token};
-use crate::challenge_solver::KeyAuthorization;
+use crate::acme::object::{HttpChallenge, Identifier, InnerChallenge, Token};
 use crate::config::PebbleHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use anyhow::{Error, bail};
+use crate::ChallengeSolver;
+use anyhow::{bail, Error};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -39,7 +38,7 @@ pub static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
 #[derive(Default)]
 pub struct ChallengeTestHttpSolver {
     http: reqwest::Client,
-    challenge: Option<InnerChallenge>,
+    challenge: Option<HttpChallenge>,
 }
 
 impl ChallengeTestHttpSolver {
@@ -71,20 +70,24 @@ impl ChallengeSolver for ChallengeTestHttpSolver {
         _identifier: &Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error> {
-        let token = challenge.get_token();
-        let authorization = challenge.get_key_authorization(jwk);
-        let response = self
-            .http
-            .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-http01").unwrap())
-            .json(&ChallTestHttpBody {
-                token,
-                content: Some(authorization),
-            })
-            .send()
-            .await?;
-        self.challenge = Some(challenge);
-        response.error_for_status()?;
-        Ok(())
+        if let InnerChallenge::Http(http_challenge) = challenge {
+            let token = http_challenge.get_token();
+            let authorization = http_challenge.get_key_authorization(jwk);
+            let response = self
+                .http
+                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-http01").unwrap())
+                .json(&ChallTestHttpBody {
+                    token,
+                    content: Some(authorization),
+                })
+                .send()
+                .await?;
+            self.challenge = Some(http_challenge);
+            response.error_for_status()?;
+            Ok(())
+        } else {
+            bail!("Unsupported challenge type {}", challenge.get_type())
+        }
     }
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
@@ -111,4 +114,79 @@ struct ChallTestHttpBody<'a> {
     token: &'a Token,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+}
+
+#[derive(Default)]
+pub struct ChallengeTestDnsSolver {
+    http: reqwest::Client,
+    identifier: Option<String>,
+}
+
+impl ChallengeTestDnsSolver {
+    pub fn new() -> Box<Self> {
+        Box::new(Self::default())
+    }
+}
+
+#[async_trait]
+impl ChallengeSolver for ChallengeTestDnsSolver {
+    fn long_name(&self) -> &'static str {
+        "pebble-challtestsrv dns-01 solver"
+    }
+
+    fn short_name(&self) -> &'static str {
+        "pebble-dns"
+    }
+
+    fn supports_challenge(&self, challenge: &InnerChallenge) -> bool {
+        matches!(challenge, InnerChallenge::Dns(_))
+    }
+
+    async fn deploy_challenge(
+        &mut self,
+        jwk: &JsonWebKey,
+        identifier: &Identifier,
+        challenge: InnerChallenge,
+    ) -> Result<(), Error> {
+        if let InnerChallenge::Dns(dns_challenge) = challenge {
+            let authorization = dns_challenge.get_key_authorization(jwk);
+            let host = format!("_acme-challenge.{identifier}.");
+            let response = self
+                .http
+                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("set-txt")?)
+                .json(&ChallTestDnsBody {
+                    host: host.clone(),
+                    value: Some(authorization),
+                })
+                .send()
+                .await?;
+            self.identifier = Some(host);
+            response.error_for_status()?;
+            Ok(())
+        } else {
+            bail!("Unsupported challenge type {}", challenge.get_type())
+        }
+    }
+
+    async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
+        if let Some(host) = self.identifier {
+            let response = self
+                .http
+                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("clear-txt")?)
+                .json(&ChallTestDnsBody { host, value: None })
+                .send()
+                .await?;
+            response.error_for_status()?;
+            Ok(())
+        } else {
+            bail!("No challenge to cleanup")
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ChallTestDnsBody {
+    host: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
 }

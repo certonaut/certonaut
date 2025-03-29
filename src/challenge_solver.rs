@@ -1,13 +1,16 @@
-use crate::acme::object::{InnerChallenge, Token};
+use crate::acme::object::{AlpnChallenge, DnsChallenge, HttpChallenge, InnerChallenge, Token};
 use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{
     MagicHttpSolverConfiguration, NullSolverConfiguration, PebbleHttpSolverConfiguration,
     SolverConfiguration, WebrootSolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
+use crate::crypto::{sha256, SHA256_LENGTH};
 use crate::{acme, config, magic};
 use anyhow::{bail, Context, Error};
 use async_trait::async_trait;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use clap::{value_parser, Arg, Command, CommandFactory, FromArgMatches, Parser};
 use inquire::validator::Validation;
 use inquire::CustomType;
@@ -18,14 +21,8 @@ use std::sync::LazyLock;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-pub trait KeyAuthorization {
-    fn get_type(&self) -> &str;
-    fn get_token(&self) -> &Token;
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String;
-}
-
-impl KeyAuthorization for InnerChallenge {
-    fn get_type(&self) -> &str {
+impl InnerChallenge {
+    pub fn get_type(&self) -> &str {
         match &self {
             InnerChallenge::Http(_) => "http-01",
             InnerChallenge::Dns(_) => "dns-01",
@@ -33,19 +30,29 @@ impl KeyAuthorization for InnerChallenge {
             InnerChallenge::Unknown => "unknown challenge type",
         }
     }
+}
 
-    fn get_token(&self) -> &Token {
-        match &self {
-            InnerChallenge::Http(http) => &http.token,
-            InnerChallenge::Dns(dns) => &dns.token,
-            InnerChallenge::Alpn(alpn) => &alpn.token,
-            InnerChallenge::Unknown => panic!("Unknown challenge cannot be authorized"),
-        }
+impl HttpChallenge {
+    pub fn get_token(&self) -> &Token {
+        &self.token
     }
 
-    fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
-        let token = self.get_token();
-        get_key_authorization(account_key, token)
+    pub fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
+        get_key_authorization(account_key, &self.token)
+    }
+}
+
+impl DnsChallenge {
+    pub fn get_key_authorization(&self, account_key: &JsonWebKey) -> String {
+        BASE64_URL_SAFE_NO_PAD.encode(sha256(
+            get_key_authorization(account_key, &self.token).as_bytes(),
+        ))
+    }
+}
+
+impl AlpnChallenge {
+    pub fn get_key_authorization(&self, account_key: &JsonWebKey) -> [u8; SHA256_LENGTH] {
+        sha256(get_key_authorization(account_key, &self.token).as_bytes())
     }
 }
 
@@ -147,27 +154,31 @@ impl ChallengeSolver for WebrootSolver {
         _identifier: &acme::object::Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error> {
-        let token = challenge.get_token();
-        let authorization = challenge.get_key_authorization(jwk);
-        let challenge_path = self.challenge_path(token);
-        if let Some(parent) = challenge_path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .context(format!("Failed to create directory {}", parent.display()))?;
-        }
-        let mut challenge_file = File::create(&challenge_path).await.context(format!(
-            "Failed to create challenge file {}",
-            challenge_path.display()
-        ))?;
-        challenge_file
-            .write_all(authorization.as_bytes())
-            .await
-            .context(format!(
-                "Writing to challenge file {} failed",
+        if let InnerChallenge::Http(http_challenge) = challenge {
+            let token = http_challenge.get_token();
+            let authorization = http_challenge.get_key_authorization(jwk);
+            let challenge_path = self.challenge_path(token);
+            if let Some(parent) = challenge_path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .context(format!("Failed to create directory {}", parent.display()))?;
+            }
+            let mut challenge_file = File::create(&challenge_path).await.context(format!(
+                "Failed to create challenge file {}",
                 challenge_path.display()
             ))?;
-        self.challenge_file = Some(challenge_path);
-        Ok(())
+            challenge_file
+                .write_all(authorization.as_bytes())
+                .await
+                .context(format!(
+                    "Writing to challenge file {} failed",
+                    challenge_path.display()
+                ))?;
+            self.challenge_file = Some(challenge_path);
+            Ok(())
+        } else {
+            bail!("Unsupported challenge type {}", challenge.get_type())
+        }
     }
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
