@@ -22,7 +22,7 @@ jobs:
     
     - name: Install deps
       run: |
-        sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
+        sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
 
     - name: Rust Cache
       uses: actions/cache@v4
@@ -52,7 +52,7 @@ jobs:
 
     - name: Install deps
       run: |
-        sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
+        sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
     - name: Download Pebble
       run: |
         git clone https://github.com/letsencrypt/pebble.git
