@@ -1,6 +1,6 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::{ConnectOptions, Executor};
 use std::path::Path;
@@ -136,11 +136,10 @@ impl crate::state::Database {
 impl Drop for crate::state::Database {
     fn drop(&mut self) {
         // FIXME: move to async drop when #![feature(async_drop))] is stable
-        futures::executor::block_on(async {
-            self.pool
-                .execute("PRAGMA main.incremental_vacuum;")
-                .await
-                .ok();
+        // TODO: As this task is not awaited, there's no gurantee it will ever run
+        let pool = self.pool.clone();
+        tokio::task::spawn(async move {
+            pool.execute("PRAGMA main.incremental_vacuum;").await.ok();
         });
     }
 }

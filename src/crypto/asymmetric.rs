@@ -124,7 +124,7 @@ impl KeyPair {
         })
     }
 
-    pub fn to_rcgen_keypair(self) -> anyhow::Result<rcgen::KeyPair> {
+    pub fn to_rcgen_keypair(&self) -> anyhow::Result<rcgen::KeyPair> {
         let pem = self.to_pem()?;
         Ok(rcgen::KeyPair::from_pem(&pem.to_string())?)
     }

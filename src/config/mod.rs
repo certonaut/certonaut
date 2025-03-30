@@ -1,19 +1,17 @@
 use crate::acme::client::DownloadedCertificate;
-use crate::cert::{load_certificates_from_file, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_file};
 use crate::challenge_solver::{ChallengeSolver, NullSolver, WebrootSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
-use crate::dns::name::DnsName;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
-use crate::{acme, dns, CRATE_NAME};
+use crate::{CRATE_NAME, Identifier};
 use anyhow::{Context, Error};
 use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -171,7 +169,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             Ok(iter) => iter,
             Err(e) => {
                 return match e.kind() {
-                    std::io::ErrorKind::NotFound => Ok(certificates),
+                    ErrorKind::NotFound => Ok(certificates),
                     _ => Err(Error::new(e).context("Listing certificate directory")),
                 };
             }
@@ -387,54 +385,6 @@ impl
         ),
     ) -> Self {
         Self { domains, solvers }
-    }
-}
-
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Identifier {
-    Dns(DnsName),
-}
-
-impl Identifier {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Identifier::Dns(name) => name.as_ascii(),
-        }
-    }
-}
-
-impl FromStr for Identifier {
-    type Err = dns::name::ParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Identifier::Dns(s.try_into()?))
-    }
-}
-
-impl From<Identifier> for acme::object::Identifier {
-    fn from(value: Identifier) -> Self {
-        match value {
-            Identifier::Dns(name) => acme::object::Identifier::Dns {
-                value: name.as_ascii().to_string(),
-            },
-        }
-    }
-}
-
-impl From<Identifier> for String {
-    fn from(value: Identifier) -> Self {
-        match value {
-            Identifier::Dns(name) => name.as_ascii().to_string(),
-        }
-    }
-}
-
-impl Display for Identifier {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Identifier::Dns(name) => Display::fmt(name, f),
-        }
     }
 }
 

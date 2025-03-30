@@ -1,6 +1,7 @@
 use anyhow::Context;
 use certonaut::cli::{handle_cli_command, setup_command_line};
 use certonaut::config::{CONFIG_FILE, config_directory};
+use certonaut::dns::resolver::Resolver;
 use certonaut::state::Database;
 use certonaut::{Certonaut, config};
 use std::io::IsTerminal;
@@ -37,7 +38,9 @@ async fn main() -> anyhow::Result<()> {
     let database = Database::open(config_directory(), "database.sqlite")
         .await
         .context("Opening local database")?;
-    let client = Certonaut::try_new(config, database).context("Applying configuration failed")?;
+    let resolver = Resolver::new();
+    let client =
+        Certonaut::try_new(config, database, resolver).context("Applying configuration failed")?;
     let result = handle_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal

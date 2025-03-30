@@ -3,31 +3,36 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
 use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    config_directory, AccountConfiguration,
-    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, Configuration, ConfigurationManager, DomainSolverMap, Identifier,
-    InstallerConfiguration, MainConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration,
+    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
+    Configuration, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
+    MainConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
 use crate::crypto::jws::JsonWebKey;
+use crate::dns::name::DnsName;
+use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::pebble::pebble_root;
-use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
+use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
 use std::ops::Neg;
+use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use url::Url;
@@ -54,8 +59,96 @@ pub mod util;
 /// The name of the application
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Identifier {
+    Dns(DnsName),
+}
+
+impl Identifier {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Identifier::Dns(name) => name.as_ascii(),
+        }
+    }
+
+    #[allow(irrefutable_let_patterns)]
+    pub fn as_ascii_domain_name(&self) -> Option<&str> {
+        if let Identifier::Dns(name) = &self {
+            return Some(name.as_ascii());
+        }
+        None
+    }
+
+    pub fn try_from_with_wildcard(
+        acme_identifier: acme::object::Identifier,
+    ) -> anyhow::Result<Self> {
+        match acme_identifier {
+            acme::object::Identifier::Dns { value } => {
+                let dns = DnsName::try_from(format!("*.{value}"))
+                    .context(format!("Failed to parse *.{value} as a DNS name"))?;
+                Ok(Self::Dns(dns))
+            }
+            acme::object::Identifier::Unknown => {
+                bail!("Unknown identifier type cannot be parsed")
+            }
+        }
+    }
+}
+
+impl FromStr for Identifier {
+    type Err = dns::name::ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Identifier::Dns(s.try_into()?))
+    }
+}
+
+impl From<Identifier> for acme::object::Identifier {
+    fn from(value: Identifier) -> Self {
+        match value {
+            Identifier::Dns(name) => acme::object::Identifier::Dns {
+                value: name.as_ascii().to_string(),
+            },
+        }
+    }
+}
+
+impl TryFrom<acme::object::Identifier> for Identifier {
+    type Error = Error;
+
+    fn try_from(value: acme::object::Identifier) -> Result<Self, Self::Error> {
+        match value {
+            acme::object::Identifier::Dns { value } => {
+                let dns = DnsName::try_from(value.as_str())
+                    .context(format!("Failed to parse {value} as a DNS name"))?;
+                Ok(Self::Dns(dns))
+            }
+            acme::object::Identifier::Unknown => {
+                bail!("Unknown identifier type cannot be parsed")
+            }
+        }
+    }
+}
+
+impl From<Identifier> for String {
+    fn from(value: Identifier) -> Self {
+        match value {
+            Identifier::Dns(name) => name.as_ascii().to_string(),
+        }
+    }
+}
+
+impl Display for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Identifier::Dns(name) => Display::fmt(name, f),
+        }
+    }
+}
+
 pub struct Authorizer {
-    identifier: acme::object::Identifier,
+    identifier: Identifier,
     solver: Box<dyn ChallengeSolver>,
 }
 
@@ -65,15 +158,12 @@ impl Authorizer {
     }
 
     pub fn new_boxed(identifier: Identifier, solver: Box<dyn ChallengeSolver>) -> Self {
-        Self {
-            identifier: identifier.into(),
-            solver,
-        }
+        Self { identifier, solver }
     }
 }
 
 impl Debug for Authorizer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Authorizer")
             .field("identifier", &self.identifier)
             .field("solver", &self.solver.short_name())
@@ -136,7 +226,7 @@ pub fn authorizers_from_config(
     let size = config.domains_and_solvers.domains.len();
     let mut authorizers = Vec::with_capacity(size);
     for (domain, solver_name) in config.domains_and_solvers.domains.into_iter().sorted() {
-        let acme_domain = domain.clone().into();
+        let acme_domain = domain.clone();
         if authorizers
             .iter()
             .any(|authorizer: &Authorizer| authorizer.identifier == acme_domain)
@@ -277,15 +367,21 @@ pub struct Certonaut<CB> {
     certificates: HashMap<String, CertificateConfiguration>,
     database: Database,
     config: ConfigurationManager<CB>,
+    resolver: Arc<Resolver>,
 }
 
 impl<CB: ConfigBackend> Certonaut<CB> {
-    pub fn try_new(manager: ConfigurationManager<CB>, database: Database) -> anyhow::Result<Self> {
+    pub fn try_new(
+        manager: ConfigurationManager<CB>,
+        database: Database,
+        resolver: Resolver,
+    ) -> anyhow::Result<Self> {
+        let resolver = Arc::new(resolver);
         let config = manager.load()?;
         let mut issuers = HashMap::new();
         for ca in config.main.ca_list {
             let id = ca.inner.identifier.clone();
-            let issuer = AcmeIssuer::try_new(ca)?;
+            let issuer = AcmeIssuer::try_new(ca, resolver.clone())?;
             if let Some(old) = issuers.insert(id, issuer) {
                 let id = old.config.identifier;
                 bail!("Duplicate CA id {id} in configuration");
@@ -296,6 +392,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             certificates: config.certificates,
             database,
             config: manager,
+            resolver,
         })
     }
 
@@ -416,7 +513,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             inner: new_ca,
             accounts: vec![],
         };
-        let issuer = AcmeIssuer::try_new(new_ca)?;
+        let issuer = AcmeIssuer::try_new(new_ca, self.resolver.clone())?;
         if issuer.config.default {
             self.issuers
                 .values_mut()
@@ -532,7 +629,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         let ca_name = &issuer.issuer.config.name;
         let key_type = cert_config.key_type;
         let cert_key = asymmetric::new_key(key_type)
-            .and_then(asymmetric::KeyPair::to_rcgen_keypair)
+            .and_then(|keypair| keypair.to_rcgen_keypair())
             .context(format!(
                 "Could not generate certificate key with type {key_type}"
             ))?;

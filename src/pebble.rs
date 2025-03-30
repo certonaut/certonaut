@@ -1,11 +1,12 @@
-use crate::acme::object::{HttpChallenge, Identifier, InnerChallenge, Token};
+use crate::acme::object::{HttpChallenge, InnerChallenge, Token};
 use crate::config::PebbleHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
-use crate::ChallengeSolver;
-use anyhow::{bail, Error};
+use crate::{ChallengeSolver, Identifier};
+use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::sync::LazyLock;
+use tracing::debug;
 use url::Url;
 
 const PEBBLE_ROOT_PEM: &str = "-----BEGIN CERTIFICATE-----
@@ -150,7 +151,12 @@ impl ChallengeSolver for ChallengeTestDnsSolver {
     ) -> Result<(), Error> {
         if let InnerChallenge::Dns(dns_challenge) = challenge {
             let authorization = dns_challenge.get_key_authorization(jwk);
-            let host = format!("_acme-challenge.{identifier}.");
+            let host = identifier
+                .as_ascii_domain_name()
+                .context(format!("{identifier} cannot be used for dns challenge"))?;
+            // Pebble-challtestsrv requires a period at the end
+            let host = format!("{host}.");
+            debug!("Setting TXT value {authorization} for host {host}");
             let response = self
                 .http
                 .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("set-txt")?)

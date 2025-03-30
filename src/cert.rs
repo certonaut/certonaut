@@ -186,9 +186,9 @@ impl From<&x509_parser::certificate::Validity> for Validity {
 
 #[cfg(test)]
 mod tests {
+    use crate::Identifier;
     use crate::acme::object::AcmeRenewalIdentifier;
     use crate::cert::{ParsedX509Certificate, Validity, load_certificates_from_file};
-    use crate::config::Identifier;
     use std::path::Path;
     use std::str::FromStr;
     use time::macros::datetime;

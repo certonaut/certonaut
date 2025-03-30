@@ -1,18 +1,18 @@
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
-    CertificateConfiguration, ConfigBackend, Identifier, IdentifierConfiguration,
-    InstallerConfiguration, SolverConfiguration,
+    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, InstallerConfiguration,
+    SolverConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
-use crate::time::{humanize_duration, ParsedDuration};
+use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
-    build_domain_solver_maps, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, Certonaut,
-    DomainSolverMap, NewAccountOptions, CRATE_NAME,
+    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
+    DomainSolverMap, Identifier, NewAccountOptions, build_domain_solver_maps,
 };
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;

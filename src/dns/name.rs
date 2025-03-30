@@ -40,8 +40,19 @@ impl DnsName {
         self.inner.is_wildcard()
     }
 
+    // TODO: Can probably be simplified
     pub fn eq_ignore_root(&self, other: &DnsName) -> bool {
         self.inner.eq_ignore_root(&other.inner)
+    }
+
+    pub fn to_acme_challenge_name(&self) -> Result<Self, ParseError> {
+        let base = if self.is_wildcard() {
+            &self.inner.base_name()
+        } else {
+            &self.inner
+        };
+        let acme_challenge_name = base.prepend_label("_acme-challenge")?;
+        Ok(acme_challenge_name.into())
     }
 }
 
@@ -114,7 +125,12 @@ impl Display for DnsName {
 
 impl From<&Name> for DnsName {
     fn from(value: &Name) -> Self {
-        let normalized = value.to_lowercase();
+        // Normalization: To avoid inconsistencies as much as possible:
+        // - all names are lowercased. While this is not a RFC5280 requirement, it is commonly applied
+        // - all names are treated as being absolute to the root (FQDN), as SANs do not distinguish between
+        // relative and absolute domain names
+        let mut normalized = value.to_lowercase();
+        normalized.set_fqdn(true);
         let ascii = Self::__to_ascii(&normalized);
         let utf8 = Self::__to_utf8(&normalized);
         Self {
@@ -253,5 +269,68 @@ mod tests {
         let ascii_safe = parsed.as_ascii();
 
         assert_eq!(ascii_safe, ascii_name);
+    }
+
+    #[rstest]
+    #[case("tld", false)]
+    #[case("tld.", false)]
+    #[case("a.tld", false)]
+    #[case("a.tld.", false)]
+    #[case("*.tld", true)]
+    #[case("*.tld.", true)]
+    #[case("_weird_name.*.example.com", false)]
+    #[case("*.fqdn.example.com", true)]
+    #[case("*", true)]
+    fn test_is_wildcard(#[case] raw_name: &str, #[case] expected: bool) {
+        let parsed: DnsName = raw_name.try_into().unwrap();
+
+        let wildcard = parsed.is_wildcard();
+
+        assert_eq!(wildcard, expected);
+    }
+
+    #[rstest]
+    #[case("sub.example.com", "sub.example.com", true)]
+    #[case("sub.example.com", "sub.example.com.", true)]
+    #[case("sub.example.com.", "sub.example.com", true)]
+    #[case("sub.example.com.", "sub.example.com.", true)]
+    #[case("example.com", "sub.example.com", false)]
+    #[case("example.com.", "sub.example.com", false)]
+    #[case("example.com", "sub.example.com.", false)]
+    #[case("example.com.", "sub.example.com.", false)]
+    #[case("sub.example.com", "example.com", false)]
+    #[case("sub.example.com", "example.com.", false)]
+    #[case(".", ".", true)]
+    #[case("tld", "tld.", true)]
+    fn test_eq_ignore_root(
+        #[case] first_name: &str,
+        #[case] second_name: &str,
+        #[case] expected: bool,
+    ) {
+        let first: DnsName = first_name.try_into().unwrap();
+        let second: DnsName = second_name.try_into().unwrap();
+
+        let equal = first.eq_ignore_root(&second);
+
+        assert_eq!(equal, expected);
+    }
+
+    #[rstest]
+    #[case("example.com", "_acme-challenge.example.com")]
+    #[case("example.com.", "_acme-challenge.example.com.")]
+    #[case("fqdn.example.com", "_acme-challenge.fqdn.example.com")]
+    #[case(
+        "_acme-challenge.example.com",
+        "_acme-challenge._acme-challenge.example.com"
+    )]
+    #[case("*.example.com", "_acme-challenge.example.com.")]
+    #[case("*.sub.example.com", "_acme-challenge.sub.example.com.")]
+    fn test_to_acme_challenge_name(#[case] raw_name: &str, #[case] expected_name: &str) {
+        let parsed: DnsName = raw_name.try_into().unwrap();
+        let expected: DnsName = expected_name.try_into().unwrap();
+
+        let equal = parsed.to_acme_challenge_name().unwrap();
+
+        assert_eq!(equal, expected);
     }
 }

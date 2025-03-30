@@ -7,6 +7,7 @@ use tracing::warn;
 
 const MAX_CNAME_CHAIN_LENGTH: usize = 10;
 
+#[derive(Debug)]
 pub struct Resolver {
     resolver: hickory_resolver::Resolver<TokioConnectionProvider>,
 }
@@ -30,8 +31,9 @@ impl Resolver {
     async fn lookup_generic(&self, source: DnsName, rtype: RecordType) -> Result<Lookup, Error> {
         match self.resolver.lookup(source, rtype).await {
             Ok(lookup) => Ok(lookup),
-            Err(e) if e.is_no_records_found() => Err(Error::NoRecords(rtype)),
+            // Note: Order matters, because is_no_records_found includes is_nx_domain
             Err(e) if e.is_nx_domain() => Err(Error::NxDomain),
+            Err(e) if e.is_no_records_found() => Err(Error::NoRecords(rtype)),
             Err(e) => Err(e.into()),
         }
     }
@@ -49,7 +51,7 @@ impl Resolver {
                 .await
             {
                 Ok(lookup) => lookup,
-                Err(Error::NoRecords(_)) => {
+                Err(Error::NoRecords(_) | Error::NxDomain) => {
                     break current;
                 }
                 other_error => other_error?,
@@ -102,7 +104,8 @@ pub enum Error {
 
 #[cfg(test)]
 mod tests {
-    use crate::dns::resolver::Resolver;
+    use crate::dns::resolver::{Error, Resolver};
+    use hickory_resolver::proto::rr::RecordType;
     use rstest::rstest;
 
     #[tokio::test]
@@ -112,7 +115,8 @@ mod tests {
     #[case("cname-2.test.certonaut.net", "cname-3.test.certonaut.net.")]
     #[case("cname-2.test.certonaut.net.", "cname-3.test.certonaut.net.")]
     #[case("cname-3.test.certonaut.net.", "cname-3.test.certonaut.net.")]
-    #[case("cname-3.test.certonaut.net", "cname-3.test.certonaut.net")]
+    #[case("cname-3.test.certonaut.net", "cname-3.test.certonaut.net.")]
+    #[case("nxdomain.test.certonaut.net", "nxdomain.test.certonaut.net.")]
     async fn test_resolve_cname_chain(#[case] source: &str, #[case] expected: &str) {
         let source = source.try_into().unwrap();
         let expected = expected.try_into().unwrap();
@@ -121,5 +125,60 @@ mod tests {
         let actual_cname = resolver.resolve_cname_chain(source).await.unwrap();
 
         assert_eq!(actual_cname, expected);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_generic() {
+        let resolver = Resolver::new();
+
+        let lookup = resolver
+            .lookup_generic(
+                "cname-3.test.certonaut.net".try_into().unwrap(),
+                RecordType::TXT,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(lookup.records().len(), 1);
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[case("cname-3.test.certonaut.net.", RecordType::A)]
+    #[case("cname-3.test.certonaut.net", RecordType::A)]
+    async fn test_lookup_generic_with_no_records(
+        #[case] name: &str,
+        #[case] record_type: RecordType,
+    ) {
+        let resolver = Resolver::new();
+
+        let lookup = resolver
+            .lookup_generic(name.try_into().unwrap(), record_type)
+            .await;
+
+        assert!(
+            matches!(lookup, Err(Error::NoRecords(RecordType::A))),
+            "invalid lookup result: {lookup:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[rstest]
+    #[case("nxdomain.test.certonaut.net.", RecordType::TXT)]
+    #[case("nxdomain.test.certonaut.net", RecordType::TXT)]
+    async fn test_lookup_generic_with_nxdomain(
+        #[case] name: &str,
+        #[case] record_type: RecordType,
+    ) {
+        let resolver = Resolver::new();
+
+        let lookup = resolver
+            .lookup_generic(name.try_into().unwrap(), record_type)
+            .await;
+
+        assert!(
+            matches!(lookup, Err(Error::NxDomain)),
+            "invalid lookup result: {lookup:?}"
+        );
     }
 }

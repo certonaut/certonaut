@@ -5,15 +5,15 @@ use crate::config::{
     SolverConfiguration, WebrootSolverConfiguration,
 };
 use crate::crypto::jws::JsonWebKey;
-use crate::crypto::{sha256, SHA256_LENGTH};
-use crate::{acme, config, magic};
-use anyhow::{bail, Context, Error};
+use crate::crypto::{SHA256_LENGTH, sha256};
+use crate::{Identifier, magic};
+use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
-use clap::{value_parser, Arg, Command, CommandFactory, FromArgMatches, Parser};
-use inquire::validator::Validation;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use clap::{Arg, Command, CommandFactory, FromArgMatches, Parser, value_parser};
 use inquire::CustomType;
+use inquire::validator::Validation;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -70,7 +70,7 @@ pub trait ChallengeSolver: Send {
     async fn deploy_challenge(
         &mut self,
         jwk: &JsonWebKey,
-        identifier: &acme::object::Identifier,
+        identifier: &Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error>;
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error>;
@@ -102,7 +102,7 @@ impl ChallengeSolver for NullSolver {
     async fn deploy_challenge(
         &mut self,
         _jwk: &JsonWebKey,
-        _identifier: &acme::object::Identifier,
+        _identifier: &Identifier,
         _challenge: InnerChallenge,
     ) -> Result<(), Error> {
         Ok(())
@@ -151,7 +151,7 @@ impl ChallengeSolver for WebrootSolver {
     async fn deploy_challenge(
         &mut self,
         jwk: &JsonWebKey,
-        _identifier: &acme::object::Identifier,
+        _identifier: &Identifier,
         challenge: InnerChallenge,
     ) -> Result<(), Error> {
         if let InnerChallenge::Http(http_challenge) = challenge {
@@ -225,10 +225,10 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn description(&self) -> &'static str;
     fn category(&self) -> SolverCategory;
     fn preference(&self) -> usize;
-    fn supported(&self, domains: &HashSet<config::Identifier>) -> bool;
+    fn supported(&self, domains: &HashSet<Identifier>) -> bool;
     fn build_interactive(
         &self,
-        domains: HashSet<config::Identifier>,
+        domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration>;
     fn build_from_command_line(
         &self,
@@ -239,7 +239,7 @@ pub trait SolverConfigBuilder: Send + Sync {
 
 #[derive(Debug)]
 pub struct DomainsWithSolverConfiguration {
-    pub domains: HashSet<config::Identifier>,
+    pub domains: HashSet<Identifier>,
     pub config: SolverConfiguration,
     pub solver_name: Option<String>,
 }
@@ -268,13 +268,13 @@ with the CA. Will cause failures otherwise."
         100
     }
 
-    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         true
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<config::Identifier>,
+        domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains,
@@ -322,13 +322,13 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         90
     }
 
-    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         cfg!(debug_assertions)
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<config::Identifier>,
+        domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains,
@@ -376,13 +376,13 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         5
     }
 
-    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         magic::is_supported()
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<config::Identifier>,
+        domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         if !magic::is_supported() {
             bail!("The magic solver is not supported by your system");
@@ -481,13 +481,13 @@ impl SolverConfigBuilder for WebrootBuilder {
         10
     }
 
-    fn supported(&self, _domains: &HashSet<config::Identifier>) -> bool {
+    fn supported(&self, _domains: &HashSet<Identifier>) -> bool {
         true
     }
 
     fn build_interactive(
         &self,
-        domains: HashSet<config::Identifier>,
+        domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         println!(
             "The webroot solver needs to know from where your webserver serves static files (the \"webroot\" of your webserver)."

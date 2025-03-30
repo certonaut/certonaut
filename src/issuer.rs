@@ -1,27 +1,28 @@
 use crate::acme::client::{AcmeClient, DownloadedCertificate};
 use crate::acme::error::Problem;
 use crate::acme::object::{
-    AccountStatus, AcmeRenewalIdentifier, AuthorizationStatus, ChallengeStatus, InnerChallenge,
-    NewOrderRequest, Order, OrderStatus,
+    AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
+    ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
 use crate::cert::{create_and_sign_csr, ParsedX509Certificate};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
+use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{acme, new_acme_client, AcmeAccount, Authorizer};
+use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier};
 use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use time::error::ConversionRange;
 use tokio::sync::OnceCell;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 #[derive(Debug)]
@@ -29,10 +30,14 @@ pub struct AcmeIssuer {
     pub config: CertificateAuthorityConfiguration,
     client: OnceCell<AcmeClient>,
     accounts: HashMap<String, AcmeAccount>,
+    resolver: Arc<Resolver>,
 }
 
 impl AcmeIssuer {
-    pub fn try_new(config: CertificateAuthorityConfigurationWithAccounts) -> anyhow::Result<Self> {
+    pub fn try_new(
+        config: CertificateAuthorityConfigurationWithAccounts,
+        resolver: Arc<Resolver>,
+    ) -> anyhow::Result<Self> {
         let client = OnceCell::new();
         let mut accounts = HashMap::new();
         for account_config in config.accounts {
@@ -47,6 +52,7 @@ impl AcmeIssuer {
             client,
             accounts,
             config: config.inner,
+            resolver,
         })
     }
 
@@ -116,7 +122,9 @@ impl AcmeIssuer {
             );
             return Ok(None);
         };
-        let client = self.client().await.context(format!("Failed to fetch ACME Renewal Information for {cert_id} from CA"))?;
+        let client = self.client().await.context(format!(
+            "Failed to fetch ACME Renewal Information for {cert_id} from CA"
+        ))?;
         match client.get_renewal_info(renewal_identifier).await {
             Ok(renewal_info) => {
                 debug!("ARI server response: {renewal_info}");
@@ -161,9 +169,9 @@ impl AcmeIssuer {
                 );
                 Ok(None)
             }
-            Err(e) => {
-                Err(Error::new(e).context(format!("Failed to fetch ACME Renewal Information for cert {cert_id} from CA")))
-            }
+            Err(e) => Err(Error::new(e).context(format!(
+                "Failed to fetch ACME Renewal Information for cert {cert_id} from CA"
+            ))),
         }
     }
 
@@ -206,6 +214,7 @@ pub struct AcmeIssuerWithAccount<'a> {
 }
 
 impl AcmeIssuerWithAccount<'_> {
+    #[inline]
     async fn client(&self) -> Result<&AcmeClient, Error> {
         self.issuer.client().await
     }
@@ -241,11 +250,11 @@ impl AcmeIssuerWithAccount<'_> {
         replaces: Option<AcmeRenewalIdentifier>,
         profile: Option<String>,
     ) -> IssueResult<DownloadedCertificate> {
+        let names = authorizers.iter().map(|auth| &auth.identifier).join(", ");
         let identifiers: Vec<_> = authorizers
             .iter()
-            .map(|authorizer| authorizer.identifier.clone())
+            .map(|authorizer| authorizer.identifier.clone().into())
             .collect();
-        let names = identifiers.join(", ");
         info!(
             "Issuing certificate for {names} at CA {}",
             self.issuer.config.name
@@ -392,74 +401,26 @@ impl AcmeIssuerWithAccount<'_> {
                 .get_authorization(&self.account.jwk, &authz_url)
                 .await
                 .context("Retrieving authorization from server")?;
+            let id = &authz.identifier;
+            let wildcard = authz.wildcard;
+            let name = if wildcard {
+                format!("*.{id}")
+            } else {
+                id.to_string()
+            };
             match authz.status {
                 AuthorizationStatus::Valid => {
                     debug!("Authorization already valid");
                     // Skip
                 }
                 AuthorizationStatus::Pending => {
-                    let id = authz.identifier;
-                    info!("Found pending authorization for {id}, trying to authorize");
-                    let mut challenge_solver =
-                        authorizers.swap_remove(authorizers.iter().position(|authorizer| authorizer.identifier == id).ok_or(
-                            anyhow!(
-                                "Order contains pending authorization for {id}, but this identifier was not part of our requested order"
-                            ),
-                        )?);
-                    let solver_name_long = challenge_solver.solver.long_name();
-                    let solver_name_short = challenge_solver.solver.short_name();
-                    let chosen_challenge = authz
-                        .challenges
-                        .into_iter()
-                        .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
-                        .filter(|challenge| !matches!(challenge.inner_challenge, InnerChallenge::Unknown))
-                        .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
-                        .ok_or(anyhow!(
-                            "Authorization for {id} did not contain any pending challenge supported by {solver_name_long}"
-                        ))?;
-                    let challenge_type = chosen_challenge.inner_challenge.get_type().to_string();
-                    debug!(
-                        "{solver_name_short} selected {challenge_type} challenge @ {}",
-                        chosen_challenge.url
-                    );
-
-                    // TODO: Timeout solver?
-
-                    // Setup
-                    challenge_solver
-                        .solver
-                        .deploy_challenge(&self.account.jwk, &id, chosen_challenge.inner_challenge)
+                    self.solve_challenge(authz, &mut authorizers)
                         .await
                         .context(format!(
-                            "Setting up challenge solver {solver_name_long} for {id}"
+                            "Failed to obtain issuance authorization for {name}"
                         ))?;
-
-                    debug!(
-                        "{solver_name_short} reported successful challenge deployment, attempting validation now"
-                    );
-
-                    // TODO: Preflight checks? By us or by solver?
-
-                    // Validation
-                    let maybe_err = client
-                        .validate_challenge(&self.account.jwk, &chosen_challenge.url)
-                        .await
-                        .context(format!(
-                            "Error validating {challenge_type} challenge for {id} with challenge solver {solver_name_long}"
-                        ));
-
-                    // Cleanup
-                    if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
-                        warn!(
-                            "Challenge solver {solver_name_long} for {id} encountered an error during cleanup: {e:#}"
-                        );
-                    }
-
-                    let _validated_challenge = maybe_err?;
-                    info!("Successfully validated challenge for {id}");
                 }
                 AuthorizationStatus::Invalid => {
-                    let id = &authz.identifier;
                     let problems: Vec<Problem> = authz
                         .challenges
                         .into_iter()
@@ -471,20 +432,135 @@ impl AcmeIssuerWithAccount<'_> {
                         problem_string.push_str(&problem.to_string());
                     }
                     bail!(
-                        "Failed to authorize {id}. The CA reported these problems: {problem_string}"
+                        "Failed to authorize {name}. The CA reported these problems: {problem_string}"
                     );
                 }
                 AuthorizationStatus::Deactivated
                 | AuthorizationStatus::Expired
                 | AuthorizationStatus::Revoked => {
-                    let id = &authz.identifier;
                     bail!(
-                        "Authorization for {id} is in an invalid status (deactivated, expired, or revoked)"
+                        "Authorization for {name} is in an invalid status (deactivated, expired, or revoked)"
                     );
                 }
             }
         }
         Ok(())
+    }
+
+    async fn solve_challenge(
+        &self,
+        authz: Authorization,
+        authorizers: &mut Vec<Authorizer>,
+    ) -> anyhow::Result<Challenge> {
+        let client = self.client().await?;
+        let acme_id = authz.identifier;
+        let wildcard = authz.wildcard;
+        let id = if wildcard {
+            Identifier::try_from_with_wildcard(acme_id)
+        } else {
+            Identifier::try_from(acme_id)
+        }?;
+        info!("Found pending authorization for {id}, trying to authorize");
+        let mut challenge_solver =
+            authorizers.swap_remove(authorizers.iter().position(|authorizer| authorizer.identifier == id).ok_or(
+                anyhow!("Order contains pending authorization for {id}, but this identifier was not part of our requested order"),
+            )?);
+        let solver_name_long = challenge_solver.solver.long_name();
+        let solver_name_short = challenge_solver.solver.short_name();
+        let chosen_challenge = authz
+            .challenges
+            .into_iter()
+            .filter(|challenge| matches!(challenge.status, ChallengeStatus::Pending))
+            .filter(|challenge| !matches!(challenge.inner_challenge, InnerChallenge::Unknown))
+            .find(|challenge| challenge_solver.solver.supports_challenge(&challenge.inner_challenge))
+            .ok_or(anyhow!("Authorization for {id} did not contain any pending challenge supported by {solver_name_long} (solver configuration invalid?)"))?;
+        let challenge_type = chosen_challenge.inner_challenge.get_type().to_string();
+        debug!(
+            "{solver_name_short} selected {challenge_type} challenge @ {}",
+            chosen_challenge.url
+        );
+
+        let challenge_id = match &chosen_challenge.inner_challenge {
+            InnerChallenge::Dns(_) => self.identifier_to_dns01_fqdn(id.clone()).await?,
+            _ => id.clone(),
+        };
+
+        // TODO: Timeout solver?
+
+        // Setup
+        challenge_solver
+            .solver
+            .deploy_challenge(
+                &self.account.jwk,
+                &challenge_id,
+                chosen_challenge.inner_challenge,
+            )
+            .await
+            .context(format!(
+                "Setting up challenge solver {solver_name_long} for {id} (challenge domain: {challenge_id})"
+            ))?;
+
+        debug!(
+            "{solver_name_short} reported successful challenge deployment for {id} (challenge domain: {challenge_id}), attempting validation now"
+        );
+
+        // TODO: Preflight checks if enabled
+
+        // Validation
+        let maybe_err = client
+            .validate_challenge(&self.account.jwk, &chosen_challenge.url)
+            .await
+            .context(format!(
+                "Error validating {challenge_type} challenge for {id} (challenge domain: {challenge_id}) with challenge solver {solver_name_long}"
+            ));
+
+        // Cleanup
+        if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
+            warn!(
+                "Challenge solver {solver_name_long} for {id} (challenge domain: {challenge_id}) encountered an error during cleanup: {e:#}"
+            );
+        }
+
+        let validated_challenge = maybe_err?;
+        info!("Successfully validated challenge for {id}");
+        Ok(validated_challenge)
+    }
+
+    /// Translate a given identifier to its dns-01 challenge FQDN. For example, the domain `example.com` would
+    /// have a challenge FQDN of `_acme-challenge.example.com`. This function also resolves any CNAMEs present at
+    /// the original identifier: For instance, if `_acme-challenge.example.com` points to `challenge-target.example.org`
+    /// via CNAME, then this function returns `challenge-target.example.org`.
+    ///
+    /// # Errors
+    ///
+    /// - If the given identifier is not compatible with a dns-01 challenge (e.g. IP address)
+    /// - If the `_acme-challenge` FQDN cannot be constructed (e.g. DNS length limit exceeded)
+    ///
+    /// # Notes
+    ///
+    /// This function does not currently fail if CNAME resolution fails, but logs an error instead and assumes that no CNAME is present
+    async fn identifier_to_dns01_fqdn(&self, identifier: Identifier) -> anyhow::Result<Identifier> {
+        let acme_challenge = match identifier {
+            Identifier::Dns(dns_name) => dns_name.to_acme_challenge_name().context(format!(
+                "Failed to determine _acme-challenge subdomain for {dns_name}"
+            ))?,
+        };
+        let cname_target = match self
+            .issuer
+            .resolver
+            .resolve_cname_chain(acme_challenge.clone())
+            .await
+        {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                error!(
+                    "Failed to resolve CNAME chain for {acme_challenge}, assuming no CNAME present: {e:#}"
+                );
+                acme_challenge.clone()
+            }
+        };
+        debug!("Resolved CNAME for {acme_challenge} to {cname_target}");
+        Ok(Identifier::Dns(cname_target))
     }
 
     pub async fn deactivate_account(&self) -> Result<(), Error> {
@@ -527,7 +603,7 @@ mod tests {
     };
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
-    use crate::config::{AccountConfiguration, Identifier};
+    use crate::config::AccountConfiguration;
     use crate::crypto::asymmetric::{new_key, Curve, KeyType};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
@@ -595,7 +671,8 @@ mod tests {
         unsafe {
             faux::when!(mock_client.get_directory).then_unchecked(|()| fake_directory);
         }
-        let issuer = AcmeIssuer::try_new(fake_config)?;
+        let resolver = Arc::new(Resolver::new());
+        let issuer = AcmeIssuer::try_new(fake_config, resolver)?;
         issuer.override_client(mock_client)?;
         Ok(issuer)
     }
@@ -972,17 +1049,21 @@ mod tests {
         unsafe {
             faux::when!(mock_client.get_directory).then_unchecked_return(directory);
         }
-        let issuer = AcmeIssuer::try_new(CertificateAuthorityConfigurationWithAccounts {
-            inner: CertificateAuthorityConfiguration {
-                name: "test".to_string(),
-                identifier: "test".to_string(),
-                acme_directory: test_url(),
-                public: false,
-                testing: false,
-                default: false,
+        let resolver = Arc::new(Resolver::new());
+        let issuer = AcmeIssuer::try_new(
+            CertificateAuthorityConfigurationWithAccounts {
+                inner: CertificateAuthorityConfiguration {
+                    name: "test".to_string(),
+                    identifier: "test".to_string(),
+                    acme_directory: test_url(),
+                    public: false,
+                    testing: false,
+                    default: false,
+                },
+                accounts: vec![],
             },
-            accounts: vec![],
-        })?;
+            resolver,
+        )?;
         issuer.override_client(mock_client)?;
         Ok((expected_profiles, issuer))
     }

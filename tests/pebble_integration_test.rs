@@ -1,12 +1,13 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
-use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
-use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, Identifier};
+use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
 use certonaut::crypto::asymmetric::KeyPair;
+use certonaut::dns::resolver::Resolver;
 use certonaut::pebble::{
-    pebble_root, ChallengeTestDnsSolver, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL,
+    ChallengeTestDnsSolver, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL, pebble_root,
 };
-use certonaut::{AcmeAccount, Authorizer, Certonaut};
+use certonaut::{AcmeAccount, Authorizer, Certonaut, Identifier};
 use serde::Serialize;
 use std::fs::File;
 use std::net::IpAddr;
@@ -36,9 +37,11 @@ async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
     let test_db = certonaut::state::open_test_db().await;
+    let resolver = Resolver::new();
     let mut certonaut = Certonaut::try_new(
         new_configuration_manager_with_noop_backend(),
         test_db.into(),
+        resolver,
     )?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {
         name: CA_NAME.to_string(),
@@ -105,6 +108,85 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+#[ignore]
+/// Note that this test requires prerequisites to be setup beforehand
+/// - Pebble must be running on its default port, and be configured to use challtestsrv
+/// - Pebble-challtestsrv must be running on its default port
+async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
+    let certonaut = setup_pebble_issuer().await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = rcgen::KeyPair::generate()?;
+    let authorizers = vec![Authorizer::new(
+        Identifier::from_str("*.pebble-e2e-wildcard-single.example.com")?,
+        ChallengeTestDnsSolver::default(),
+    )];
+
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
+/// Note that this test requires prerequisites to be setup beforehand
+/// - Pebble must be running on its default port, and be configured to use challtestsrv
+/// - Pebble-challtestsrv must be running on its default port
+async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
+    let certonaut = setup_pebble_issuer().await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = rcgen::KeyPair::generate()?;
+    let authorizers = vec![
+        Authorizer::new(
+            Identifier::from_str("*.pebble-e2e-wildcard-multi.example.com")?,
+            ChallengeTestDnsSolver::default(),
+        ),
+        Authorizer::new(
+            Identifier::from_str("pebble-e2e-wildcard-multi.example.com")?,
+            ChallengeTestHttpSolver::default(),
+        ),
+        Authorizer::new(
+            Identifier::from_str("pebble-e2e-multi.example.com")?,
+            ChallengeTestHttpSolver::default(),
+        ),
+    ];
+
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore]
+/// Note that this test requires prerequisites to be setup beforehand
+/// - Pebble must be running on its default port, and be configured to use challtestsrv
+/// - Pebble-challtestsrv must be running on its default port
+async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
+    let certonaut = setup_pebble_issuer().await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = rcgen::KeyPair::generate()?;
+    let authorizers = vec![
+        Authorizer::new(
+            Identifier::from_str("*.Bücher.example")?,
+            ChallengeTestDnsSolver::default(),
+        ),
+        Authorizer::new(
+            Identifier::from_str("Bücher.example")?,
+            ChallengeTestHttpSolver::default(),
+        ),
+    ];
+
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
+
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
 #[tokio::test]
 #[ignore]
@@ -114,7 +196,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";
-    let helper = PebbleHelper::new(test_host.to_string());
+    let helper = MagicPebbleHelper::new(test_host.to_string());
     helper
         .run(async move || {
             let certonaut = setup_pebble_issuer().await?;
@@ -131,17 +213,17 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
 
             Ok::<(), anyhow::Error>(())
         })
-        .await??;
-    Ok(())
+        .await?
 }
 
 #[allow(dead_code)]
-struct PebbleHelper {
+struct MagicPebbleHelper {
     client: reqwest::Client,
     host: String,
 }
 
-impl PebbleHelper {
+#[allow(dead_code)]
+impl MagicPebbleHelper {
     /// Find this host's IP address on any external interface
     async fn get_host_ip() -> std::io::Result<IpAddr> {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
@@ -162,7 +244,7 @@ impl PebbleHelper {
             .client
             .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-a")?)
             .json(&MockHostIpAddr {
-                host: self.host.clone(),
+                host: &self.host,
                 addresses: vec![host_ip],
             })
             .send()
@@ -176,7 +258,7 @@ impl PebbleHelper {
             .client
             .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("clear-a")?)
             .json(&MockHostIpAddr {
-                host: self.host,
+                host: &self.host,
                 addresses: vec![],
             })
             .send()
@@ -195,8 +277,8 @@ impl PebbleHelper {
 
 #[allow(dead_code)]
 #[derive(Serialize)]
-struct MockHostIpAddr {
-    host: String,
+struct MockHostIpAddr<'a> {
+    host: &'a str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     addresses: Vec<IpAddr>,
 }
