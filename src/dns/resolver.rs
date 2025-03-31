@@ -1,5 +1,5 @@
 use crate::dns::name::DnsName;
-use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig};
 use hickory_resolver::lookup::Lookup;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::proto::rr::RecordType;
@@ -7,11 +7,19 @@ use tracing::warn;
 
 const MAX_CNAME_CHAIN_LENGTH: usize = 10;
 
+#[cfg_attr(test, faux::create)]
 #[derive(Debug)]
 pub struct Resolver {
     resolver: hickory_resolver::Resolver<TokioConnectionProvider>,
 }
 
+impl Default for Resolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// impl block for new() functions outside of main impl block to avoid linter being confused by faux
 impl Resolver {
     /// Create a new DNS resolver with default settings. The resolver will use the system configuration (`/etc/resolv.conf` or equivalent)
     /// if available, otherwise it falls back to a compiled-in default (currently Cloudflare DNS).
@@ -25,6 +33,25 @@ impl Resolver {
                 )
             })
             .build();
+        Self::__new(resolver)
+    }
+
+    /// Create a new DNS resolver using the provided nameservers for DNS resolution
+    pub fn new_with_upstream(nameservers: NameServerConfigGroup) -> Self {
+        let resolver = hickory_resolver::Resolver::builder_with_config(
+            ResolverConfig::from_parts(None, Vec::new(), nameservers),
+            TokioConnectionProvider::default(),
+        )
+        .build();
+        Self::__new(resolver)
+    }
+}
+
+#[cfg_attr(test, faux::methods)]
+impl Resolver {
+    // Helper function for faux
+    #[inline]
+    fn __new(resolver: hickory_resolver::Resolver<TokioConnectionProvider>) -> Self {
         Self { resolver }
     }
 
@@ -81,12 +108,6 @@ impl Resolver {
             }
         };
         Ok(resolved)
-    }
-}
-
-impl Default for Resolver {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

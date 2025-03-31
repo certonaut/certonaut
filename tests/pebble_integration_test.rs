@@ -1,22 +1,24 @@
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
-use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
 use certonaut::crypto::asymmetric::KeyPair;
 use certonaut::dns::resolver::Resolver;
 use certonaut::pebble::{
-    ChallengeTestDnsSolver, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL, pebble_root,
+    pebble_root, ChallengeTestDnsSolver, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL,
 };
 use certonaut::{AcmeAccount, Authorizer, Certonaut, Identifier};
+use hickory_resolver::config::NameServerConfigGroup;
 use serde::Serialize;
 use std::fs::File;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tokio::net::UdpSocket;
 use url::Url;
 
 const PEBBLE_URL: &str = "https://localhost:14000/dir";
+const CHALLTESTSRV_DNS_PORT: u16 = 8053;
 const CA_NAME: &str = "pebble";
 const ACCOUNT_NAME: &str = "pebble-account";
 
@@ -37,7 +39,11 @@ async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
     let test_db = certonaut::state::open_test_db().await;
-    let resolver = Resolver::new();
+    let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
+        &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        CHALLTESTSRV_DNS_PORT,
+        true,
+    ));
     let mut certonaut = Certonaut::try_new(
         new_configuration_manager_with_noop_backend(),
         test_db.into(),
@@ -70,7 +76,7 @@ async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 async fn pebble_e2e_test_http() -> anyhow::Result<()> {
     let certonaut = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
@@ -91,7 +97,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
     let certonaut = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
@@ -112,7 +118,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
     let certonaut = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
@@ -133,7 +139,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
     let certonaut = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
@@ -164,7 +170,7 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
     let certonaut = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
@@ -192,7 +198,7 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port
+/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";

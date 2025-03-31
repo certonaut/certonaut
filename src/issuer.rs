@@ -671,7 +671,9 @@ mod tests {
         unsafe {
             faux::when!(mock_client.get_directory).then_unchecked(|()| fake_directory);
         }
-        let resolver = Arc::new(Resolver::new());
+        let mut mock_resolver = Resolver::faux();
+        faux::when!(mock_resolver.resolve_cname_chain).then(Ok);
+        let resolver = Arc::new(mock_resolver);
         let issuer = AcmeIssuer::try_new(fake_config, resolver)?;
         issuer.override_client(mock_client)?;
         Ok(issuer)
