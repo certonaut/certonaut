@@ -1,30 +1,59 @@
+mod common;
+
+use crate::common::{ChallengeTestServerContainer, PebbleContainer};
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
-use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration};
+use certonaut::config::{
+    AccountConfiguration, CertificateAuthorityConfiguration, PebbleHttpSolverConfiguration,
+};
 use certonaut::crypto::asymmetric::KeyPair;
 use certonaut::dns::resolver::Resolver;
-use certonaut::pebble::{
-    pebble_root, ChallengeTestDnsSolver, ChallengeTestHttpSolver, PEBBLE_CHALLTESTSRV_BASE_URL,
-};
+use certonaut::pebble::{pebble_root, ChallengeTestDnsSolver, ChallengeTestHttpSolver};
 use certonaut::{AcmeAccount, Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
-use serde::Serialize;
 use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use tokio::net::UdpSocket;
+use std::sync::{Arc, Weak};
+use tokio::sync::Mutex;
 use url::Url;
 
-const PEBBLE_URL: &str = "https://localhost:14000/dir";
-const CHALLTESTSRV_DNS_PORT: u16 = 8053;
 const CA_NAME: &str = "pebble";
 const ACCOUNT_NAME: &str = "pebble-account";
 
-async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
+type TestContainers = (PebbleContainer, ChallengeTestServerContainer);
+type TestContainersHandle = Arc<TestContainers>;
+
+/// Spawn the testcontainers (pebble + challtestsrv), if not already done
+///
+/// # Returns
+///
+/// A handle to the spawned testcontainers. The containers will be stopped after the last handle is dropped.
+async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> {
+    static FIXTURE: Mutex<Weak<TestContainers>> = Mutex::const_new(Weak::new());
+    let mut fixture = FIXTURE.lock().await;
+    if let Some(existing_containers) = fixture.upgrade() {
+        Ok(existing_containers)
+    } else {
+        let host_ip = common::get_host_ip().await?;
+        let challtest = common::spawn_challtestsrv_container(host_ip).await?;
+        let dns_server = Url::parse(&format!(
+            "dns://host.docker.internal:{}",
+            challtest.dns_port
+        ))?;
+        let pebble = common::spawn_pebble_container(dns_server).await?;
+        let new_containers = Arc::new((pebble, challtest));
+        *fixture = Arc::downgrade(&new_containers);
+        Ok(new_containers)
+    }
+}
+
+async fn setup_pebble_issuer() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
     tracing_subscriber::fmt::try_init().ok();
-    let acme_url = Url::parse(PEBBLE_URL)?;
+    let containers = setup_pebble_containers_once().await?;
+    let acme_url = containers.0.get_directory_url()?;
     let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
@@ -41,7 +70,7 @@ async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
     let test_db = certonaut::state::open_test_db().await;
     let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-        CHALLTESTSRV_DNS_PORT,
+        containers.1.dns_port,
         true,
     ));
     let mut certonaut = Certonaut::try_new(
@@ -69,21 +98,22 @@ async fn setup_pebble_issuer() -> anyhow::Result<Certonaut<NoopBackend>> {
             jwk,
         ),
     )?;
-    Ok(certonaut)
+    Ok((containers, certonaut))
 }
 
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_http() -> anyhow::Result<()> {
-    let certonaut = setup_pebble_issuer().await?;
+    let (containers, certonaut) = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
-    let authorizers = vec![Authorizer::new(
+    let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-http01.example.com")?,
-        ChallengeTestHttpSolver::default(),
+        ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
+            base_url: containers.1.get_management_url()?,
+        }),
     )];
 
     let _cert = issuer
@@ -96,15 +126,14 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
-    let certonaut = setup_pebble_issuer().await?;
+    let (containers, certonaut) = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
-    let authorizers = vec![Authorizer::new(
+    let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-dns01.example.com")?,
-        ChallengeTestDnsSolver::default(),
+        ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
     )];
 
     let _cert = issuer
@@ -117,15 +146,14 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
-    let certonaut = setup_pebble_issuer().await?;
+    let (containers, certonaut) = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
-    let authorizers = vec![Authorizer::new(
+    let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("*.pebble-e2e-wildcard-single.example.com")?,
-        ChallengeTestDnsSolver::default(),
+        ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
     )];
 
     let _cert = issuer
@@ -138,24 +166,27 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
-    let certonaut = setup_pebble_issuer().await?;
+    let (containers, certonaut) = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![
-        Authorizer::new(
+        Authorizer::new_boxed(
             Identifier::from_str("*.pebble-e2e-wildcard-multi.example.com")?,
-            ChallengeTestDnsSolver::default(),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
         ),
-        Authorizer::new(
+        Authorizer::new_boxed(
             Identifier::from_str("pebble-e2e-wildcard-multi.example.com")?,
-            ChallengeTestHttpSolver::default(),
+            ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
+                base_url: containers.1.get_management_url()?,
+            }),
         ),
-        Authorizer::new(
+        Authorizer::new_boxed(
             Identifier::from_str("pebble-e2e-multi.example.com")?,
-            ChallengeTestHttpSolver::default(),
+            ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
+                base_url: containers.1.get_management_url()?,
+            }),
         ),
     ];
 
@@ -169,20 +200,19 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
-    let certonaut = setup_pebble_issuer().await?;
+    let (containers, certonaut) = setup_pebble_issuer().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![
-        Authorizer::new(
+        Authorizer::new_boxed(
             Identifier::from_str("*.Bücher.example")?,
-            ChallengeTestDnsSolver::default(),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
         ),
-        Authorizer::new(
+        Authorizer::new_boxed(
             Identifier::from_str("Bücher.example")?,
-            ChallengeTestHttpSolver::default(),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
         ),
     ];
 
@@ -192,99 +222,49 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// #[tokio::test]
+// #[ignore]
+// WIP
+// async fn webroot_solver_e2e_test() -> anyhow::Result<()> {
+//     let certonaut = setup_pebble_issuer().await?;
+//     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+//     let new_key = rcgen::KeyPair::generate()?;
+//     let test_client = pebble::ChallengeTestServerClient::default();
+//     // test_client.add_http_redirect()
+//     let authorizers = vec![Authorizer::new_boxed(
+//         Identifier::from_str("webroot-e2e-test.example.org")?,
+//         WebrootSolver::from_config(WebrootSolverConfiguration {
+//             webroot: "/var/www/html".into(),
+//         }),
+//     )];
+//
+//     let _cert = issuer
+//         .issue(&new_key, None, authorizers, None, None)
+//         .await?;
+//
+//     Ok(())
+// }
 
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
 #[tokio::test]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
-/// - Pebble must be running on its default port, and be configured to use challtestsrv
-/// - Pebble-challtestsrv must be running on its default port (both HTTP & DNS)
+/// - The test needs access to a Docker engine running locally
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";
-    let helper = MagicPebbleHelper::new(test_host.to_string());
-    helper
-        .run(async move || {
-            let certonaut = setup_pebble_issuer().await?;
-            let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-            let new_key = rcgen::KeyPair::generate()?;
-            let authorizers = vec![Authorizer::new(
-                Identifier::from_str(test_host)?,
-                certonaut::magic::MagicHttpSolver::new(5002),
-            )];
+    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = rcgen::KeyPair::generate()?;
+    let authorizers = vec![Authorizer::new(
+        Identifier::from_str(test_host)?,
+        certonaut::magic::MagicHttpSolver::new(containers.1.http_port),
+    )];
 
-            let _cert = issuer
-                .issue(&new_key, None, authorizers, None, None)
-                .await?;
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
 
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?
-}
-
-#[allow(dead_code)]
-struct MagicPebbleHelper {
-    client: reqwest::Client,
-    host: String,
-}
-
-#[allow(dead_code)]
-impl MagicPebbleHelper {
-    /// Find this host's IP address on any external interface
-    async fn get_host_ip() -> std::io::Result<IpAddr> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        // Doesn't actually send any packets, just for routing purposes
-        socket.connect("8.8.8.8:80").await?;
-        socket.local_addr().map(|addr| addr.ip())
-    }
-
-    #[must_use]
-    pub fn new(host: String) -> Self {
-        let client = reqwest::Client::new();
-        Self { client, host }
-    }
-
-    async fn setup_non_localhost_dns(&self) -> anyhow::Result<()> {
-        let host_ip = Self::get_host_ip().await?;
-        let response = self
-            .client
-            .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-a")?)
-            .json(&MockHostIpAddr {
-                host: &self.host,
-                addresses: vec![host_ip],
-            })
-            .send()
-            .await?;
-        response.error_for_status()?;
-        Ok(())
-    }
-
-    async fn cleanup(self) -> anyhow::Result<()> {
-        let response = self
-            .client
-            .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("clear-a")?)
-            .json(&MockHostIpAddr {
-                host: &self.host,
-                addresses: vec![],
-            })
-            .send()
-            .await?;
-        response.error_for_status()?;
-        Ok(())
-    }
-
-    pub async fn run<O, F: AsyncFn() -> O>(self, f: F) -> anyhow::Result<O> {
-        self.setup_non_localhost_dns().await?;
-        let output = f().await;
-        self.cleanup().await?;
-        Ok(output)
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Serialize)]
-struct MockHostIpAddr<'a> {
-    host: &'a str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    addresses: Vec<IpAddr>,
+    Ok(())
 }

@@ -5,7 +5,7 @@ use crate::{ChallengeSolver, Identifier};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use serde::Serialize;
-use std::sync::LazyLock;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
 use url::Url;
 
@@ -33,20 +33,17 @@ pub fn pebble_root() -> reqwest::Result<reqwest::Certificate> {
     reqwest::Certificate::from_pem(PEBBLE_ROOT_PEM.as_bytes())
 }
 
-pub static PEBBLE_CHALLTESTSRV_BASE_URL: LazyLock<Url> =
-    LazyLock::new(|| Url::parse("http://localhost:8055/").unwrap());
-
-#[derive(Default)]
+#[derive(Debug)]
 pub struct ChallengeTestHttpSolver {
-    http: reqwest::Client,
+    test_client: ChallengeTestServerClient,
     challenge: Option<HttpChallenge>,
 }
 
 impl ChallengeTestHttpSolver {
-    pub fn from_config(_config: PebbleHttpSolverConfiguration) -> Box<Self> {
+    pub fn from_config(config: PebbleHttpSolverConfiguration) -> Box<Self> {
         Box::new(Self {
             challenge: None,
-            ..Self::default()
+            test_client: ChallengeTestServerClient::new(config.base_url),
         })
     }
 }
@@ -74,17 +71,10 @@ impl ChallengeSolver for ChallengeTestHttpSolver {
         if let InnerChallenge::Http(http_challenge) = challenge {
             let token = http_challenge.get_token();
             let authorization = http_challenge.get_key_authorization(jwk);
-            let response = self
-                .http
-                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("add-http01").unwrap())
-                .json(&ChallTestHttpBody {
-                    token,
-                    content: Some(authorization),
-                })
-                .send()
+            self.test_client
+                .add_http_01_token(token, authorization)
                 .await?;
             self.challenge = Some(http_challenge);
-            response.error_for_status()?;
             Ok(())
         } else {
             bail!("Unsupported challenge type {}", challenge.get_type())
@@ -93,39 +83,27 @@ impl ChallengeSolver for ChallengeTestHttpSolver {
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
         if let Some(challenge) = self.challenge {
-            let response = self
-                .http
-                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("del-http01").unwrap())
-                .json(&ChallTestHttpBody {
-                    token: challenge.get_token(),
-                    content: None,
-                })
-                .send()
-                .await?;
-            response.error_for_status()?;
-            Ok(())
+            self.test_client
+                .remove_http_01_token(&challenge.token)
+                .await
         } else {
             bail!("No challenge to cleanup")
         }
     }
 }
 
-#[derive(Serialize)]
-struct ChallTestHttpBody<'a> {
-    token: &'a Token,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
-}
-
-#[derive(Default)]
+#[derive(Debug)]
 pub struct ChallengeTestDnsSolver {
-    http: reqwest::Client,
+    test_client: ChallengeTestServerClient,
     identifier: Option<String>,
 }
 
 impl ChallengeTestDnsSolver {
-    pub fn new() -> Box<Self> {
-        Box::new(Self::default())
+    pub fn new(url: Url) -> Box<Self> {
+        Box::new(Self {
+            test_client: ChallengeTestServerClient::new(url),
+            identifier: None,
+        })
     }
 }
 
@@ -157,17 +135,10 @@ impl ChallengeSolver for ChallengeTestDnsSolver {
             // Pebble-challtestsrv requires a period at the end
             let host = format!("{host}.");
             debug!("Setting TXT value {authorization} for host {host}");
-            let response = self
-                .http
-                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("set-txt")?)
-                .json(&ChallTestDnsBody {
-                    host: host.clone(),
-                    value: Some(authorization),
-                })
-                .send()
+            self.test_client
+                .add_dns_txt_record(&host, authorization)
                 .await?;
             self.identifier = Some(host);
-            response.error_for_status()?;
             Ok(())
         } else {
             bail!("Unsupported challenge type {}", challenge.get_type())
@@ -176,23 +147,183 @@ impl ChallengeSolver for ChallengeTestDnsSolver {
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
         if let Some(host) = self.identifier {
-            let response = self
-                .http
-                .post(PEBBLE_CHALLTESTSRV_BASE_URL.join("clear-txt")?)
-                .json(&ChallTestDnsBody { host, value: None })
-                .send()
-                .await?;
-            response.error_for_status()?;
-            Ok(())
+            self.test_client.remove_dns_txt_record(&host).await
         } else {
             bail!("No challenge to cleanup")
         }
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ChallengeTestServerClient {
+    base_url: Url,
+    client: reqwest::Client,
+}
+
+impl ChallengeTestServerClient {
+    pub fn new(base_url: Url) -> Self {
+        Self {
+            base_url,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    async fn post<B: Serialize>(&self, path: &str, body: &B) -> anyhow::Result<()> {
+        let response = self
+            .client
+            .post(self.base_url.join(path)?)
+            .json(body)
+            .send()
+            .await?;
+        response.error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn add_http_01_token(&self, token: &Token, content: String) -> anyhow::Result<()> {
+        self.post(
+            "add-http01",
+            &ChallTestHttpBody {
+                token,
+                content: Some(content),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_http_01_token(&self, token: &Token) -> anyhow::Result<()> {
+        self.post(
+            "del-http01",
+            &ChallTestHttpBody {
+                token,
+                content: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn add_dns_txt_record(&self, host: &str, value: String) -> anyhow::Result<()> {
+        self.post(
+            "set-txt",
+            &ChallTestDnsBody {
+                host,
+                value: Some(value),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_dns_txt_record(&self, host: &str) -> anyhow::Result<()> {
+        self.post("clear-txt", &ChallTestDnsBody { host, value: None })
+            .await
+    }
+
+    pub async fn add_ipv4_address(&self, host: &str, address: Ipv4Addr) -> anyhow::Result<()> {
+        self.post(
+            "add-a",
+            &MockHostIpAddr {
+                host,
+                addresses: vec![IpAddr::V4(address)],
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_ipv4_address(&self, host: &str) -> anyhow::Result<()> {
+        self.post(
+            "clear-a",
+            &MockHostIpAddr {
+                host,
+                addresses: Vec::new(),
+            },
+        )
+        .await
+    }
+
+    pub async fn add_ipv6_address(&self, host: &str, address: Ipv6Addr) -> anyhow::Result<()> {
+        self.post(
+            "add-aaaa",
+            &MockHostIpAddr {
+                host,
+                addresses: vec![IpAddr::V6(address)],
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_ipv6_address(&self, host: &str) -> anyhow::Result<()> {
+        self.post(
+            "clear-aaaa",
+            &MockHostIpAddr {
+                host,
+                addresses: Vec::new(),
+            },
+        )
+        .await
+    }
+
+    pub async fn add_http_redirect(&self, path: &str, target: Url) -> anyhow::Result<()> {
+        self.post(
+            "add-redirect",
+            &HttpRedirectBody {
+                path,
+                target_url: Some(target),
+            },
+        )
+        .await
+    }
+
+    pub async fn remove_http_redirect(&self, path: &str) -> anyhow::Result<()> {
+        self.post(
+            "del-redirect",
+            &HttpRedirectBody {
+                path,
+                target_url: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn set_default_ipv4(&self, ip: Ipv4Addr) -> anyhow::Result<()> {
+        self.post("set-default-ipv4", &IpAddrBody { ip: IpAddr::V4(ip) })
+            .await
+    }
+
+    pub async fn set_default_ipv6(&self, ip: Ipv6Addr) -> anyhow::Result<()> {
+        self.post("set-default-ipv6", &IpAddrBody { ip: IpAddr::V6(ip) })
+            .await
+    }
+}
+
 #[derive(Serialize)]
-struct ChallTestDnsBody {
-    host: String,
+struct ChallTestHttpBody<'a> {
+    token: &'a Token,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ChallTestDnsBody<'a> {
+    host: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MockHostIpAddr<'a> {
+    host: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    addresses: Vec<IpAddr>,
+}
+
+#[derive(Serialize)]
+struct HttpRedirectBody<'a> {
+    path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "targetURL")]
+    target_url: Option<Url>,
+}
+
+#[derive(Serialize)]
+struct IpAddrBody {
+    ip: IpAddr,
 }
