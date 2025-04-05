@@ -1,24 +1,17 @@
 mod common;
 
 use crate::common::{ChallengeTestServerContainer, PebbleContainer};
-use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
-use certonaut::acme::http::HttpClient;
 use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
-use certonaut::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration, PebbleHttpSolverConfiguration,
-};
-use certonaut::crypto::asymmetric::KeyPair;
+use certonaut::config::PebbleHttpSolverConfiguration;
 use certonaut::dns::resolver::Resolver;
-use certonaut::pebble::{pebble_root, ChallengeTestDnsSolver, ChallengeTestHttpSolver};
-use certonaut::{AcmeAccount, Authorizer, Certonaut, Identifier};
+use certonaut::pebble::{ChallengeTestDnsSolver, ChallengeTestHttpSolver};
+use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
-use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr};
-use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
-use url::Url;
+use tracing::debug;
 
 const CA_NAME: &str = "pebble";
 const ACCOUNT_NAME: &str = "pebble-account";
@@ -38,11 +31,9 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
         Ok(existing_containers)
     } else {
         let host_ip = common::get_host_ip().await?;
-        let challtest = common::spawn_challtestsrv_container(host_ip).await?;
-        let dns_server = Url::parse(&format!(
-            "dns://host.docker.internal:{}",
-            challtest.dns_port
-        ))?;
+        debug!("host IP: {host_ip}");
+        let challtest = common::spawn_challtestsrv_container(host_ip, 5002).await?;
+        let dns_server = challtest.get_dns_url(host_ip)?;
         let pebble = common::spawn_pebble_container(dns_server).await?;
         let new_containers = Arc::new((pebble, challtest));
         *fixture = Arc::downgrade(&new_containers);
@@ -50,54 +41,22 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
     }
 }
 
-async fn setup_pebble_issuer() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
+async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
     tracing_subscriber::fmt::try_init().ok();
     let containers = setup_pebble_containers_once().await?;
-    let acme_url = containers.0.get_directory_url()?;
-    let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
-    let acme_client = AcmeClientBuilder::new(acme_url.clone())
-        .with_http_client(http_client)
-        .try_build()
-        .await?;
-    let key_file = Path::new("testdata/account.key");
-    let keypair = KeyPair::load_from_disk(File::open(key_file)?)?;
-    let register_options = AccountRegisterOptions {
-        key: keypair,
-        contact: vec!["mailto:admin@example.org".parse()?],
-        terms_of_service_agreed: Some(true),
-    };
-    let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
     let test_db = certonaut::state::open_test_db().await;
     let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
         containers.1.dns_port,
         true,
     ));
-    let mut certonaut = Certonaut::try_new(
+    let certonaut = Certonaut::try_new(
         new_configuration_manager_with_noop_backend(),
         test_db.into(),
         resolver,
     )?;
-    certonaut.add_new_ca(CertificateAuthorityConfiguration {
-        name: CA_NAME.to_string(),
-        identifier: CA_NAME.to_string(),
-        acme_directory: acme_url,
-        public: false,
-        testing: true,
-        default: false,
-    })?;
-    certonaut.add_new_account(
-        CA_NAME,
-        AcmeAccount::new_account(
-            AccountConfiguration {
-                name: ACCOUNT_NAME.to_string(),
-                identifier: ACCOUNT_NAME.to_string(),
-                key_file: PathBuf::new(),
-                url: account_url,
-            },
-            jwk,
-        ),
-    )?;
+    let certonaut =
+        common::setup_pebble_issuer(containers.0.get_directory_url()?, certonaut).await?;
     Ok((containers, certonaut))
 }
 
@@ -106,7 +65,7 @@ async fn setup_pebble_issuer() -> anyhow::Result<(TestContainersHandle, Certonau
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_http() -> anyhow::Result<()> {
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new_boxed(
@@ -128,7 +87,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new_boxed(
@@ -148,7 +107,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new_boxed(
@@ -168,7 +127,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![
@@ -202,7 +161,7 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![
@@ -223,29 +182,6 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
     Ok(())
 }
 
-// #[tokio::test]
-// #[ignore]
-// WIP
-// async fn webroot_solver_e2e_test() -> anyhow::Result<()> {
-//     let certonaut = setup_pebble_issuer().await?;
-//     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-//     let new_key = rcgen::KeyPair::generate()?;
-//     let test_client = pebble::ChallengeTestServerClient::default();
-//     // test_client.add_http_redirect()
-//     let authorizers = vec![Authorizer::new_boxed(
-//         Identifier::from_str("webroot-e2e-test.example.org")?,
-//         WebrootSolver::from_config(WebrootSolverConfiguration {
-//             webroot: "/var/www/html".into(),
-//         }),
-//     )];
-//
-//     let _cert = issuer
-//         .issue(&new_key, None, authorizers, None, None)
-//         .await?;
-//
-//     Ok(())
-// }
-
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
 #[tokio::test]
 #[ignore]
@@ -254,7 +190,7 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";
-    let (containers, certonaut) = setup_pebble_issuer().await?;
+    let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new(
