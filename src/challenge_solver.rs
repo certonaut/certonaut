@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use url::Url;
 
 impl InnerChallenge {
     pub fn get_type(&self) -> &str {
@@ -332,7 +333,9 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains,
-            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {
+                base_url: Url::parse("http://localhost:8055")?,
+            }),
             solver_name: None,
         })
     }
@@ -343,7 +346,9 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
         Ok(DomainsWithSolverConfiguration {
             domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {}),
+            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {
+                base_url: Url::parse("http://localhost:8055")?,
+            }),
             solver_name: None,
         })
     }

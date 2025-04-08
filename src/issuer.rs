@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{create_and_sign_csr, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, create_and_sign_csr};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
@@ -12,8 +12,8 @@ use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier};
-use anyhow::{anyhow, bail, Context, Error};
+use crate::{AcmeAccount, Authorizer, Identifier, acme, new_acme_client};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -604,7 +604,7 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
+    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -650,7 +650,7 @@ mod tests {
             renewal_info: Some(test_url()),
             meta: None,
         });
-        let fake_directory = Box::leak::<'static>(fake_directory);
+        let fake_directory: &'static Directory = Box::leak(fake_directory);
         let fake_config = CertificateAuthorityConfigurationWithAccounts {
             inner: CertificateAuthorityConfiguration {
                 name: "Fake CA".to_string(),
@@ -669,7 +669,7 @@ mod tests {
         };
         // SAFETY: Directory has 'static lifetime
         unsafe {
-            faux::when!(mock_client.get_directory).then_unchecked(|()| fake_directory);
+            faux::when!(mock_client.get_directory).then_unchecked_return(fake_directory);
         }
         let mut mock_resolver = Resolver::faux();
         faux::when!(mock_resolver.resolve_cname_chain).then(Ok);
@@ -1046,7 +1046,7 @@ mod tests {
                 profiles: expected_profiles.clone(),
             }),
         });
-        let directory = Box::leak::<'static>(directory);
+        let directory: &'static Directory = Box::leak(directory);
         // SAFETY: lifetime of directory is 'static
         unsafe {
             faux::when!(mock_client.get_directory).then_unchecked_return(directory);

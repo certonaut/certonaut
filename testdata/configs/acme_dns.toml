@@ -1,0 +1,22 @@
+[general]
+listen = "0.0.0.0:8054"
+protocol = "both"
+domain = "auth.acme-dns.test"
+nsname = "auth.acme-dns.test"
+nsadmin = "admin.acme-dns.test"
+records = [
+    "auth.acme-dns.test. NS auth.acme-dns.test.",
+]
+debug = false
+[database]
+engine = "sqlite3"
+connection = "/var/lib/acme-dns/acme-dns.db"
+[api]
+ip = "0.0.0.0"
+disable_registration = false
+port = "5003"
+tls = "none"
+[logconfig]
+loglevel = "debug"
+logtype = "stdout"
+logformat = "text"

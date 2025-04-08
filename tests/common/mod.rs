@@ -1,20 +1,27 @@
 #![allow(dead_code)]
 
 use anyhow::Context;
+use bstr::ByteSlice;
 use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, ConfigBackend};
 use certonaut::crypto::asymmetric::KeyPair;
 use certonaut::pebble::pebble_root;
 use certonaut::{AcmeAccount, Certonaut};
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use std::fs::File;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use testcontainers::core::logs::LogFrame;
+use testcontainers::core::logs::consumer::LogConsumer;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio::net::UdpSocket;
 use url::Url;
+
+pub mod dns;
 
 pub const CA_NAME: &str = "pebble";
 pub const ACCOUNT_NAME: &str = "pebble-account";
@@ -37,6 +44,7 @@ pub async fn spawn_pebble_container(dns_server: Url) -> anyhow::Result<PebbleCon
             "-dnsserver",
             dns_server,
         ])
+        .with_log_consumer(TestLogConsumer::default())
         .start()
         .await
         .context("Failed to start pebble")?;
@@ -61,34 +69,43 @@ pub async fn spawn_pebble_container(dns_server: Url) -> anyhow::Result<PebbleCon
 pub async fn spawn_challtestsrv_container(
     host_ip: IpAddr,
     validation_port: u16,
+    dns_port: u16,
 ) -> anyhow::Result<ChallengeTestServerContainer> {
     let management_port = 8055.tcp();
     let http_port = validation_port.tcp();
-    let dns_port = 8053.udp();
-    let dns_port_tcp = 8053.tcp();
+    let dns_port_udp = dns_port.udp();
+    let dns_port_tcp = dns_port.tcp();
     // Ensure challtestsrv resolves to the host by default
     let (default_ipv4, default_ipv6) = match host_ip {
         IpAddr::V4(v4) => (v4.to_string(), String::new()),
         IpAddr::V6(v6) => (String::new(), v6.to_string()),
     };
     let spawned_container = GenericImage::new("ghcr.io/letsencrypt/pebble-challtestsrv", "latest")
-        .with_wait_for(WaitFor::message_on_stdout(
-            "Starting challenge servers",
-        ))
+        .with_wait_for(WaitFor::message_on_stdout("Starting challenge servers"))
         // map these ports statically - this unfortunately can cause port clashes (simultaneous test runs, other apps),
         // but it's the easiest way to ensure that pebble can reach the challtestsrv on the proper validation port
         .with_mapped_port(http_port.as_u16(), http_port)
         .with_mapped_port(management_port.as_u16(), management_port)
-        .with_mapped_port(dns_port.as_u16(), dns_port)
+        .with_mapped_port(dns_port_udp.as_u16(), dns_port_udp)
         .with_mapped_port(dns_port_tcp.as_u16(), dns_port_tcp)
-        .with_cmd(["-defaultIPv4", &default_ipv4, "-defaultIPv6", &default_ipv6])
+        .with_cmd([
+            "-defaultIPv4",
+            &default_ipv4,
+            "-defaultIPv6",
+            &default_ipv6,
+            "-dns01",
+            &format!(":{dns_port}"),
+            "-http01",
+            &format!(":{validation_port}"),
+        ])
+        .with_log_consumer(TestLogConsumer::default())
         .start()
         .await
         .context("Failed to start challtestsrv")?;
     Ok(ChallengeTestServerContainer::new(
         management_port.as_u16(),
         http_port.as_u16(),
-        dns_port.as_u16(),
+        dns_port,
         spawned_container,
     ))
 }
@@ -145,6 +162,19 @@ impl ChallengeTestServerContainer {
 
     pub fn get_dns_url(&self, host_ip: IpAddr) -> Result<Url, url::ParseError> {
         Url::parse(&format!("dns://{host_ip}:{}", self.dns_port))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TestLogConsumer {}
+
+impl LogConsumer for TestLogConsumer {
+    fn accept<'a>(&'a self, record: &'a LogFrame) -> BoxFuture<'a, ()> {
+        match record {
+            LogFrame::StdOut(data) => print!("{}", data.to_str_lossy()),
+            LogFrame::StdErr(data) => eprint!("{}", data.to_str_lossy()),
+        }
+        futures::future::ready(()).boxed()
     }
 }
 

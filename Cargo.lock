@@ -440,6 +440,7 @@ dependencies = [
  "fs4",
  "futures",
  "hickory-resolver",
+ "hickory-server",
  "http",
  "http-body-util",
  "httpdate",
@@ -1274,6 +1275,7 @@ dependencies = [
  "once_cell",
  "rand 0.9.0",
  "ring",
+ "serde",
  "thiserror 2.0.12",
  "tinyvec",
  "tokio",
@@ -1296,9 +1298,34 @@ dependencies = [
  "parking_lot",
  "rand 0.9.0",
  "resolv-conf",
+ "serde",
  "smallvec",
  "thiserror 2.0.12",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "hickory-server"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "716f516285473ce476dfc996bac9a3c9ef2fee4f380ebec5980b12216fe4f547"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "cfg-if",
+ "data-encoding",
+ "enum-as-inner",
+ "futures-util",
+ "hickory-proto",
+ "hickory-resolver",
+ "ipnet",
+ "prefix-trie",
+ "serde",
+ "thiserror 2.0.12",
+ "time",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -1724,6 +1751,9 @@ name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -2326,6 +2356,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77957b295656769bb8ad2b6a6b09d897d94f05c41b069aede1fcdaa675eaea04"
 dependencies = [
  "zerocopy 0.7.35",
+]
+
+[[package]]
+name = "prefix-trie"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb5f930995ba4986bd239ba8d8fded67cad82d1db329c4f316f312847cba16aa"
+dependencies = [
+ "ipnet",
+ "num-traits",
 ]
 
 [[package]]

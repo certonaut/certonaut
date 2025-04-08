@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .context("Opening local database")?;
     let resolver = Resolver::new();
     let client =
-        Certonaut::try_new(config, database, resolver).context("Applying configuration failed")?;
+        Certonaut::try_new(config, database, resolver).context("Loading configuration failed")?;
     let result = handle_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal

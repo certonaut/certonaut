@@ -1,15 +1,17 @@
-use crate::common::{ChallengeTestServerContainer, PebbleContainer, ACCOUNT_NAME, CA_NAME};
+use crate::common::{
+    ACCOUNT_NAME, CA_NAME, ChallengeTestServerContainer, PebbleContainer, TestLogConsumer,
+};
 use anyhow::Context;
 use certonaut::challenge_solver::WebrootSolver;
-use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
 use certonaut::config::WebrootSolverConfiguration;
+use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
 use certonaut::dns::resolver::Resolver;
 use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
-use tempfile::{tempdir, TempDir};
+use tempfile::{TempDir, tempdir};
 use testcontainers::core::{IntoContainerPort, Mount};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
@@ -39,13 +41,15 @@ impl WebServerContainer {
             .to_str()
             .context("temp dir path must be valid UTF-8")?;
         let challenge_port = challenge_port.tcp();
-        let spawned_container = GenericImage::new("halverneus/static-file-server", "latest")
-            .with_env_var("PORT", challenge_port.as_u16().to_string())
-            .with_mapped_port(challenge_port.as_u16(), challenge_port)
-            .with_mount(Mount::bind_mount(webroot_path, "/web"))
-            .start()
-            .await
-            .context("Failed to start static file server")?;
+        let spawned_container =
+            GenericImage::new("ghcr.io/static-web-server/static-web-server", "latest")
+                .with_env_var("SERVER_PORT", challenge_port.as_u16().to_string())
+                .with_mapped_port(challenge_port.as_u16(), challenge_port)
+                .with_mount(Mount::bind_mount(webroot_path, "/public"))
+                .with_log_consumer(TestLogConsumer::default())
+                .start()
+                .await
+                .context("Failed to start static web server")?;
         Ok(Self {
             _inner: spawned_container,
             webroot,
@@ -66,7 +70,7 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
     } else {
         let host_ip = common::get_host_ip().await?;
         debug!("host IP: {host_ip}");
-        let challtest = common::spawn_challtestsrv_container(host_ip, 0).await?;
+        let challtest = common::spawn_challtestsrv_container(host_ip, 0, 8053).await?;
         let dns_server = challtest.get_dns_url(host_ip)?;
         let pebble = common::spawn_pebble_container(dns_server).await?;
         let webserver = WebServerContainer::spawn(5002).await?;

@@ -55,7 +55,15 @@ impl Resolver {
         Self { resolver }
     }
 
-    async fn lookup_generic(&self, source: DnsName, rtype: RecordType) -> Result<Lookup, Error> {
+    // fn get_owned_resolver(&self) -> Arc<hickory_resolver::Resolver<TokioConnectionProvider>> {
+    //     self.resolver.clone()
+    // }
+
+    pub async fn lookup_generic(
+        &self,
+        source: DnsName,
+        rtype: RecordType,
+    ) -> Result<Lookup, Error> {
         match self.resolver.lookup(source, rtype).await {
             Ok(lookup) => Ok(lookup),
             // Note: Order matters, because is_no_records_found includes is_nx_domain
@@ -110,6 +118,20 @@ impl Resolver {
         Ok(resolved)
     }
 }
+
+// impl reqwest::dns::Resolve for Resolver {
+//     fn resolve(&self, name: reqwest::dns::Name) -> Resolving {
+//         let resolver = self.get_owned_resolver();
+//         async move {
+//             let name: DnsName = name.try_into().context("invalid DNS name")?;
+//             let lookup = resolver.lookup_ip(name).await?;
+//             let addrs: reqwest::dns::Addrs =
+//                 Box::new(lookup.into_iter().map(|ip| SocketAddr::new(ip, 0)));
+//             Ok(addrs)
+//         }
+//         .boxed()
+//     }
+// }
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

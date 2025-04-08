@@ -1,8 +1,8 @@
 mod common;
 
 use crate::common::{ChallengeTestServerContainer, PebbleContainer};
-use certonaut::config::test_backend::{new_configuration_manager_with_noop_backend, NoopBackend};
 use certonaut::config::PebbleHttpSolverConfiguration;
+use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
 use certonaut::dns::resolver::Resolver;
 use certonaut::pebble::{ChallengeTestDnsSolver, ChallengeTestHttpSolver};
 use certonaut::{Authorizer, Certonaut, Identifier};
@@ -32,7 +32,7 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
     } else {
         let host_ip = common::get_host_ip().await?;
         debug!("host IP: {host_ip}");
-        let challtest = common::spawn_challtestsrv_container(host_ip, 5002).await?;
+        let challtest = common::spawn_challtestsrv_container(host_ip, 5002, 8053).await?;
         let dns_server = challtest.get_dns_url(host_ip)?;
         let pebble = common::spawn_pebble_container(dns_server).await?;
         let new_containers = Arc::new((pebble, challtest));

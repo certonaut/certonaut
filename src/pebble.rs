@@ -292,6 +292,14 @@ impl ChallengeTestServerClient {
         self.post("set-default-ipv6", &IpAddrBody { ip: IpAddr::V6(ip) })
             .await
     }
+
+    pub async fn add_cname(&self, host: &str, target: &str) -> anyhow::Result<()> {
+        self.post("set-cname", &CNameBody { host, target }).await
+    }
+
+    pub async fn remove_cname(&self, host: &str, target: &str) -> anyhow::Result<()> {
+        self.post("clear-cname", &CNameBody { host, target }).await
+    }
 }
 
 #[derive(Serialize)]
@@ -326,4 +334,10 @@ struct HttpRedirectBody<'a> {
 #[derive(Serialize)]
 struct IpAddrBody {
     ip: IpAddr,
+}
+
+#[derive(Serialize)]
+struct CNameBody<'a> {
+    host: &'a str,
+    target: &'a str,
 }

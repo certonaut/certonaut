@@ -529,6 +529,10 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         }
     }
 
+    // TODO: Refactor this
+    // - show an editor with all domains, and the currently configured solver (or N/A if none configured yet)
+    // - for each domain, allow to select one existing solver, or create a new one
+    // - then remove the file-based thing, it doesn't play nicely with config editing
     fn user_ask_solvers(domains: HashSet<Identifier>) -> Result<DomainSolverMap, Error> {
         println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.

@@ -416,17 +416,19 @@ pub enum SolverConfiguration {
 pub struct NullSolverConfiguration {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PebbleHttpSolverConfiguration {}
+pub struct PebbleHttpSolverConfiguration {
+    pub base_url: Url,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MagicHttpSolverConfiguration {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) validation_port: Option<u16>,
+    pub validation_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebrootSolverConfiguration {
-    pub(crate) webroot: PathBuf,
+    pub webroot: PathBuf,
 }
 
 impl SolverConfiguration {

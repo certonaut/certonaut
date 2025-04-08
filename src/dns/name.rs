@@ -1,4 +1,5 @@
 use hickory_resolver::Name;
+use hickory_resolver::proto::rr::LowerName;
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -153,6 +154,26 @@ impl From<DnsName> for Name {
     }
 }
 
+impl From<&DnsName> for LowerName {
+    fn from(value: &DnsName) -> Self {
+        LowerName::new(&value.inner)
+    }
+}
+
+impl From<DnsName> for LowerName {
+    fn from(value: DnsName) -> Self {
+        (&value).into()
+    }
+}
+
+impl TryFrom<reqwest::dns::Name> for DnsName {
+    type Error = ParseError;
+
+    fn try_from(value: reqwest::dns::Name) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
 impl TryFrom<&str> for DnsName {
     type Error = ParseError;
 
@@ -174,7 +195,7 @@ impl Serialize for DnsName {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.as_ascii())
+        serializer.serialize_str(self.as_utf8())
     }
 }
 

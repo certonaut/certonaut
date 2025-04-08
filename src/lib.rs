@@ -9,8 +9,8 @@ use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
     AccountConfiguration, CertificateAuthorityConfiguration,
     CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
-    Configuration, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
-    MainConfiguration, config_directory,
+    ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
+    config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -61,6 +61,7 @@ pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum Identifier {
     Dns(DnsName),
 }
@@ -192,7 +193,7 @@ pub fn build_domain_solver_maps(
             .is_some()
         {
             bail!("Duplicate solver name: {solver_name}");
-        };
+        }
 
         for identifier in solver_config.domains {
             if domains
@@ -282,6 +283,7 @@ fn modify_certificate_config(
 
 /// Note: This is not collision-free. Use `Certonaut::choose_cert_id_from_display_name` instead.
 fn cert_id_from_display_name(display_name: &str) -> String {
+    // TODO: The names choosen by this function are non-ideal for IDN names
     let mut id_str = String::new();
     for char in display_name.chars() {
         if char.is_ascii_alphanumeric() || char == '_' || char == '-' || char == '.' {
@@ -385,7 +387,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             if let Some(old) = issuers.insert(id, issuer) {
                 let id = old.config.identifier;
                 bail!("Duplicate CA id {id} in configuration");
-            };
+            }
         }
         Ok(Self {
             issuers,
@@ -444,13 +446,6 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 .sorted_by_key(|issuer| issuer.config.name.clone())
                 .map(AcmeIssuer::current_config)
                 .collect(),
-        }
-    }
-
-    pub fn current_config(&self) -> Configuration {
-        Configuration {
-            main: self.current_main_config(),
-            certificates: self.certificates.clone(),
         }
     }
 
@@ -741,7 +736,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .await
         {
             error!("Failed to store renewal in database: {db_error}");
-        };
+        }
         renewal_result.map(|_| ())
     }
 

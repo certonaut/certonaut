@@ -1,0 +1,156 @@
+use crate::common::dns::StubDnsResolver;
+use crate::common::{ACCOUNT_NAME, CA_NAME, PebbleContainer, TestLogConsumer};
+use anyhow::{Context, bail};
+use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::dns::name::DnsName;
+use certonaut::dns::resolver::Resolver;
+use certonaut::dns::solver::acme_dns;
+use certonaut::{Authorizer, Certonaut, Identifier};
+use hickory_resolver::config::NameServerConfigGroup;
+use std::net::{IpAddr, Ipv4Addr};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use tempfile::{TempDir, tempdir};
+use testcontainers::core::{IntoContainerPort, Mount};
+use testcontainers::runners::AsyncRunner;
+use testcontainers::{ContainerAsync, GenericImage, ImageExt};
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+use tracing::debug;
+use url::Url;
+
+mod common;
+
+type TestSetup = (PebbleContainer, StubDnsResolver);
+
+struct AcmeDnsContainer {
+    // Drop order matters: Stop container before cleaning up files
+    _inner: ContainerAsync<GenericImage>,
+    _data_dir: TempDir,
+}
+
+impl AcmeDnsContainer {
+    async fn create_acme_dns_config(base_dir: &Path) -> anyhow::Result<PathBuf> {
+        let config_file_path = base_dir.join("config.cfg");
+        let mut config_file = File::create_new(&config_file_path).await?;
+        let config = include_str!("../testdata/configs/acme_dns.toml");
+        config_file.write_all(config.as_bytes()).await?;
+        Ok(config_file_path)
+    }
+
+    pub async fn spawn() -> anyhow::Result<Self> {
+        let data_dir = tempdir()?;
+        // TODO: Configurable port doesn't work as its hardcoded in config file
+        let dns_port = 8054;
+        let dns_port_udp = dns_port.udp();
+        let dns_port_tcp = dns_port.tcp();
+        let api_port = 5003.tcp();
+        let config_file = Self::create_acme_dns_config(data_dir.path()).await?;
+        let spawned_container = GenericImage::new("ghcr.io/certonaut/acme-dns-ci", "latest")
+            .with_mapped_port(dns_port_udp.as_u16(), dns_port_udp)
+            .with_mapped_port(dns_port_tcp.as_u16(), dns_port_tcp)
+            .with_mapped_port(api_port.as_u16(), api_port)
+            .with_mount(Mount::bind_mount(
+                config_file
+                    .to_str()
+                    .context("Config file path must be valid UTF-8")?,
+                "/etc/acme-dns/config.cfg",
+            ))
+            .with_mount(Mount::bind_mount(
+                data_dir
+                    .path()
+                    .to_str()
+                    .context("Data directory must be valid UTF-8")?,
+                "/var/lib/acme-dns",
+            ))
+            .with_log_consumer(TestLogConsumer::default())
+            .start()
+            .await
+            .context("Failed to start static web server")?;
+        Ok(Self {
+            _inner: spawned_container,
+            _data_dir: data_dir,
+        })
+    }
+
+    #[allow(clippy::unused_self)]
+    pub fn get_api_url(&self) -> Url {
+        Url::parse("http://localhost:5003").unwrap()
+    }
+}
+
+/// Spawn the testcontainers (pebble + stub dns resolver) with the given upstream DNS server
+///
+///
+/// # Returns
+///
+/// The testcontainer instance of Pebble and a local stub DNS server that can be stubbed to provide custom DNS responses
+/// for the `local.test` zone
+async fn setup_pebble_and_dns(upstream_dns: NameServerConfigGroup) -> anyhow::Result<TestSetup> {
+    let host_ip = common::get_host_ip().await?;
+    debug!("host IP: {host_ip}");
+    let stub_dns =
+        StubDnsResolver::try_new(0, DnsName::try_from("local.test")?.into(), upstream_dns).await?;
+    let dns_server = stub_dns.get_dns_url(host_ip)?;
+    let pebble = common::spawn_pebble_container(dns_server).await?;
+    let containers = (pebble, stub_dns);
+    Ok(containers)
+}
+
+async fn test_setup(
+    upstream_dns: NameServerConfigGroup,
+) -> anyhow::Result<(TestSetup, Certonaut<NoopBackend>)> {
+    tracing_subscriber::fmt::try_init().ok();
+    let containers = setup_pebble_and_dns(upstream_dns).await?;
+    let test_db = certonaut::state::open_test_db().await;
+    let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
+        &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        containers.1.listen_port(),
+        true,
+    ));
+    let certonaut = Certonaut::try_new(
+        new_configuration_manager_with_noop_backend(),
+        test_db.into(),
+        resolver,
+    )?;
+    let certonaut =
+        common::setup_pebble_issuer(containers.0.get_directory_url()?, certonaut).await?;
+    Ok((containers, certonaut))
+}
+
+#[tokio::test]
+#[ignore]
+/// Note that this test requires prerequisites to be setup beforehand
+/// - The test needs access to a Docker engine running locally
+async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
+    let acme_dns = AcmeDnsContainer::spawn().await?;
+    let (containers, certonaut) = test_setup(NameServerConfigGroup::from_ips_clear(
+        &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+        8054,
+        true,
+    ))
+    .await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = rcgen::KeyPair::generate()?;
+    let acme_dns_client = acme_dns::Client::new(acme_dns.get_api_url(), reqwest::Client::new());
+    let registration = acme_dns_client.register(std::iter::empty()).await?;
+    let domain_name = Identifier::from_str("acme-dns-e2e-test.local.test")?;
+    let acme_challenge_name = match &domain_name {
+        Identifier::Dns(dns_name) => dns_name.to_acme_challenge_name()?,
+        _ => bail!("Test identifier must be of DNS type"),
+    };
+    let cname_target = DnsName::try_from(registration.full_domain.clone())?;
+    containers
+        .1
+        .authority()
+        .add_cname(acme_challenge_name, cname_target)
+        .await?;
+    let solver = acme_dns::Solver::new(acme_dns_client, registration.into());
+    let authorizers = vec![Authorizer::new(domain_name, solver)];
+
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
+
+    Ok(())
+}
