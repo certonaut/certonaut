@@ -1,5 +1,6 @@
 use crate::common::{
-    ACCOUNT_NAME, CA_NAME, ChallengeTestServerContainer, PebbleContainer, TestLogConsumer,
+    ACCOUNT_NAME, CA_NAME, ChallengeTestServerContainer, HOST_NETWORK, PebbleContainer,
+    TestLogConsumer,
 };
 use anyhow::Context;
 use certonaut::challenge_solver::WebrootSolver;
@@ -44,7 +45,7 @@ impl WebServerContainer {
         let spawned_container =
             GenericImage::new("ghcr.io/static-web-server/static-web-server", "latest")
                 .with_env_var("SERVER_PORT", challenge_port.as_u16().to_string())
-                .with_mapped_port(challenge_port.as_u16(), challenge_port)
+                .with_network(HOST_NETWORK)
                 .with_mount(Mount::bind_mount(webroot_path, "/public"))
                 .with_log_consumer(TestLogConsumer::default())
                 .start()
@@ -70,9 +71,9 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
     } else {
         let host_ip = common::get_host_ip().await?;
         debug!("host IP: {host_ip}");
-        let challtest = common::spawn_challtestsrv_container(host_ip, 0, 8053).await?;
-        let dns_server = challtest.get_dns_url(host_ip)?;
-        let pebble = common::spawn_pebble_container(dns_server).await?;
+        let challtest = ChallengeTestServerContainer::spawn(0, 8053, host_ip).await?;
+        let dns_server = challtest.get_dns_url();
+        let pebble = PebbleContainer::spawn(dns_server).await?;
         let webserver = WebServerContainer::spawn(5002).await?;
         let new_containers = Arc::new((pebble, challtest, webserver));
         *fixture = Arc::downgrade(&new_containers);
@@ -95,7 +96,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
         resolver,
     )?;
     let certonaut =
-        common::setup_pebble_issuer(containers.0.get_directory_url()?, certonaut).await?;
+        common::setup_pebble_issuer(PebbleContainer::get_directory_url(), certonaut).await?;
     Ok((containers, certonaut))
 }
 

@@ -1,5 +1,5 @@
 use crate::common::dns::StubDnsResolver;
-use crate::common::{ACCOUNT_NAME, CA_NAME, PebbleContainer, TestLogConsumer};
+use crate::common::{ACCOUNT_NAME, CA_NAME, HOST_NETWORK, PebbleContainer, TestLogConsumer};
 use anyhow::{Context, bail};
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
 use certonaut::dns::name::DnsName;
@@ -7,16 +7,15 @@ use certonaut::dns::resolver::Resolver;
 use certonaut::dns::solver::acme_dns;
 use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tempfile::{TempDir, tempdir};
-use testcontainers::core::{IntoContainerPort, Mount};
+use testcontainers::core::{Mount, WaitFor};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tracing::debug;
 use url::Url;
 
 mod common;
@@ -40,16 +39,9 @@ impl AcmeDnsContainer {
 
     pub async fn spawn() -> anyhow::Result<Self> {
         let data_dir = tempdir()?;
-        // TODO: Configurable port doesn't work as its hardcoded in config file
-        let dns_port = 8054;
-        let dns_port_udp = dns_port.udp();
-        let dns_port_tcp = dns_port.tcp();
-        let api_port = 5003.tcp();
         let config_file = Self::create_acme_dns_config(data_dir.path()).await?;
         let spawned_container = GenericImage::new("ghcr.io/certonaut/acme-dns-ci", "latest")
-            .with_mapped_port(dns_port_udp.as_u16(), dns_port_udp)
-            .with_mapped_port(dns_port_tcp.as_u16(), dns_port_tcp)
-            .with_mapped_port(api_port.as_u16(), api_port)
+            .with_wait_for(WaitFor::message_on_stderr("Listening DNS"))
             .with_mount(Mount::bind_mount(
                 config_file
                     .to_str()
@@ -63,6 +55,7 @@ impl AcmeDnsContainer {
                     .context("Data directory must be valid UTF-8")?,
                 "/var/lib/acme-dns",
             ))
+            .with_network(HOST_NETWORK)
             .with_log_consumer(TestLogConsumer::default())
             .start()
             .await
@@ -87,12 +80,14 @@ impl AcmeDnsContainer {
 /// The testcontainer instance of Pebble and a local stub DNS server that can be stubbed to provide custom DNS responses
 /// for the `local.test` zone
 async fn setup_pebble_and_dns(upstream_dns: NameServerConfigGroup) -> anyhow::Result<TestSetup> {
-    let host_ip = common::get_host_ip().await?;
-    debug!("host IP: {host_ip}");
-    let stub_dns =
-        StubDnsResolver::try_new(0, DnsName::try_from("local.test")?.into(), upstream_dns).await?;
-    let dns_server = stub_dns.get_dns_url(host_ip)?;
-    let pebble = common::spawn_pebble_container(dns_server).await?;
+    let stub_dns = StubDnsResolver::try_new(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8053),
+        DnsName::try_from("local.test")?.into(),
+        upstream_dns,
+    )
+    .await?;
+    let dns_server = stub_dns.get_dns_url()?;
+    let pebble = PebbleContainer::spawn(dns_server).await?;
     let containers = (pebble, stub_dns);
     Ok(containers)
 }
@@ -114,7 +109,7 @@ async fn test_setup(
         resolver,
     )?;
     let certonaut =
-        common::setup_pebble_issuer(containers.0.get_directory_url()?, certonaut).await?;
+        common::setup_pebble_issuer(PebbleContainer::get_directory_url(), certonaut).await?;
     Ok((containers, certonaut))
 }
 
@@ -123,13 +118,13 @@ async fn test_setup(
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
-    let acme_dns = AcmeDnsContainer::spawn().await?;
     let (containers, certonaut) = test_setup(NameServerConfigGroup::from_ips_clear(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
         8054,
         true,
     ))
     .await?;
+    let acme_dns = AcmeDnsContainer::spawn().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let acme_dns_client = acme_dns::Client::new(acme_dns.get_api_url(), reqwest::Client::new());

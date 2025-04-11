@@ -14,7 +14,7 @@ use hickory_server::proto::rr::{RData, Record};
 use hickory_server::server::RequestInfo;
 use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
 
@@ -30,28 +30,24 @@ use url::Url;
 pub struct StubDnsResolver {
     server: ServerFuture<Catalog>,
     authority: Arc<StubAuthority>,
-    listen_port: u16,
+    listen_addr: SocketAddr,
 }
 
 impl StubDnsResolver {
     /// Create a new resolver instance.
     ///
     /// # Arguments
-    /// - `listen_port` - The port the resolver will listen on. Currently IPv4 UDP only (no TCP). Set to 0 to choose an arbitrary port.
+    /// - `listen_addr` - The address tuple (IP + port) the resolver will listen on. Currently UDP only (no TCP). Set port to 0 to choose an arbitrary port.
     /// - `local_zone` - Zone name where local data can be added.
     /// - `forward_servers` - All queries will be forwarded to (at least one) forward server and the results are merged with the local zone.
     ///   Can be an empty list, in which case forwarding is implicitly disabled.
     pub async fn try_new(
-        listen_port: u16,
+        listen_addr: SocketAddr,
         local_zone: Name,
         forward_servers: NameServerConfigGroup,
     ) -> anyhow::Result<Self> {
-        let socket = tokio::net::UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::UNSPECIFIED,
-            listen_port,
-        )))
-        .await?;
-        let listen_port = socket.local_addr()?.port();
+        let socket = tokio::net::UdpSocket::bind(listen_addr).await?;
+        let listen_addr = socket.local_addr()?;
         let mut catalog = Catalog::default();
         let authority = Arc::new(StubAuthority::try_new(local_zone, forward_servers)?);
         catalog.upsert(LowerName::from(Name::root()), vec![authority.clone()]);
@@ -60,7 +56,7 @@ impl StubDnsResolver {
         Ok(Self {
             server,
             authority,
-            listen_port,
+            listen_addr,
         })
     }
 
@@ -69,11 +65,11 @@ impl StubDnsResolver {
     }
 
     pub fn listen_port(&self) -> u16 {
-        self.listen_port
+        self.listen_addr.port()
     }
 
-    pub fn get_dns_url(&self, host_ip: IpAddr) -> Result<Url, url::ParseError> {
-        Url::parse(&format!("dns://{host_ip}:{}", self.listen_port()))
+    pub fn get_dns_url(&self) -> Result<Url, url::ParseError> {
+        Url::parse(&format!("dns://{}", self.listen_addr))
     }
 }
 
@@ -392,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_dns_resolver_local_data_resolves() -> anyhow::Result<()> {
         let server = StubDnsResolver::try_new(
-            0,
+            "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
             NameServerConfigGroup::new(),
         )
@@ -421,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_dns_resolver_local_data_removed() -> anyhow::Result<()> {
         let server = StubDnsResolver::try_new(
-            0,
+            "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
             NameServerConfigGroup::new(),
         )
@@ -453,7 +449,7 @@ mod tests {
     #[tokio::test]
     async fn test_stub_dns_resolver_local_data_forwards_cname() -> anyhow::Result<()> {
         let server = StubDnsResolver::try_new(
-            0,
+            "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
             NameServerConfigGroup::cloudflare(),
         )
@@ -474,7 +470,6 @@ mod tests {
                 RData::CNAME(CNAME(destination_name.clone().into())),
             )
             .await;
-        // tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         let lookup = resolver
             .lookup_generic(source_name, RecordType::TXT)
             .await?;
@@ -493,7 +488,7 @@ mod tests {
     async fn test_stub_dns_resolver_when_local_zone_has_no_entries_returns_upstream()
     -> anyhow::Result<()> {
         let server = StubDnsResolver::try_new(
-            0,
+            "127.0.0.1:0".parse()?,
             DnsName::try_from("test.certonaut.net")?.into(),
             NameServerConfigGroup::cloudflare(),
         )

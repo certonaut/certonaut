@@ -11,7 +11,6 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use tokio::sync::Mutex;
-use tracing::debug;
 
 const CA_NAME: &str = "pebble";
 const ACCOUNT_NAME: &str = "pebble-account";
@@ -31,10 +30,10 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
         Ok(existing_containers)
     } else {
         let host_ip = common::get_host_ip().await?;
-        debug!("host IP: {host_ip}");
-        let challtest = common::spawn_challtestsrv_container(host_ip, 5002, 8053).await?;
-        let dns_server = challtest.get_dns_url(host_ip)?;
-        let pebble = common::spawn_pebble_container(dns_server).await?;
+        println!("host IP: {host_ip}");
+        let challtest = ChallengeTestServerContainer::spawn(5002, 8053, host_ip).await?;
+        let dns_server = challtest.get_dns_url();
+        let pebble = PebbleContainer::spawn(dns_server).await?;
         let new_containers = Arc::new((pebble, challtest));
         *fixture = Arc::downgrade(&new_containers);
         Ok(new_containers)
@@ -56,7 +55,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
         resolver,
     )?;
     let certonaut =
-        common::setup_pebble_issuer(containers.0.get_directory_url()?, certonaut).await?;
+        common::setup_pebble_issuer(PebbleContainer::get_directory_url(), certonaut).await?;
     Ok((containers, certonaut))
 }
 
@@ -71,7 +70,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-http01.example.com")?,
         ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
-            base_url: containers.1.get_management_url()?,
+            base_url: containers.1.get_management_url(),
         }),
     )];
 
@@ -92,7 +91,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-dns01.example.com")?,
-        ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
+        ChallengeTestDnsSolver::new(containers.1.get_management_url()),
     )];
 
     let _cert = issuer
@@ -112,7 +111,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
     let new_key = rcgen::KeyPair::generate()?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("*.pebble-e2e-wildcard-single.example.com")?,
-        ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
+        ChallengeTestDnsSolver::new(containers.1.get_management_url()),
     )];
 
     let _cert = issuer
@@ -133,18 +132,18 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
     let authorizers = vec![
         Authorizer::new_boxed(
             Identifier::from_str("*.pebble-e2e-wildcard-multi.example.com")?,
-            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()),
         ),
         Authorizer::new_boxed(
             Identifier::from_str("pebble-e2e-wildcard-multi.example.com")?,
             ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
-                base_url: containers.1.get_management_url()?,
+                base_url: containers.1.get_management_url(),
             }),
         ),
         Authorizer::new_boxed(
             Identifier::from_str("pebble-e2e-multi.example.com")?,
             ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
-                base_url: containers.1.get_management_url()?,
+                base_url: containers.1.get_management_url(),
             }),
         ),
     ];
@@ -167,11 +166,11 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
     let authorizers = vec![
         Authorizer::new_boxed(
             Identifier::from_str("*.Bücher.example")?,
-            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()),
         ),
         Authorizer::new_boxed(
             Identifier::from_str("Bücher.example")?,
-            ChallengeTestDnsSolver::new(containers.1.get_management_url()?),
+            ChallengeTestDnsSolver::new(containers.1.get_management_url()),
         ),
     ];
 
@@ -190,12 +189,14 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges
 async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";
-    let (containers, certonaut) = test_setup().await?;
+    let (_containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
+    let http_port = 5002;
+    println!("Validation port is {http_port}");
     let authorizers = vec![Authorizer::new(
         Identifier::from_str(test_host)?,
-        certonaut::magic::MagicHttpSolver::new(containers.1.http_port),
+        certonaut::magic::MagicHttpSolver::new(http_port),
     )];
 
     let _cert = issuer
