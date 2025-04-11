@@ -36,10 +36,10 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Build
-      run: cargo build --verbose --locked --all-features
+      run: cargo build --locked --all-features
     
     - name: Run tests
-      run: cargo test --verbose --locked --all-features
+      run: cargo test --locked --all-features
 
     - name: Run Integration Tests
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
