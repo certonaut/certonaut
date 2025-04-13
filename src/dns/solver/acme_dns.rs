@@ -1,11 +1,22 @@
-use crate::Identifier;
 use crate::acme::object::InnerChallenge;
-use crate::challenge_solver::ChallengeSolver;
+use crate::challenge_solver::{
+    ChallengeSolver, DomainsWithSolverConfiguration, SolverCategory, SolverConfigBuilder,
+};
+use crate::cli::CommandLineSolverConfiguration;
+use crate::config::{AcmeDnsConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
+use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
+use crate::{Identifier, acme};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
+use clap::{Args, Command, CommandFactory, FromArgMatches, Parser};
+use futures::FutureExt;
+use inquire::PasswordDisplayMode;
+use inquire::validator::Validation;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::net::IpAddr;
+use std::str::FromStr;
 use tracing::warn;
 use url::Url;
 
@@ -20,6 +31,11 @@ impl Solver {
             client,
             registration,
         }
+    }
+
+    pub fn try_from_config(config: AcmeDnsConfiguration) -> anyhow::Result<Box<Self>> {
+        let client = Client::new_with_default_transport(config.server)?;
+        Ok(Box::new(Self::new(client, config.registration)))
     }
 }
 
@@ -66,6 +82,7 @@ impl ChallengeSolver for Solver {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Client {
     server_url: Url,
     client: reqwest::Client,
@@ -74,6 +91,14 @@ pub struct Client {
 impl Client {
     pub fn new(server_url: Url, client: reqwest::Client) -> Self {
         Self { server_url, client }
+    }
+
+    pub fn new_with_default_transport(server_url: Url) -> anyhow::Result<Self> {
+        // TODO: Reuse HTTP client from somewhere?
+        let reqwest_client = reqwest::Client::builder()
+            .user_agent(acme::http::USER_AGENT)
+            .build()?;
+        Ok(Self::new(server_url, reqwest_client))
     }
 
     pub async fn register(
@@ -132,12 +157,20 @@ impl Client {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Args)]
 pub struct Registration {
-    full_domain: String,
-    subdomain: String,
-    username: String,
-    password: String,
+    /// The full domain received from the acme-dns server during registration
+    #[clap(long)]
+    pub full_domain: String,
+    /// The subdomain part from the registration
+    #[clap(long)]
+    pub subdomain: String,
+    /// API username received during registration
+    #[clap(long)]
+    pub username: String,
+    /// API password (or API key) received during registration
+    #[clap(long)]
+    pub password: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,4 +205,208 @@ impl From<CreatedRegistration> for Registration {
 struct UpdateBody {
     subdomain: String,
     txt: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Builder {}
+
+/// acme-dns (<https://github.com/joohoi/acme-dns>) solves the dns challenge for any domain by redirecting the challenge domain to an ACME-DNS server. Requires an acme-dns installation.
+#[derive(Debug, Parser)]
+#[command(about, name = "acme-dns")]
+struct CommandLineArgs {
+    #[clap(long)]
+    /// API URL of the acme-dns instance
+    server: Url,
+    #[clap(flatten)]
+    registration: Registration,
+}
+
+#[async_trait]
+impl SolverConfigBuilder for Builder {
+    fn new() -> Box<Self>
+    where
+        Self: Sized,
+    {
+        Box::new(Self::default())
+    }
+
+    fn name(&self) -> &'static str {
+        "acme-dns"
+    }
+
+    fn description(&self) -> &'static str {
+        "acme-dns (https://github.com/joohoi/acme-dns) solves the dns challenge for any domain by redirecting the challenge domain to an ACME-DNS server. Requires an acme-dns installation."
+    }
+
+    fn category(&self) -> SolverCategory {
+        SolverCategory::Dns
+    }
+
+    fn preference(&self) -> usize {
+        40
+    }
+
+    fn supported(&self, domains: &HashSet<Identifier>) -> bool {
+        domains
+            .iter()
+            .all(|domain| matches!(domain, Identifier::Dns(_)))
+    }
+
+    async fn build_interactive(
+        &self,
+        domains: HashSet<Identifier>,
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        if !self.supported(&domains) {
+            bail!("The acme-dns solver can only be used with domain names");
+        }
+        let server = inquire::CustomType::<Url>::new("Enter the API URL of your acme-dns server")
+            .with_default(Url::from_str("https://auth.acme-dns.io")?)
+            .with_help_message("Refer to acme-dns documentation at https://github.com/joohoi/acme-dns for how to setup your own instance")
+            .with_validator(|url: &Url| {
+                if url.scheme() != "http" && url.scheme() != "https" {
+                    Ok(Validation::Invalid("Must be a HTTP(S) URL".into()))
+                } else {
+                    Ok(Validation::Valid)
+                }
+            })
+            .with_error_message("Enter a valid URL")
+            .prompt()
+            .context("No answer to acme-dns server prompt")?;
+        let client = Client::new_with_default_transport(server.clone())?;
+        println!(
+            "You can provide an existing acme-dns account/registration if you want, or create a fresh one now."
+        );
+        let new_registration = inquire::Confirm::new("Create a fresh registration?")
+            .with_default(true)
+            .prompt()
+            .context("No answer to new registration prompt")?;
+
+        let registration: Registration = if new_registration {
+            client
+                .register(std::iter::empty())
+                .await
+                .context(format!(
+                    "Failed to register new account at acme-dns server {server}"
+                ))?
+                .into()
+        } else {
+            let dummy_registration = Registration {
+                full_domain: String::new(),
+                subdomain: String::new(),
+                username: String::new(),
+                password: String::new(),
+            };
+            InteractiveConfigEditor::new(
+                "Fill out all fields",
+                dummy_registration,
+                [
+                    ClosureEditor::new(
+                    "Full domain",
+                    &|registration: &Registration| registration.full_domain.as_str().into(),
+                    |mut config: Registration| async {
+                        config.full_domain = inquire::Text::new("Enter the full domain (subdomain + acme-dns base domain) received during registration")
+                            .with_initial_value(&config.full_domain).prompt().context("No answer to full domain dialog")?;
+                        Ok(config)
+                    }.boxed(),
+                ),
+                    ClosureEditor::new(
+                    "Subdomain",
+                    &|registration: &Registration| registration.subdomain.as_str().into(),
+                    |mut config: Registration| async {
+                        config.subdomain = inquire::Text::new("Enter the subdomain received during registration (usually first part of full domain)")
+                            .with_initial_value(&config.subdomain).prompt().context("No answer to subdomain dialog")?;
+                        Ok(config)
+                    }.boxed(),
+                ),
+                    ClosureEditor::new(
+                        "Username",
+                        &|registration: &Registration| registration.username.as_str().into(),
+                        |mut config: Registration| async {
+                            config.username = inquire::Text::new("Enter the username received during registration")
+                                .with_initial_value(&config.username).prompt().context("No answer to username dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                    ClosureEditor::new(
+                        "Password",
+                        &|registration: &Registration| registration.password.chars().map(|_| '*').collect(),
+                        |mut config: Registration| async {
+                            config.password = inquire::Password::new("Enter the password (or API-Key) received during registration")
+                                .with_display_mode(PasswordDisplayMode::Masked).prompt().context("No answer to password dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                ]
+                .into_iter(),
+                |registration: &Registration| {
+                    async {
+                        if registration.full_domain.is_empty() || registration.subdomain.is_empty() || registration.username.is_empty() || registration.password.is_empty() {
+                            println!("Error: No registration field may be empty");
+                            Ok(false)
+                        } else {
+                            Ok(true)
+                        }
+                    }.boxed()
+                },
+            )
+            .edit_config()
+            .await?
+        };
+        let mut challenge_domains = HashSet::new();
+        for domain in &domains {
+            #[allow(irrefutable_let_patterns)]
+            if let Identifier::Dns(domain) = domain {
+                challenge_domains.insert(domain.to_acme_challenge_name()?);
+            } else {
+                bail!("Identifier {domain} is not a domain name and cannot be used for acme-dns");
+            }
+        }
+        let target_domain = registration.full_domain.clone();
+        loop {
+            println!(
+                "Please add the following CNAME records now in your DNS provider's zone management. You only need to do this once. The CNAMEs should remain there permanently."
+            );
+            for challenge_domain in &challenge_domains {
+                let challenge_domain = challenge_domain.as_ascii();
+                println!("{challenge_domain}. IN CNAME {target_domain}.");
+            }
+            let confirm = inquire::Confirm::new(
+                "Confirm that you have added or verified that the above CNAME records all exist",
+            )
+            .with_default(false)
+            .prompt()
+            .context("No confirmation given")?;
+            if confirm {
+                break;
+            }
+        }
+        // TODO: Validate CNAMEs are actually in place?
+        Ok(DomainsWithSolverConfiguration {
+            domains,
+            config: SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
+                registration,
+                server,
+            }),
+            solver_name: None,
+        })
+    }
+
+    async fn build_from_command_line(
+        &self,
+        cmd_line_config: CommandLineSolverConfiguration,
+    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        let args = CommandLineArgs::from_arg_matches(&cmd_line_config.matches)?;
+        Ok(DomainsWithSolverConfiguration {
+            domains: cmd_line_config.base.domains.into_iter().collect(),
+            config: SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
+                registration: args.registration,
+                server: args.server,
+            }),
+            solver_name: None,
+        })
+    }
+
+    fn get_command_line(&self) -> Command {
+        CommandLineArgs::command()
+    }
 }

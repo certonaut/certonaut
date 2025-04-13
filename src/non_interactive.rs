@@ -30,7 +30,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         self.client.issue_new(config).await
     }
 
-    pub fn modify_cert_config(&mut self, cmd: CertificateModifyCommand) -> Result<(), Error> {
+    pub async fn modify_cert_config(&mut self, cmd: CertificateModifyCommand) -> Result<(), Error> {
         let cert_id = cmd
             .cert_id
             .context("A certificate ID must be specified in non-interactive mode")?;
@@ -39,7 +39,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             .get_certificate(&cert_id)
             .cloned()
             .context(format!("Certificate {cert_id} not found"))?;
-        let new_config = crate::modify_certificate_config(current_config, cmd.new_config)?;
+        let new_config = crate::modify_certificate_config(current_config, cmd.new_config).await?;
         self.client.replace_certificate(&cert_id, new_config)?;
         println!(
             "Successfully modified certificate configuration. The new configuration will become effective on the next renewal."
@@ -182,7 +182,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             })
             .context(format!("You must specify an account for CA {ca}"))?;
         let domains_and_solvers =
-            crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration)?;
+            crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration).await?;
         if domains_and_solvers.domains.is_empty() {
             bail!(
                 "In non-interactive mode you must specify both domains and solvers on the command line"

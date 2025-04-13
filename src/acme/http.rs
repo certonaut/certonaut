@@ -7,7 +7,7 @@ use url::Url;
 
 // As per RFC8555 Section 6.1, we should conform both to RFC 7525 and supply the name + version
 // of our HTTP library.
-const USER_AGENT: &str = concat!(
+pub const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),
     "/",
     env!("CARGO_PKG_VERSION"),

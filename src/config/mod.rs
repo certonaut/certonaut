@@ -4,6 +4,7 @@ use crate::challenge_solver::{ChallengeSolver, NullSolver, WebrootSolver};
 use crate::config::toml::TomlConfiguration;
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
+use crate::dns::solver::acme_dns;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
@@ -410,6 +411,7 @@ pub enum SolverConfiguration {
     PebbleHttp(PebbleHttpSolverConfiguration),
     MagicHttp(MagicHttpSolverConfiguration),
     Webroot(WebrootSolverConfiguration),
+    AcmeDns(AcmeDnsConfiguration),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,6 +433,13 @@ pub struct WebrootSolverConfiguration {
     pub webroot: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcmeDnsConfiguration {
+    #[serde(flatten)]
+    pub registration: acme_dns::Registration,
+    pub server: Url,
+}
+
 impl SolverConfiguration {
     pub fn to_solver(self) -> Result<Box<dyn ChallengeSolver>, Error> {
         Ok(match self {
@@ -438,6 +447,7 @@ impl SolverConfiguration {
             SolverConfiguration::PebbleHttp(solver) => ChallengeTestHttpSolver::from_config(solver),
             SolverConfiguration::MagicHttp(solver) => MagicHttpSolver::try_from_config(solver)?,
             SolverConfiguration::Webroot(solver) => WebrootSolver::from_config(solver),
+            SolverConfiguration::AcmeDns(solver) => acme_dns::Solver::try_from_config(solver)?,
         })
     }
 
@@ -447,6 +457,7 @@ impl SolverConfiguration {
             SolverConfiguration::PebbleHttp(_) => "pebble-http",
             SolverConfiguration::MagicHttp(_) => "magic-http",
             SolverConfiguration::Webroot(_) => "webroot",
+            SolverConfiguration::AcmeDns(_) => "acme-dns",
         }
     }
 }

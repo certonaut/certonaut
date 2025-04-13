@@ -6,6 +6,7 @@ use crate::config::{
 };
 use crate::crypto::jws::JsonWebKey;
 use crate::crypto::{SHA256_LENGTH, sha256};
+use crate::dns::solver::acme_dns;
 use crate::{Identifier, magic};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
@@ -206,6 +207,7 @@ pub enum SolverCategory {
     Advanced,
     Testing,
     Http,
+    Dns,
 }
 
 impl Display for SolverCategory {
@@ -214,10 +216,12 @@ impl Display for SolverCategory {
             SolverCategory::Advanced => write!(f, "ADVANCED"),
             SolverCategory::Testing => write!(f, "TESTING ONLY"),
             SolverCategory::Http => write!(f, "HTTP"),
+            SolverCategory::Dns => write!(f, "DNS"),
         }
     }
 }
 
+#[async_trait]
 pub trait SolverConfigBuilder: Send + Sync {
     fn new() -> Box<Self>
     where
@@ -227,11 +231,11 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn category(&self) -> SolverCategory;
     fn preference(&self) -> usize;
     fn supported(&self, domains: &HashSet<Identifier>) -> bool;
-    fn build_interactive(
+    async fn build_interactive(
         &self,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration>;
-    fn build_from_command_line(
+    async fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<DomainsWithSolverConfiguration>;
@@ -247,6 +251,7 @@ pub struct DomainsWithSolverConfiguration {
 
 struct NullSolverBuilder;
 
+#[async_trait]
 impl SolverConfigBuilder for NullSolverBuilder {
     fn new() -> Box<Self> {
         Box::new(NullSolverBuilder {})
@@ -273,7 +278,7 @@ with the CA. Will cause failures otherwise."
         true
     }
 
-    fn build_interactive(
+    async fn build_interactive(
         &self,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -284,7 +289,7 @@ with the CA. Will cause failures otherwise."
         })
     }
 
-    fn build_from_command_line(
+    async fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -302,6 +307,7 @@ with the CA. Will cause failures otherwise."
 
 struct ChallengeTestHttpBuilder;
 
+#[async_trait]
 impl SolverConfigBuilder for ChallengeTestHttpBuilder {
     fn new() -> Box<Self> {
         Box::new(ChallengeTestHttpBuilder {})
@@ -327,7 +333,7 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         cfg!(debug_assertions)
     }
 
-    fn build_interactive(
+    async fn build_interactive(
         &self,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -340,7 +346,7 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
         })
     }
 
-    fn build_from_command_line(
+    async fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -360,6 +366,7 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
 
 struct MagicHttpBuilder;
 
+#[async_trait]
 impl SolverConfigBuilder for MagicHttpBuilder {
     fn new() -> Box<Self> {
         Box::new(MagicHttpBuilder {})
@@ -385,7 +392,7 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         magic::is_supported()
     }
 
-    fn build_interactive(
+    async fn build_interactive(
         &self,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -421,7 +428,7 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         })
     }
 
-    fn build_from_command_line(
+    async fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -465,6 +472,7 @@ struct WebrootCommand {
 
 struct WebrootBuilder;
 
+#[async_trait]
 impl SolverConfigBuilder for WebrootBuilder {
     fn new() -> Box<Self> {
         Box::new(WebrootBuilder {})
@@ -490,7 +498,7 @@ impl SolverConfigBuilder for WebrootBuilder {
         true
     }
 
-    fn build_interactive(
+    async fn build_interactive(
         &self,
         domains: HashSet<Identifier>,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -529,7 +537,7 @@ impl SolverConfigBuilder for WebrootBuilder {
         })
     }
 
-    fn build_from_command_line(
+    async fn build_from_command_line(
         &self,
         cmd_line_config: CommandLineSolverConfiguration,
     ) -> anyhow::Result<DomainsWithSolverConfiguration> {
@@ -556,6 +564,7 @@ pub static CHALLENGE_SOLVER_REGISTRY: LazyLock<Vec<Box<dyn SolverConfigBuilder>>
             ChallengeTestHttpBuilder::new(),
             MagicHttpBuilder::new(),
             WebrootBuilder::new(),
+            acme_dns::Builder::new(),
         ];
         builders.sort_by_key(|b| b.preference());
         builders

@@ -514,7 +514,7 @@ async fn handle_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
                 service.interactive_modify_cert_configuration(modify).await
             } else {
                 let mut service = NonInteractiveService::new(client);
-                service.modify_cert_config(modify)
+                service.modify_cert_config(modify).await
             }
         }
     }

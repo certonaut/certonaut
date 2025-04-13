@@ -5,6 +5,7 @@ use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_wit
 use certonaut::dns::name::DnsName;
 use certonaut::dns::resolver::Resolver;
 use certonaut::dns::solver::acme_dns;
+use certonaut::dns::solver::acme_dns::Registration;
 use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -128,8 +129,9 @@ async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
     let new_key = rcgen::KeyPair::generate()?;
     let acme_dns_client = acme_dns::Client::new(acme_dns.get_api_url(), reqwest::Client::new());
-    let registration = acme_dns_client.register(std::iter::empty()).await?;
+    let registration: Registration = acme_dns_client.register(std::iter::empty()).await?.into();
     let domain_name = Identifier::from_str("acme-dns-e2e-test.local.test")?;
+    let domain_name_wildcard = Identifier::from_str("*.acme-dns-e2e-test.local.test")?;
     let acme_challenge_name = match &domain_name {
         Identifier::Dns(dns_name) => dns_name.to_acme_challenge_name()?,
         _ => bail!("Test identifier must be of DNS type"),
@@ -140,8 +142,12 @@ async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
         .authority()
         .add_cname(acme_challenge_name, cname_target)
         .await?;
-    let solver = acme_dns::Solver::new(acme_dns_client, registration.into());
-    let authorizers = vec![Authorizer::new(domain_name, solver)];
+    let solver = acme_dns::Solver::new(acme_dns_client.clone(), registration.clone());
+    let solver_wildcard = acme_dns::Solver::new(acme_dns_client, registration);
+    let authorizers = vec![
+        Authorizer::new(domain_name_wildcard, solver_wildcard),
+        Authorizer::new(domain_name, solver),
+    ];
 
     let _cert = issuer
         .issue(&new_key, None, authorizers, None, None)

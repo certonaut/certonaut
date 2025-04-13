@@ -8,14 +8,14 @@ use std::fmt::Display;
 #[async_trait]
 pub trait ConfigElementEditor<C: Send + Sync>: Send + Sync {
     fn get_name(&self) -> &str;
-    fn get_value<'a>(&'a self, config: &'a C) -> Cow<'a, str>;
+    fn get_value<'a>(&self, config: &'a C) -> Cow<'a, str>;
     async fn edit(&mut self, config: C) -> anyhow::Result<C>;
 }
 
-pub type GetFunction<'a, C> = dyn Fn(&C) -> Cow<str> + Send + Sync + 'a;
+pub type GetFunction<'a, C> = dyn for<'any> Fn(&'any C) -> Cow<'any, str> + Send + Sync + 'a;
 pub type EditFunction<'a, C> = dyn FnMut(C) -> BoxFuture<'a, anyhow::Result<C>> + Send + Sync + 'a;
 pub type ValidateFunction<'a, C> =
-    dyn Fn(&C) -> BoxFuture<'a, anyhow::Result<bool>> + Send + Sync + 'a;
+    dyn for<'any> Fn(&'any C) -> BoxFuture<'any, anyhow::Result<bool>> + Send + Sync + 'a;
 
 pub struct ClosureEditor<'a, C> {
     name: String,
@@ -26,7 +26,7 @@ pub struct ClosureEditor<'a, C> {
 impl<'a, C: Send + Sync> ClosureEditor<'a, C> {
     pub fn new<G, E>(name: impl Into<String>, get: &'a G, edit: E) -> Self
     where
-        G: Fn(&C) -> Cow<str> + Send + Sync,
+        G: for<'any> Fn(&'any C) -> Cow<'any, str> + Send + Sync + 'a,
         E: FnMut(C) -> BoxFuture<'a, anyhow::Result<C>> + Send + Sync + 'a,
     {
         Self {
@@ -43,7 +43,7 @@ impl<C: Send + Sync> ConfigElementEditor<C> for ClosureEditor<'_, C> {
         &self.name
     }
 
-    fn get_value<'a>(&'a self, config: &'a C) -> Cow<'a, str> {
+    fn get_value<'a>(&self, config: &'a C) -> Cow<'a, str> {
         (self.get)(config)
     }
 
@@ -93,7 +93,7 @@ impl<'a, C: Send + Sync, E: ConfigElementEditor<C>> InteractiveConfigEditor<'a, 
         validation: V,
     ) -> Self
     where
-        V: Fn(&C) -> BoxFuture<'a, anyhow::Result<bool>> + Send + Sync + 'a,
+        V: for<'any> Fn(&'any C) -> BoxFuture<'any, anyhow::Result<bool>> + Send + Sync + 'a,
     {
         Self {
             message: prompt_message.into(),

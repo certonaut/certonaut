@@ -48,7 +48,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         let (initial_issuer, initial_account) = self.user_select_ca_and_account(&issue_cmd).await?;
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
-        let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains)?;
+        let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains).await?;
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
             cert_name.to_string()
         } else {
@@ -203,7 +203,8 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             .get_certificate(&cert_id)
             .cloned()
             .context(format!("Certificate {cert_id} not found"))?;
-        let merged_config = crate::modify_certificate_config(current_cert_config, cmd.new_config)?;
+        let merged_config =
+            crate::modify_certificate_config(current_cert_config, cmd.new_config).await?;
 
         let new_config = self
             .interactive_edit_cert_configuration(merged_config)
@@ -338,7 +339,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             .client
                             .choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
-                        config.domains_and_solvers = Self::user_ask_solvers(new_domains)?;
+                        config.domains_and_solvers = Self::user_ask_solvers(new_domains).await?;
                         Ok(config)
                     }
                     .boxed()
@@ -380,7 +381,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             .sorted()
                             .cloned()
                             .collect();
-                        config.domains_and_solvers = Self::user_ask_solvers(domains)?;
+                        config.domains_and_solvers = Self::user_ask_solvers(domains).await?;
                         Ok(config)
                     }
                     .boxed()
@@ -518,14 +519,15 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         .into_iter()
     }
 
-    fn user_ask_initial_solvers(
+    async fn user_ask_initial_solvers(
         issue_cmd: &IssueCommand,
         domains: HashSet<Identifier>,
     ) -> Result<DomainSolverMap, Error> {
         if issue_cmd.solver_configuration.is_empty() {
-            Self::user_ask_solvers(domains)
+            Self::user_ask_solvers(domains).await
         } else {
             crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration.clone())
+                .await
         }
     }
 
@@ -533,7 +535,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
     // - show an editor with all domains, and the currently configured solver (or N/A if none configured yet)
     // - for each domain, allow to select one existing solver, or create a new one
     // - then remove the file-based thing, it doesn't play nicely with config editing
-    fn user_ask_solvers(domains: HashSet<Identifier>) -> Result<DomainSolverMap, Error> {
+    async fn user_ask_solvers(domains: HashSet<Identifier>) -> Result<DomainSolverMap, Error> {
         println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.
 Currently, the following challenge \"solvers\" are available to prove control:".blue());
@@ -554,7 +556,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
         .context("No answer to solver prompt")?
         {
             SolverChoice::SingleSolver(single_solver_choice) => {
-                vec![single_solver_choice.build_interactive(domains)?]
+                vec![single_solver_choice.build_interactive(domains).await?]
             }
             SolverChoice::MultipleSolvers => return Self::user_ask_multiple_solvers(domains),
         };
@@ -746,6 +748,7 @@ Currently, the following challenge \"solvers\" are available to prove control:".
             bail!("Domain list cannot be empty");
         }
         if domains.len() == 1 {
+            // TODO: Wildcards: If given name is a wildcard, suggest base domain name instead
             let domain = domains.iter().next().unwrap(/* Infallible */);
             if domain.as_str().starts_with("www.") {
                 let base_name = Identifier::from_str(

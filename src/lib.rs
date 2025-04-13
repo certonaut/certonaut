@@ -207,7 +207,7 @@ pub fn build_domain_solver_maps(
     Ok((domains, solvers).into())
 }
 
-pub fn domain_solver_maps_from_command_line(
+pub async fn domain_solver_maps_from_command_line(
     cmd_line_config: Vec<CommandLineSolverConfiguration>,
 ) -> anyhow::Result<DomainSolverMap> {
     let mut solver_configs = Vec::with_capacity(cmd_line_config.len());
@@ -215,7 +215,8 @@ pub fn domain_solver_maps_from_command_line(
         solver_configs.push(
             solver_config
                 .solver
-                .build_from_command_line(solver_config)?,
+                .build_from_command_line(solver_config)
+                .await?,
         );
     }
     build_domain_solver_maps(solver_configs)
@@ -247,7 +248,7 @@ pub fn authorizers_from_config(
     Ok(authorizers)
 }
 
-fn modify_certificate_config(
+async fn modify_certificate_config(
     mut cert: CertificateConfiguration,
     modify: IssueCommand,
 ) -> anyhow::Result<CertificateConfiguration> {
@@ -274,7 +275,8 @@ fn modify_certificate_config(
         cert.advanced.profile = Some(profile);
     }
     cert.advanced.reuse_key = modify.advanced.reuse_key;
-    let domains_and_solvers = domain_solver_maps_from_command_line(modify.solver_configuration)?;
+    let domains_and_solvers =
+        domain_solver_maps_from_command_line(modify.solver_configuration).await?;
     if !domains_and_solvers.domains.is_empty() {
         cert.domains_and_solvers = domains_and_solvers;
     }

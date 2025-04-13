@@ -1,2 +1,2 @@
-mod editor;
+pub mod editor;
 pub mod service;
