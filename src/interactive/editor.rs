@@ -19,19 +19,19 @@ pub type ValidateFunction<'a, C> =
 
 pub struct ClosureEditor<'a, C> {
     name: String,
-    get: &'a GetFunction<'a, C>,
+    get: Box<GetFunction<'a, C>>,
     edit: Box<EditFunction<'a, C>>,
 }
 
 impl<'a, C: Send + Sync> ClosureEditor<'a, C> {
-    pub fn new<G, E>(name: impl Into<String>, get: &'a G, edit: E) -> Self
+    pub fn new<G, E>(name: impl Into<String>, get: G, edit: E) -> Self
     where
         G: for<'any> Fn(&'any C) -> Cow<'any, str> + Send + Sync + 'a,
         E: FnMut(C) -> BoxFuture<'a, anyhow::Result<C>> + Send + Sync + 'a,
     {
         Self {
             name: name.into(),
-            get,
+            get: Box::new(get),
             edit: Box::new(edit),
         }
     }

@@ -296,6 +296,9 @@ pub struct AuthenticatorBaseCommand {
     /// Domain names to include in the certificate
     #[clap(short, long, value_delimiter = ',', num_args = 1, required = true)]
     pub domains: Vec<Identifier>,
+    /// Custom name for this solver
+    #[clap(long)]
+    pub name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -607,7 +610,7 @@ static SOLVER_RECURSION_COUNTER: AtomicUsize = AtomicUsize::new(0);
 fn recursive_solver_subcommands(subcommand: clap::Command) -> clap::Command {
     if SOLVER_RECURSION_COUNTER.fetch_add(1, Ordering::Relaxed) > MAX_SOLVER_SUBCOMMAND_LENGTH {
         return subcommand;
-    };
+    }
 
     subcommand.subcommands(
         CHALLENGE_SOLVER_REGISTRY

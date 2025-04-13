@@ -405,7 +405,7 @@ impl AcmeClient {
                     .await
             }
             OrderStatus::Processing => {
-                self.poll_finalized_order(account_key, order, &order_url)
+                self.poll_finalized_order(account_key, order, order_url)
                     .await
             }
             OrderStatus::Valid => Ok(order),

@@ -132,7 +132,7 @@ pub mod external {
                 | RenewalOutcome::AuthorizationFailure(msg)
                 | RenewalOutcome::CAFailure(msg)
                 | RenewalOutcome::ClientFailure(msg) => {
-                    write!(f, "{}", msg)
+                    write!(f, "{msg}")
                 }
             }
         }

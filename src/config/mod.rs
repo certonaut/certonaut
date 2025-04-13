@@ -373,22 +373,6 @@ pub struct DomainSolverMap {
     pub solvers: HashMap<String, SolverConfiguration>,
 }
 
-impl
-    From<(
-        HashMap<Identifier, String>,
-        HashMap<String, SolverConfiguration>,
-    )> for DomainSolverMap
-{
-    fn from(
-        (domains, solvers): (
-            HashMap<Identifier, String>,
-            HashMap<String, SolverConfiguration>,
-        ),
-    ) -> Self {
-        Self { domains, solvers }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedCertificateConfiguration {
     pub reuse_key: bool,

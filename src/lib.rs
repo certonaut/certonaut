@@ -4,13 +4,13 @@
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
 use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
-use crate::challenge_solver::{ChallengeSolver, DomainsWithSolverConfiguration};
+use crate::challenge_solver::ChallengeSolver;
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
     AccountConfiguration, CertificateAuthorityConfiguration,
     CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
     ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
-    config_directory,
+    SolverConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
@@ -172,31 +172,37 @@ impl Debug for Authorizer {
     }
 }
 
+pub fn choose_solver_name(new_config: &SolverConfiguration, existing: &DomainSolverMap) -> String {
+    let base_solver_name = new_config.name().to_string();
+    let mut i = 0;
+    let mut solver_name = base_solver_name.clone();
+    while existing.solvers.contains_key(&solver_name) {
+        i += 1;
+        solver_name = format!("{base_solver_name}-{i}");
+    }
+    solver_name
+}
+
 pub fn build_domain_solver_maps(
-    configs: Vec<DomainsWithSolverConfiguration>,
+    configs: Vec<(Vec<Identifier>, Option<String>, SolverConfiguration)>,
 ) -> anyhow::Result<DomainSolverMap> {
-    let mut domains = HashMap::new();
-    let mut solvers = HashMap::new();
-    for solver_config in configs {
-        let solver_name = solver_config.solver_name.clone().unwrap_or_else(|| {
-            let base_solver_name = solver_config.config.name().to_string();
-            let mut i = 0;
-            let mut solver_name = base_solver_name.clone();
-            while solvers.contains_key(&solver_name) {
-                i += 1;
-                solver_name = format!("{base_solver_name}-{i}");
-            }
-            solver_name
-        });
-        if solvers
-            .insert(solver_name.clone(), solver_config.config.clone())
+    let mut map = DomainSolverMap {
+        domains: HashMap::new(),
+        solvers: HashMap::new(),
+    };
+    for (solver_domains, solver_name, solver_config) in configs {
+        let solver_name = solver_name.unwrap_or_else(|| choose_solver_name(&solver_config, &map));
+        if map
+            .solvers
+            .insert(solver_name.clone(), solver_config.clone())
             .is_some()
         {
             bail!("Duplicate solver name: {solver_name}");
         }
 
-        for identifier in solver_config.domains {
-            if domains
+        for identifier in solver_domains {
+            if map
+                .domains
                 .insert(identifier.clone(), solver_name.clone())
                 .is_some()
             {
@@ -204,7 +210,7 @@ pub fn build_domain_solver_maps(
             }
         }
     }
-    Ok((domains, solvers).into())
+    Ok(map)
 }
 
 pub async fn domain_solver_maps_from_command_line(
@@ -212,12 +218,13 @@ pub async fn domain_solver_maps_from_command_line(
 ) -> anyhow::Result<DomainSolverMap> {
     let mut solver_configs = Vec::with_capacity(cmd_line_config.len());
     for solver_config in cmd_line_config {
-        solver_configs.push(
-            solver_config
-                .solver
-                .build_from_command_line(solver_config)
-                .await?,
-        );
+        let new_config = solver_config
+            .solver
+            .build_from_command_line(&solver_config)
+            .await?;
+        let domains = solver_config.base.domains;
+        let name = solver_config.base.name;
+        solver_configs.push((domains, name, new_config));
     }
     build_domain_solver_maps(solver_configs)
 }

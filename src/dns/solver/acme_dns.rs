@@ -1,7 +1,5 @@
 use crate::acme::object::InnerChallenge;
-use crate::challenge_solver::{
-    ChallengeSolver, DomainsWithSolverConfiguration, SolverCategory, SolverConfigBuilder,
-};
+use crate::challenge_solver::{ChallengeSolver, SolverCategory, SolverConfigBuilder};
 use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{AcmeDnsConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
@@ -254,9 +252,9 @@ impl SolverConfigBuilder for Builder {
 
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
-        if !self.supported(&domains) {
+        domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration> {
+        if !self.supported(domains) {
             bail!("The acme-dns solver can only be used with domain names");
         }
         let server = inquire::CustomType::<Url>::new("Enter the API URL of your acme-dns server")
@@ -302,7 +300,7 @@ impl SolverConfigBuilder for Builder {
                 [
                     ClosureEditor::new(
                     "Full domain",
-                    &|registration: &Registration| registration.full_domain.as_str().into(),
+                    |registration: &Registration| registration.full_domain.as_str().into(),
                     |mut config: Registration| async {
                         config.full_domain = inquire::Text::new("Enter the full domain (subdomain + acme-dns base domain) received during registration")
                             .with_initial_value(&config.full_domain).prompt().context("No answer to full domain dialog")?;
@@ -311,7 +309,7 @@ impl SolverConfigBuilder for Builder {
                 ),
                     ClosureEditor::new(
                     "Subdomain",
-                    &|registration: &Registration| registration.subdomain.as_str().into(),
+                    |registration: &Registration| registration.subdomain.as_str().into(),
                     |mut config: Registration| async {
                         config.subdomain = inquire::Text::new("Enter the subdomain received during registration (usually first part of full domain)")
                             .with_initial_value(&config.subdomain).prompt().context("No answer to subdomain dialog")?;
@@ -320,7 +318,7 @@ impl SolverConfigBuilder for Builder {
                 ),
                     ClosureEditor::new(
                         "Username",
-                        &|registration: &Registration| registration.username.as_str().into(),
+                        |registration: &Registration| registration.username.as_str().into(),
                         |mut config: Registration| async {
                             config.username = inquire::Text::new("Enter the username received during registration")
                                 .with_initial_value(&config.username).prompt().context("No answer to username dialog")?;
@@ -329,7 +327,7 @@ impl SolverConfigBuilder for Builder {
                     ),
                     ClosureEditor::new(
                         "Password",
-                        &|registration: &Registration| registration.password.chars().map(|_| '*').collect(),
+                        |registration: &Registration| registration.password.chars().map(|_| '*').collect(),
                         |mut config: Registration| async {
                             config.password = inquire::Password::new("Enter the password (or API-Key) received during registration")
                                 .with_display_mode(PasswordDisplayMode::Masked).prompt().context("No answer to password dialog")?;
@@ -353,7 +351,7 @@ impl SolverConfigBuilder for Builder {
             .await?
         };
         let mut challenge_domains = HashSet::new();
-        for domain in &domains {
+        for domain in domains {
             #[allow(irrefutable_let_patterns)]
             if let Identifier::Dns(domain) = domain {
                 challenge_domains.insert(domain.to_acme_challenge_name()?);
@@ -381,29 +379,21 @@ impl SolverConfigBuilder for Builder {
             }
         }
         // TODO: Validate CNAMEs are actually in place?
-        Ok(DomainsWithSolverConfiguration {
-            domains,
-            config: SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
-                registration,
-                server,
-            }),
-            solver_name: None,
-        })
+        Ok(SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
+            registration,
+            server,
+        }))
     }
 
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration> {
         let args = CommandLineArgs::from_arg_matches(&cmd_line_config.matches)?;
-        Ok(DomainsWithSolverConfiguration {
-            domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
-                registration: args.registration,
-                server: args.server,
-            }),
-            solver_name: None,
-        })
+        Ok(SolverConfiguration::AcmeDns(AcmeDnsConfiguration {
+            registration: args.registration,
+            server: args.server,
+        }))
     }
 
     fn get_command_line(&self) -> Command {

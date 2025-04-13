@@ -129,7 +129,7 @@ impl<CB: ConfigBackend> RenewTask<CB> {
                         return Ok(());
                     }
                 }
-            };
+            }
             info!("Certificate {cert_name} will be renewed in {renew_in_humanized}");
             tokio::time::sleep(renew_in.try_into().unwrap_or(std::time::Duration::ZERO)).await;
             self.client

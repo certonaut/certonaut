@@ -13,10 +13,11 @@ use async_trait::async_trait;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use clap::{Arg, Command, CommandFactory, FromArgMatches, Parser, value_parser};
+use crossterm::style::Stylize;
 use inquire::CustomType;
 use inquire::validator::Validation;
 use std::collections::HashSet;
-use std::fmt::Display;
+use std::fmt::{Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tokio::fs::File;
@@ -211,7 +212,7 @@ pub enum SolverCategory {
 }
 
 impl Display for SolverCategory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             SolverCategory::Advanced => write!(f, "ADVANCED"),
             SolverCategory::Testing => write!(f, "TESTING ONLY"),
@@ -233,20 +234,25 @@ pub trait SolverConfigBuilder: Send + Sync {
     fn supported(&self, domains: &HashSet<Identifier>) -> bool;
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration>;
+        domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration>;
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration>;
+        cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration>;
     fn get_command_line(&self) -> Command;
 }
 
-#[derive(Debug)]
-pub struct DomainsWithSolverConfiguration {
-    pub domains: HashSet<Identifier>,
-    pub config: SolverConfiguration,
-    pub solver_name: Option<String>,
+impl Display for dyn SolverConfigBuilder {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "[{}] {} - {}",
+            self.category().to_string().blue(),
+            self.name().dark_green(),
+            self.description().reset()
+        )
+    }
 }
 
 struct NullSolverBuilder;
@@ -280,24 +286,16 @@ with the CA. Will cause failures otherwise."
 
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
-        Ok(DomainsWithSolverConfiguration {
-            domains,
-            config: SolverConfiguration::Null(NullSolverConfiguration {}),
-            solver_name: None,
-        })
+        _domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration> {
+        Ok(SolverConfiguration::Null(NullSolverConfiguration {}))
     }
 
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
-        Ok(DomainsWithSolverConfiguration {
-            domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::Null(NullSolverConfiguration {}),
-            solver_name: None,
-        })
+        _cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration> {
+        Ok(SolverConfiguration::Null(NullSolverConfiguration {}))
     }
 
     fn get_command_line(&self) -> Command {
@@ -335,28 +333,24 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
 
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
-        Ok(DomainsWithSolverConfiguration {
-            domains,
-            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {
+        _domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration> {
+        Ok(SolverConfiguration::PebbleHttp(
+            PebbleHttpSolverConfiguration {
                 base_url: Url::parse("http://localhost:8055")?,
-            }),
-            solver_name: None,
-        })
+            },
+        ))
     }
 
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
-        Ok(DomainsWithSolverConfiguration {
-            domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::PebbleHttp(PebbleHttpSolverConfiguration {
+        _cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration> {
+        Ok(SolverConfiguration::PebbleHttp(
+            PebbleHttpSolverConfiguration {
                 base_url: Url::parse("http://localhost:8055")?,
-            }),
-            solver_name: None,
-        })
+            },
+        ))
     }
 
     fn get_command_line(&self) -> Command {
@@ -394,8 +388,8 @@ impl SolverConfigBuilder for MagicHttpBuilder {
 
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        _domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration> {
         if !magic::is_supported() {
             bail!("The magic solver is not supported by your system");
         }
@@ -419,19 +413,17 @@ impl SolverConfigBuilder for MagicHttpBuilder {
                 .with_error_message("Must be a port number")
                 .with_help_message("Enter the port number, or press ESC to use the default")
                 .prompt_skippable()?;
-        Ok(DomainsWithSolverConfiguration {
-            domains,
-            config: SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
+        Ok(SolverConfiguration::MagicHttp(
+            MagicHttpSolverConfiguration {
                 validation_port: port,
-            }),
-            solver_name: None,
-        })
+            },
+        ))
     }
 
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration> {
         if !magic::is_supported() {
             bail!("The magic solver is not supported by your system");
         }
@@ -443,13 +435,9 @@ impl SolverConfigBuilder for MagicHttpBuilder {
         if matches!(validation_port, Some(0)) {
             bail!("Port 0 is not valid");
         }
-        Ok(DomainsWithSolverConfiguration {
-            domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::MagicHttp(MagicHttpSolverConfiguration {
-                validation_port,
-            }),
-            solver_name: None,
-        })
+        Ok(SolverConfiguration::MagicHttp(
+            MagicHttpSolverConfiguration { validation_port },
+        ))
     }
 
     fn get_command_line(&self) -> Command {
@@ -500,8 +488,8 @@ impl SolverConfigBuilder for WebrootBuilder {
 
     async fn build_interactive(
         &self,
-        domains: HashSet<Identifier>,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        _domains: &HashSet<Identifier>,
+    ) -> anyhow::Result<SolverConfiguration> {
         println!(
             "The webroot solver needs to know from where your webserver serves static files (the \"webroot\" of your webserver)."
         );
@@ -530,26 +518,20 @@ impl SolverConfigBuilder for WebrootBuilder {
         .prompt()
         .context("No webroot entered")?;
         let webroot = PathBuf::from(webroot);
-        Ok(DomainsWithSolverConfiguration {
-            domains,
-            config: SolverConfiguration::Webroot(WebrootSolverConfiguration { webroot }),
-            solver_name: None,
-        })
+        Ok(SolverConfiguration::Webroot(WebrootSolverConfiguration {
+            webroot,
+        }))
     }
 
     async fn build_from_command_line(
         &self,
-        cmd_line_config: CommandLineSolverConfiguration,
-    ) -> anyhow::Result<DomainsWithSolverConfiguration> {
+        cmd_line_config: &CommandLineSolverConfiguration,
+    ) -> anyhow::Result<SolverConfiguration> {
         let webroot_command = WebrootCommand::from_arg_matches(&cmd_line_config.matches)
             .context("Failed to parse webroot command line")?;
-        Ok(DomainsWithSolverConfiguration {
-            domains: cmd_line_config.base.domains.into_iter().collect(),
-            config: SolverConfiguration::Webroot(WebrootSolverConfiguration {
-                webroot: webroot_command.webroot,
-            }),
-            solver_name: None,
-        })
+        Ok(SolverConfiguration::Webroot(WebrootSolverConfiguration {
+            webroot: webroot_command.webroot,
+        }))
     }
 
     fn get_command_line(&self) -> Command {

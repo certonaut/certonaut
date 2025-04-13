@@ -6,7 +6,7 @@ use tracing::warn;
 // This is mainly in its own module because the sqlx::migrate! macro breaks my IDE's analyzer
 pub async fn migrate(pool: &SqlitePool) -> anyhow::Result<()> {
     match sqlx::migrate!("db/migrations").run(pool).await {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(MigrateError::VersionMissing(num)) => {
             warn!(
                 "{CRATE_NAME} is missing database migration {num}. This indicates a version downgrade."

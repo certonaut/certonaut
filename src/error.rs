@@ -31,10 +31,10 @@ impl IssueError {
                 if err.backtrace().status() == BacktraceStatus::Captured {
                     if let Some(index) = error_string.find("Stack backtrace:") {
                         error_string = error_string[..index].trim().to_string();
-                    };
+                    }
                 }
             }
-        };
+        }
         error_string
     }
 }

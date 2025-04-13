@@ -1,22 +1,21 @@
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::CHALLENGE_SOLVER_REGISTRY;
 use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
-    CertificateConfiguration, ConfigBackend, IdentifierConfiguration, InstallerConfiguration,
-    SolverConfiguration,
+    CertificateConfiguration, ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
     AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
-    DomainSolverMap, Identifier, NewAccountOptions, build_domain_solver_maps,
+    DomainSolverMap, Identifier, NewAccountOptions, choose_solver_name,
 };
 use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
-use inquire::{Confirm, CustomType, Editor, Select, Text};
+use inquire::{Confirm, CustomType, Select, Text};
 use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -25,7 +24,6 @@ use std::str::FromStr;
 use std::sync::Mutex;
 use strum::VariantArray;
 use tokio::sync::RwLock;
-use toml_edit::DocumentMut;
 use tracing::warn;
 use url::Url;
 
@@ -275,7 +273,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 .chain(
                     [ClosureEditor::new(
                         "Certificate Authority",
-                        &|_config: &CertificateConfiguration| {
+                        |_config: &CertificateConfiguration| {
                             ca_display.lock().unwrap().clone().into()
                         },
                         |mut config: CertificateConfiguration| {
@@ -311,7 +309,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         [
             ClosureEditor::new(
                 "Domains",
-                &|config: &CertificateConfiguration| {
+                |config: &CertificateConfiguration| {
                     config
                         .domains_and_solvers
                         .domains
@@ -339,7 +337,27 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                             .client
                             .choose_cert_name_from_domains(new_domains.iter());
                         config.display_name = cert_name;
-                        config.domains_and_solvers = Self::user_ask_solvers(new_domains).await?;
+                        let mut old_domains = config.domains_and_solvers.domains;
+                        let new_domains: HashMap<_, _> = new_domains
+                            .into_iter()
+                            .map(|identifier| {
+                                let solver_name =
+                                    old_domains.remove(&identifier).unwrap_or_default();
+                                (identifier, solver_name)
+                            })
+                            .collect();
+                        config.domains_and_solvers.domains = new_domains;
+                        // Check if there is any new identifier that needs a solver
+                        if config
+                            .domains_and_solvers
+                            .domains
+                            .values()
+                            .any(String::is_empty)
+                        {
+                            config.domains_and_solvers =
+                                Self::user_ask_solvers(config.domains_and_solvers).await?;
+                        }
+                        Self::remove_unused_solvers(&mut config.domains_and_solvers);
                         Ok(config)
                     }
                     .boxed()
@@ -347,7 +365,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Solvers",
-                &|config: &CertificateConfiguration| {
+                |config: &CertificateConfiguration| {
                     config
                         .domains_and_solvers
                         .solvers
@@ -374,14 +392,9 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
                 },
                 |mut config: CertificateConfiguration| {
                     async {
-                        let domains = config
-                            .domains_and_solvers
-                            .domains
-                            .keys()
-                            .sorted()
-                            .cloned()
-                            .collect();
-                        config.domains_and_solvers = Self::user_ask_solvers(domains).await?;
+                        config.domains_and_solvers =
+                            Self::user_ask_solvers(config.domains_and_solvers).await?;
+                        Self::remove_unused_solvers(&mut config.domains_and_solvers);
                         Ok(config)
                     }
                     .boxed()
@@ -389,7 +402,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Name",
-                &|config: &CertificateConfiguration| (&config.display_name).into(),
+                |config: &CertificateConfiguration| (&config.display_name).into(),
                 |mut config: CertificateConfiguration| {
                     async {
                         config.display_name = Self::user_ask_cert_name(config.display_name)?;
@@ -402,13 +415,19 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         .into_iter()
     }
 
+    fn remove_unused_solvers(map: &mut DomainSolverMap) {
+        let required_solvers: HashSet<_> = map.domains.values().collect();
+        map.solvers
+            .retain(|name, _| required_solvers.contains(name));
+    }
+
     fn cert_edit_advanced_editors<'a>(
         self_locked: &'a RwLock<&'a mut Self>,
     ) -> impl Iterator<Item = ClosureEditor<'a, CertificateConfiguration>> {
         [
             ClosureEditor::new(
                 "Key Type",
-                &|config: &CertificateConfiguration| config.key_type.to_string().into(),
+                |config: &CertificateConfiguration| config.key_type.to_string().into(),
                 |mut config| {
                     async {
                         config.key_type = Self::user_ask_key_type(config.key_type)?;
@@ -419,7 +438,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Advanced",
-                &|_config: &CertificateConfiguration| "View/Change advanced options".into(),
+                |_config: &CertificateConfiguration| "View/Change advanced options".into(),
                 |mut config| {
                     async {
                         let ca_identifier = config.ca_identifier.clone();
@@ -444,7 +463,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Install Script",
-                &|config: &CertificateConfiguration| match &config.installer {
+                |config: &CertificateConfiguration| match &config.installer {
                     Some(InstallerConfiguration::Script { script }) => script.into(),
                     None => "Nothing".into(),
                 },
@@ -468,7 +487,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         [
             ClosureEditor::new(
                 "Requested Lifetime",
-                &|config: &AdvancedCertificateConfiguration| match config.lifetime_seconds {
+                |config: &AdvancedCertificateConfiguration| match config.lifetime_seconds {
                     None => "Not specified".into(),
                     Some(lifetime) => {
                         // TODO: This can overflow, but do we really care?
@@ -486,7 +505,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Profile",
-                &|config: &AdvancedCertificateConfiguration| {
+                |config: &AdvancedCertificateConfiguration| {
                     config.profile.as_deref().unwrap_or("Not specified").into()
                 },
                 move |mut config| {
@@ -504,7 +523,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             ),
             ClosureEditor::new(
                 "Reuse Key",
-                &|config: &AdvancedCertificateConfiguration| {
+                |config: &AdvancedCertificateConfiguration| {
                     if config.reuse_key { "yes" } else { "no" }.into()
                 },
                 |mut config| {
@@ -524,43 +543,149 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         domains: HashSet<Identifier>,
     ) -> Result<DomainSolverMap, Error> {
         if issue_cmd.solver_configuration.is_empty() {
-            Self::user_ask_solvers(domains).await
+            let initial_map = DomainSolverMap {
+                domains: domains
+                    .into_iter()
+                    .map(|domain| (domain, String::new()))
+                    .collect(),
+                solvers: HashMap::new(),
+            };
+            Self::user_ask_solvers(initial_map).await
         } else {
             crate::domain_solver_maps_from_command_line(issue_cmd.solver_configuration.clone())
                 .await
         }
     }
 
-    // TODO: Refactor this
-    // - show an editor with all domains, and the currently configured solver (or N/A if none configured yet)
-    // - for each domain, allow to select one existing solver, or create a new one
-    // - then remove the file-based thing, it doesn't play nicely with config editing
-    async fn user_ask_solvers(domains: HashSet<Identifier>) -> Result<DomainSolverMap, Error> {
+    async fn user_ask_solvers(solver_map: DomainSolverMap) -> Result<DomainSolverMap, Error> {
         println!("{}", "To issue a certificate, most CA's require you to prove control over all identifiers included in the certificate.
 There are several ways to do this, and the best method depends on your system and preferences.
-Currently, the following challenge \"solvers\" are available to prove control:".blue());
-        let mut solver_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
-            .iter()
-            .filter(|builder| builder.supported(&domains))
-            .map(|builder| SolverChoice::SingleSolver(builder.as_ref()))
+You need to provide challenge \"solvers\" to authenticate the requested identifiers.".blue());
+        let identifier_editors = solver_map
+            .domains
+            .keys()
+            .cloned()
+            .sorted()
+            .map(|identifier| {
+                let get_identifier = identifier.clone();
+                ClosureEditor::new(
+                    identifier.clone(),
+                    move |map: &DomainSolverMap| {
+                        let solver = map
+                            .domains
+                            .get(&get_identifier)
+                            .map_or("N/A", |s| s.as_str());
+                        if solver.is_empty() {
+                            "N/A".into()
+                        } else {
+                            solver.into()
+                        }
+                    },
+                    move |map| {
+                        let identifier = identifier.clone();
+                        async move { Self::user_select_solver_for_id(identifier, map).await }
+                            .boxed()
+                    },
+                )
+            });
+        InteractiveConfigEditor::new(
+            "Assign a solver to each identifier",
+            solver_map,
+            identifier_editors,
+            |map| {
+                async {
+                    for (domain, solver) in &map.domains {
+                        if solver.is_empty() {
+                            println!("Error: You must select a solver for {domain}");
+                            return Ok(false);
+                        }
+                    }
+                    Ok(true)
+                }
+                .boxed()
+            },
+        )
+        .edit_config()
+        .await
+    }
+
+    async fn user_select_solver_for_id(
+        identifier: Identifier,
+        mut map: DomainSolverMap,
+    ) -> Result<DomainSolverMap, Error> {
+        let mut choices: Vec<_> = map
+            .solvers
+            .keys()
+            .sorted()
+            .map(|name| SolverChoice::ExistingSolver(name.as_str()))
             .collect();
-        solver_options.push(SolverChoice::MultipleSolvers);
-        // TODO: Warn if wildcards are present
-        // ... or filter solvers by identifier, i.e. only offer DNS-01 challenges if a wildcard is present?
-        // -> solvers can now also decide if they're supported based on domains (i.e. onion-solver only for onion domain)
-        let domains_with_solvers = match Select::new(
-            "Select a solver to authenticate all identifiers:",
-            solver_options,
+        choices.push(SolverChoice::NewSolver);
+        let choice = Select::new(
+            "Select one of these existing solvers, or create a new one",
+            choices,
         )
         .prompt()
-        .context("No answer to solver prompt")?
-        {
-            SolverChoice::SingleSolver(single_solver_choice) => {
-                vec![single_solver_choice.build_interactive(domains).await?]
+        .context("No solver selected")?;
+        match choice {
+            SolverChoice::ExistingSolver(name) => {
+                map.domains.insert(identifier, name.to_string());
             }
-            SolverChoice::MultipleSolvers => return Self::user_ask_multiple_solvers(domains),
+            SolverChoice::NewSolver => return Self::user_create_solver(identifier, map).await,
+        }
+        Ok(map)
+    }
+
+    async fn user_create_solver(
+        identifier: Identifier,
+        mut map: DomainSolverMap,
+    ) -> Result<DomainSolverMap, Error> {
+        #[allow(irrefutable_let_patterns)]
+        if let Identifier::Dns(id) = &identifier {
+            if id.is_wildcard() {
+                println!(
+                    "Note: {identifier} is a wildcard. Some CAs require you to use a DNS-based challenge for this identifier."
+                );
+            }
+        }
+        let domains = HashSet::from([identifier]);
+        let builder_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY
+            .iter()
+            .filter(|builder| builder.supported(&domains))
+            .collect();
+        println!("This identifier is supported by the following solvers:");
+        let selected_builder = Select::new("Select a solver:", builder_options)
+            .prompt()
+            .context("No answer to solver prompt")?;
+        let solver_config = selected_builder.build_interactive(&domains).await?;
+        let solver_name = loop {
+            let default_name = choose_solver_name(&solver_config, &map);
+            let solver_name = Text::new("If you want, name this solver:")
+                .with_initial_value(default_name.as_str())
+                .with_help_message("Enter a name, or press ESC to use an autogenerated name")
+                .with_validator(|name: &str| {
+                    Ok(if name.is_empty() {
+                        Validation::Invalid("Solver name cannot be empty".into())
+                    } else {
+                        Validation::Valid
+                    })
+                })
+                .prompt_skippable()
+                .context("No solver name given")?
+                .unwrap_or(default_name);
+            if map.solvers.contains_key(&solver_name) {
+                println!(
+                    "Error: A solver with name {solver_name} already exists - choose a different name"
+                );
+            } else {
+                break solver_name;
+            }
         };
-        build_domain_solver_maps(domains_with_solvers)
+        map.domains.insert(
+            domains.into_iter().next().unwrap(/* Infallible */),
+            solver_name.clone(),
+        );
+        map.solvers.insert(solver_name, solver_config);
+        Ok(map)
     }
 
     async fn user_ask_cert_profile(
@@ -1083,79 +1208,6 @@ You may need to create an account at the CA's website first.",
         Ok(tos_status)
     }
 
-    fn user_ask_multiple_solvers(domains: HashSet<Identifier>) -> anyhow::Result<DomainSolverMap> {
-        println!(
-            "Multiple solvers can be specified directly in TOML format. A temporary file will be opened containing \
- a template that you can fill out. Please refer to the documentation at TODO for more information about the solvers."
-        );
-        let domain_template = domains
-            .iter()
-            .map(|id| format!("\"{id}\" = \"example-solver\""))
-            .join("\n");
-        let template = format!(
-            "[domains]
-# This section contains the domain names of your certificate.
-# Each line has the domain name (quoted) on the left hand side, and the name of a solver on the right hand side.
-# Every domain can have a different solver, or multiple domains can share a single solver configuration.
-{domain_template}
-
-# Every solver configuration is specified as solver.<solver-name>
-[solver.example-solver]
-# The solver is named \"example-solver\" and has the configuration as specified below
-# Refer to TODO for documentation on the available solver types
-type = \"webroot\"
-# Refer to TODO about the available configuration options per solver
-web_index = \"/var/www/html\""
-        );
-        let raw_toml = Editor::new("Solver configuration:")
-            .with_file_extension(".toml")
-            .with_predefined_text(&template)
-            .with_help_message(
-                "This prompt will open your default text editor to make changes to the provided template.",
-            )
-            .with_validator(move |content: &str| Ok(validate_solver_toml(&domains, content)))
-            .prompt()
-            .context("No answer to solver prompt")?;
-        let toml =
-            toml_edit::DocumentMut::from_str(&raw_toml).context("Parsing user specified TOML")?;
-        let domains_table = toml
-            .get("domains")
-            .and_then(|domains| domains.as_table())
-            .ok_or(anyhow!("No domains specified"))?;
-        let mut domains = vec![];
-        for (domain, solver) in domains_table {
-            let solver_identifier = solver
-                .as_str()
-                .map(ToString::to_string)
-                .ok_or(anyhow!("Domain value for key {domain} must be a string"))?;
-            domains.push(IdentifierConfiguration {
-                domain: Identifier::from_str(domain)?,
-                solver_identifier,
-            });
-        }
-        let solvers_table = toml
-            .get("solver")
-            .and_then(|solvers| solvers.as_table())
-            .ok_or(anyhow!("No solvers specified"))?;
-        let mut solvers = HashMap::new();
-        for (solver, config) in solvers_table {
-            let solver_config = config
-                .as_table()
-                .map(|config| toml_edit::DocumentMut::from(config.clone()))
-                .ok_or(anyhow!("Solver {solver} is not a table"))?;
-            let solver_config: SolverConfiguration = toml_edit::de::from_document(solver_config)
-                .context(format!("Parsing solver configuration for {solver}"))?;
-            solvers.insert(solver.to_string(), solver_config);
-        }
-        Ok(DomainSolverMap {
-            domains: domains
-                .into_iter()
-                .map(|ic| (ic.domain, ic.solver_identifier))
-                .collect(),
-            solvers,
-        })
-    }
-
     fn user_ask_installer(
         current: Option<InstallerConfiguration>,
     ) -> Result<Option<InstallerConfiguration>, Error> {
@@ -1232,7 +1284,7 @@ impl Display for CaChoice {
                 write!(f, "{name}")?;
                 if ca.testing {
                     write!(f, " (Testing)")?;
-                };
+                }
             }
             CaChoice::NewCa => write!(f, "Add new CA")?,
         }
@@ -1299,74 +1351,18 @@ impl Display for CertChoice {
     }
 }
 
-impl Display for dyn SolverConfigBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "[{}] {} - {}",
-            self.category().to_string().blue(),
-            self.name().dark_green(),
-            self.description().reset()
-        )
-    }
+pub enum SolverChoice<'a> {
+    ExistingSolver(&'a str),
+    NewSolver,
 }
 
-pub enum SolverChoice {
-    SingleSolver(&'static dyn SolverConfigBuilder),
-    MultipleSolvers,
-}
-
-impl Display for SolverChoice {
+impl Display for SolverChoice<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SolverChoice::SingleSolver(solver) => {
+            SolverChoice::ExistingSolver(solver) => {
                 write!(f, "{solver}")
             }
-            SolverChoice::MultipleSolvers => write!(
-                f,
-                "{} {} - {}",
-                "[ADVANCED]".blue(),
-                "Multiple solvers".dark_green(),
-                "This option allows you to use different solvers for different identifiers".reset()
-            ),
+            SolverChoice::NewSolver => f.write_str("Create new solver"),
         }
-    }
-}
-
-fn validate_solver_toml(domains: &HashSet<Identifier>, content: &str) -> Validation {
-    fn validate_err(domains: &HashSet<Identifier>, content: &str) -> Result<(), Validation> {
-        let parsed_toml = toml_edit::DocumentMut::from_str(content)
-            .map_err(|e| Validation::Invalid(format!("Invalid TOML syntax: {e}").into()))?;
-        let user_domains = parsed_toml
-            .get("domains")
-            .and_then(|domains| domains.as_table())
-            .ok_or(Validation::Invalid("Missing table \"domains\"".into()))?;
-        for domain in domains {
-            let solver_name = user_domains
-                .get(domain.as_str())
-                .and_then(|item| item.as_value())
-                .and_then(|value| value.as_str())
-                .ok_or(Validation::Invalid(
-                    format!("Missing or invalid entry for {domain} in domains").into(),
-                ))?;
-            let solver = parsed_toml
-                .get("solver")
-                .and_then(|solvers| solvers.get(solver_name))
-                .and_then(|solver| solver.as_table())
-                .ok_or(Validation::Invalid(
-                    format!("Missing or invalid table for {solver_name}").into(),
-                ))?;
-            let solver_document = DocumentMut::from(solver.clone());
-            let _test_config: SolverConfiguration = toml_edit::de::from_document(solver_document)
-                .map_err(|toml_err| {
-                Validation::Invalid(format!("Solver {solver_name} is invalid: {toml_err}").into())
-            })?;
-        }
-        Ok(())
-    }
-
-    match validate_err(domains, content) {
-        Ok(()) => Validation::Valid,
-        Err(validation) => validation,
     }
 }
