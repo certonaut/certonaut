@@ -22,7 +22,7 @@ jobs:
     
     - name: Install deps
       run: |
-        sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang libelf-dev zlib1g-dev linux-headers-$(uname -r)
+        sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang linux-headers-$(uname -r) build-essential autoconf autopoint flex bison gawk make pkg-config
 
     - name: Rust Cache
       uses: actions/cache@v4
