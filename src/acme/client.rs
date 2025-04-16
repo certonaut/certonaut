@@ -667,7 +667,7 @@ mod tests {
 
     fn test_jwk() -> JsonWebKey {
         JsonWebKey::new_existing(
-            KeyPair::load_from_disk(File::open("testdata/account.key").unwrap()).unwrap(),
+            KeyPair::load_from_disk(File::open("testdata/keys/account.key").unwrap()).unwrap(),
             ACCOUNT_URL.try_into().unwrap(),
         )
     }

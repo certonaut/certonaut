@@ -664,7 +664,7 @@ mod tests {
             accounts: vec![AccountConfiguration {
                 name: "Fake Account".to_string(),
                 identifier: "fake".to_string(),
-                key_file: PathBuf::from("testdata/account.key"),
+                key_file: PathBuf::from("testdata/keys/account.key"),
                 url: test_url().join("fake-account")?,
             }],
         };

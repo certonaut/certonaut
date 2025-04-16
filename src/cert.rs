@@ -247,7 +247,7 @@ mod tests {
                 108, 85, 243, 203, 60, 7, 235, 145, 74, 167, 236, 87, 74, 88, 106,
             ],
         };
-        let test_file = Path::new("./testdata/testcert.pem");
+        let test_file = Path::new("testdata/certs/testcert.pem");
         let mut parsed_certs = load_certificates_from_file(test_file, Some(1))?;
         assert_eq!(parsed_certs.len(), 1);
         let actual_cert = parsed_certs.remove(0);

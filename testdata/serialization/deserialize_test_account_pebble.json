@@ -1,0 +1,13 @@
+{
+  "status": "valid",
+  "contact": [
+    "mailto:admin@example.org"
+  ],
+  "orders": "https://localhost:14000/list-orderz/462151660aa407f8",
+  "key": {
+    "kty": "EC",
+    "crv": "P-384",
+    "x": "-ffellXHoojhGsHmX_aC6xPxs0C_iSc24UbOWmg66CjYvt9a2Z-qLIFvhffyHORW",
+    "y": "j5E_YnDTGxulb7WhGW9z8b66N96tQYwqxUMtFaLMnKwbGIVr2uCT7mfajFr-I7pt"
+  }
+}

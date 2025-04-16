@@ -460,7 +460,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_directory_valid(
-        #[files("testdata/deserialize_test_directory_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_directory_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Directory = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -468,7 +468,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_directory_invalid(
-        #[files("testdata/deserialize_invalid_test_directory_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_directory_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Directory> = serde_json::from_reader(file);
@@ -477,7 +477,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_metadata_valid(
-        #[files("testdata/deserialize_test_metadata_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_metadata_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Metadata = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -485,7 +485,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_metadata_invalid(
-        #[files("testdata/deserialize_invalid_test_metadata_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_metadata_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Metadata> = serde_json::from_reader(file);
@@ -494,7 +494,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_nonce_valid(
-        #[files("testdata/deserialize_test_nonce_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_nonce_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Nonce = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -502,7 +502,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_nonce_invalid(
-        #[files("testdata/deserialize_invalid_test_nonce_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_nonce_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Nonce> = serde_json::from_reader(file);
@@ -511,7 +511,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_token_valid(
-        #[files("testdata/deserialize_test_token_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_token_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Token = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -519,7 +519,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_token_invalid(
-        #[files("testdata/deserialize_invalid_test_token_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_token_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Token> = serde_json::from_reader(file);
@@ -528,7 +528,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_account_valid(
-        #[files("testdata/deserialize_test_account_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_account_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Account = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -536,7 +536,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_account_invalid(
-        #[files("testdata/deserialize_invalid_test_account_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_account_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Account> = serde_json::from_reader(file);
@@ -545,7 +545,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_order_valid(
-        #[files("testdata/deserialize_test_order_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_order_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Order = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -553,7 +553,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_order_invalid(
-        #[files("testdata/deserialize_invalid_test_order_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_order_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Order> = serde_json::from_reader(file);
@@ -562,7 +562,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_authorization_valid(
-        #[files("testdata/deserialize_test_authz_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_authz_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Authorization =
@@ -571,7 +571,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_authorization_invalid(
-        #[files("testdata/deserialize_invalid_test_authz_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_authz_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Authorization> = serde_json::from_reader(file);
@@ -580,7 +580,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_challenge_valid(
-        #[files("testdata/deserialize_test_challenge_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_challenge_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: Challenge = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -588,7 +588,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_challenge_invalid(
-        #[files("testdata/deserialize_invalid_test_challenge_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_challenge_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Challenge> = serde_json::from_reader(file);
@@ -797,7 +797,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_renewal_info_valid(
-        #[files("testdata/deserialize_test_renewalInfo_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_test_renewalInfo_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let _: RenewalInfo = serde_json::from_reader(file).expect("Deserialization must not fail");
@@ -805,7 +805,7 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_renewal_info_invalid(
-        #[files("testdata/deserialize_invalid_test_renewalInfo_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_renewalInfo_*.json")] testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<RenewalInfo> = serde_json::from_reader(file);

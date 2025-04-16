@@ -153,7 +153,7 @@ pub async fn setup_pebble_issuer<T: ConfigBackend>(
         .with_http_client(http_client)
         .try_build()
         .await?;
-    let key_file = Path::new("testdata/account.key");
+    let key_file = Path::new("testdata/keys/account.key");
     let keypair = KeyPair::load_from_disk(File::open(key_file)?)?;
     let register_options = AccountRegisterOptions {
         key: keypair,
