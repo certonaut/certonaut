@@ -327,6 +327,8 @@ pub struct CertificateAuthorityConfiguration {
     pub public: bool,
     pub testing: bool,
     pub default: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -480,6 +482,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: true,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "Let's Encrypt Staging".to_string(),
@@ -491,6 +494,7 @@ impl DefaultConfig {
                         public: true,
                         testing: true,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "Google".to_string(),
@@ -500,6 +504,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "Google Staging".to_string(),
@@ -511,6 +516,7 @@ impl DefaultConfig {
                         public: true,
                         testing: true,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "BuyPass".to_string(),
@@ -520,6 +526,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "BuyPass Test".to_string(),
@@ -531,6 +538,7 @@ impl DefaultConfig {
                         public: true,
                         testing: true,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "ZeroSSL".to_string(),
@@ -539,6 +547,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "SSL.com ECC".to_string(),
@@ -548,6 +557,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: false,
+                        trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
                         name: "SSL.com RSA".to_string(),
@@ -557,6 +567,7 @@ impl DefaultConfig {
                         public: true,
                         testing: false,
                         default: false,
+                        trusted_roots: vec![],
                     },
                 ]
                 .into_iter()

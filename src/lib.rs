@@ -19,7 +19,6 @@ use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
-use crate::pebble::pebble_root;
 use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
@@ -374,8 +373,12 @@ async fn new_acme_client(
     ca_config: &CertificateAuthorityConfiguration,
 ) -> Result<AcmeClient, Error> {
     let name = &ca_config.name;
-    // TODO: Temporary measure for easy pebble tests
-    let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
+    let http_client = if !ca_config.trusted_roots.is_empty() {
+        let root_certs = cert::load_reqwest_certificates(ca_config.trusted_roots.iter()).await?;
+        HttpClient::try_new_with_custom_roots(root_certs)?
+    } else {
+        HttpClient::try_new()?
+    };
     let client = acme::client::AcmeClientBuilder::new(ca_config.acme_directory.clone())
         .with_http_client(http_client)
         .try_build()

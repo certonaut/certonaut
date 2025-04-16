@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Seek};
 use std::net::IpAddr;
 use std::path::Path;
+use tokio::io::AsyncReadExt;
 use tracing::warn;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
 use x509_parser::num_bigint::BigUint;
@@ -66,6 +67,31 @@ fn load_certificates_from_reader<R: BufRead + Seek>(
             .parse_x509()
             .context("Reading X509 structure: Decoding DER failed")?;
         certificates.push(parser_x509.into());
+    }
+    Ok(certificates)
+}
+
+pub async fn load_reqwest_certificates<'a, I: Iterator<Item = T>, T: AsRef<Path>>(
+    files: I,
+) -> anyhow::Result<Vec<reqwest::Certificate>> {
+    let mut certificates = Vec::with_capacity(files.size_hint().0);
+    for cert_path in files {
+        let cert_path = cert_path.as_ref();
+        let cert_path_display = cert_path.display();
+        let mut cert_file = tokio::fs::File::open(cert_path).await.context(format!(
+            "Opening certificate file {cert_path_display} failed"
+        ))?;
+        let mut cert_data = Vec::new();
+        cert_file
+            .read_to_end(&mut cert_data)
+            .await
+            .context(format!(
+                "Reading certificate file {cert_path_display} failed"
+            ))?;
+        let reqwest_cert = reqwest::Certificate::from_pem(&cert_data).context(format!(
+            "Parsing certificate file PEM {cert_path_display} failed"
+        ))?;
+        certificates.push(reqwest_cert)
     }
     Ok(certificates)
 }

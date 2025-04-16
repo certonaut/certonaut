@@ -6,7 +6,6 @@ use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, ConfigBackend};
 use certonaut::crypto::asymmetric::KeyPair;
-use certonaut::pebble::pebble_root;
 use certonaut::{AcmeAccount, Certonaut};
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -137,11 +136,19 @@ pub async fn get_host_ip() -> std::io::Result<IpAddr> {
     socket.local_addr().map(|addr| addr.ip())
 }
 
+async fn setup_http_client() -> anyhow::Result<HttpClient> {
+    let certs = certonaut::cert::load_reqwest_certificates(
+        [Path::new("testdata/certs/pebble.minica.pem")].iter(),
+    )
+    .await?;
+    Ok(HttpClient::try_new_with_custom_roots(certs)?)
+}
+
 pub async fn setup_pebble_issuer<T: ConfigBackend>(
     acme_url: Url,
     mut certonaut: Certonaut<T>,
 ) -> anyhow::Result<Certonaut<T>> {
-    let http_client = HttpClient::try_new_with_custom_root(pebble_root()?)?;
+    let http_client = setup_http_client().await?;
     let acme_client = AcmeClientBuilder::new(acme_url.clone())
         .with_http_client(http_client)
         .try_build()
@@ -161,6 +168,7 @@ pub async fn setup_pebble_issuer<T: ConfigBackend>(
         public: false,
         testing: true,
         default: false,
+        trusted_roots: vec![PathBuf::from("testdata/certs/pebble.minica.pem")],
     })?;
     certonaut.add_new_account(
         CA_NAME,

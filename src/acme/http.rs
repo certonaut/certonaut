@@ -21,8 +21,11 @@ impl HttpClient {
         Self::try_new_with_builder(ClientBuilder::new())
     }
 
-    pub fn try_new_with_custom_root(root: Certificate) -> ProtocolResult<Self> {
-        let builder = ClientBuilder::new().add_root_certificate(root);
+    pub fn try_new_with_custom_roots(roots: Vec<Certificate>) -> ProtocolResult<Self> {
+        let mut builder = ClientBuilder::new();
+        for root_cert in roots {
+            builder = builder.add_root_certificate(root_cert);
+        }
         Self::try_new_with_builder(builder)
     }
 

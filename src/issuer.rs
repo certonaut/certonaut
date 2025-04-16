@@ -659,6 +659,7 @@ mod tests {
                 public: false,
                 testing: false,
                 default: false,
+                trusted_roots: vec![],
             },
             accounts: vec![AccountConfiguration {
                 name: "Fake Account".to_string(),
@@ -1061,6 +1062,7 @@ mod tests {
                     public: false,
                     testing: false,
                     default: false,
+                    trusted_roots: vec![],
                 },
                 accounts: vec![],
             },
