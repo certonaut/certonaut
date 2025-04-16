@@ -266,7 +266,6 @@ pub struct Order {
     pub profile: Option<String>,
 }
 
-// TODO: Implement Display for *Status enums
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(test, derive(Serialize))]

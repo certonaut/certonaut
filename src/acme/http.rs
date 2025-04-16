@@ -1,3 +1,4 @@
+use crate::USER_AGENT;
 use crate::acme::error::ProtocolResult;
 use crate::acme::object::Nonce;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
@@ -5,21 +6,8 @@ use serde::Serialize;
 use std::time::{Duration, SystemTime};
 use url::Url;
 
-// As per RFC8555 Section 6.1, we should conform both to RFC 7525 and supply the name + version
-// of our HTTP library.
-pub const USER_AGENT: &str = concat!(
-    env!("CARGO_PKG_NAME"),
-    "/",
-    env!("CARGO_PKG_VERSION"),
-    " reqwest/",
-    env!("REQWEST_VERSION"),
-    " ( +",
-    env!("CARGO_PKG_REPOSITORY"),
-    " )"
-);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(120);
-
 const REPLAY_NONCE: &str = "Replay-Nonce";
 
 #[derive(Debug)]

@@ -470,36 +470,101 @@ impl DefaultConfig {
         Configuration {
             main: MainConfiguration {
                 ca_list: vec![
-                    CertificateAuthorityConfigurationWithAccounts {
-                        inner: CertificateAuthorityConfiguration {
-                            name: "Let's Encrypt".to_string(),
-                            identifier: "letsencrypt".to_string(),
-                            acme_directory: Url::from_str(
-                                "https://acme-v02.api.letsencrypt.org/directory",
-                            )
-                            .unwrap(),
-                            public: true,
-                            testing: false,
-                            default: true,
-                        },
-                        accounts: vec![],
+                    CertificateAuthorityConfiguration {
+                        name: "Let's Encrypt".to_string(),
+                        identifier: "letsencrypt".to_string(),
+                        acme_directory: Url::from_str(
+                            "https://acme-v02.api.letsencrypt.org/directory",
+                        )
+                        .unwrap(),
+                        public: true,
+                        testing: false,
+                        default: true,
                     },
-                    CertificateAuthorityConfigurationWithAccounts {
-                        inner: CertificateAuthorityConfiguration {
-                            name: "Let's Encrypt Staging".to_string(),
-                            identifier: "letsencrypt-staging".to_string(),
-                            acme_directory: Url::from_str(
-                                "https://acme-staging-v02.api.letsencrypt.org/directory",
-                            )
-                            .unwrap(),
-                            public: true,
-                            testing: true,
-                            default: false,
-                        },
-                        accounts: vec![],
+                    CertificateAuthorityConfiguration {
+                        name: "Let's Encrypt Staging".to_string(),
+                        identifier: "letsencrypt-staging".to_string(),
+                        acme_directory: Url::from_str(
+                            "https://acme-staging-v02.api.letsencrypt.org/directory",
+                        )
+                        .unwrap(),
+                        public: true,
+                        testing: true,
+                        default: false,
                     },
-                    // TODO: ZeroSSL, Google, others...
-                ],
+                    CertificateAuthorityConfiguration {
+                        name: "Google".to_string(),
+                        identifier: "google".to_string(),
+                        acme_directory: Url::from_str("https://dv.acme-v02.api.pki.goog/directory")
+                            .unwrap(),
+                        public: true,
+                        testing: false,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "Google Staging".to_string(),
+                        identifier: "google-staging".to_string(),
+                        acme_directory: Url::from_str(
+                            "https://dv.acme-v02.test-api.pki.goog/directory",
+                        )
+                        .unwrap(),
+                        public: true,
+                        testing: true,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "BuyPass".to_string(),
+                        identifier: "buypass".to_string(),
+                        acme_directory: Url::from_str("https://api.buypass.com/acme/directory")
+                            .unwrap(),
+                        public: true,
+                        testing: false,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "BuyPass Test".to_string(),
+                        identifier: "buypass-test".to_string(),
+                        acme_directory: Url::from_str(
+                            "https://api.test4.buypass.no/acme/directory",
+                        )
+                        .unwrap(),
+                        public: true,
+                        testing: true,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "ZeroSSL".to_string(),
+                        identifier: "zerossl".to_string(),
+                        acme_directory: Url::from_str("https://acme.zerossl.com/v2/DV90").unwrap(),
+                        public: true,
+                        testing: false,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "SSL.com ECC".to_string(),
+                        identifier: "ssl.com-ecc".to_string(),
+                        acme_directory: Url::from_str("https://acme.ssl.com/sslcom-dv-ecc")
+                            .unwrap(),
+                        public: true,
+                        testing: false,
+                        default: false,
+                    },
+                    CertificateAuthorityConfiguration {
+                        name: "SSL.com RSA".to_string(),
+                        identifier: "ssl.com-rsa".to_string(),
+                        acme_directory: Url::from_str("https://acme.ssl.com/sslcom-dv-rsa")
+                            .unwrap(),
+                        public: true,
+                        testing: false,
+                        default: false,
+                    },
+                ]
+                .into_iter()
+                .map(|config| CertificateAuthorityConfigurationWithAccounts {
+                    inner: config,
+                    accounts: Vec::new(),
+                })
+                .collect(),
             },
             certificates: HashMap::default(),
         }

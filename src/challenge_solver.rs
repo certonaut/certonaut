@@ -12,7 +12,7 @@ use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use clap::{Arg, Command, CommandFactory, FromArgMatches, Parser, value_parser};
+use clap::{Command, CommandFactory, FromArgMatches, Parser};
 use crossterm::style::Stylize;
 use inquire::CustomType;
 use inquire::validator::Validation;
@@ -360,6 +360,15 @@ impl SolverConfigBuilder for ChallengeTestHttpBuilder {
 
 struct MagicHttpBuilder;
 
+/// The "magic" HTTP solver uses eBPF technology to solve HTTP-01 challenges automatically, without requiring any configuration in many cases.
+#[derive(Debug, Parser)]
+#[command(name = "auto", about)]
+struct MagicHttpOptions {
+    /// The port the CA validates http-01 challenges on (or the destination port if any NAT is present). Usually 80.
+    #[arg(value_parser = clap::value_parser!(u16).range(1..), long)]
+    validation_port: Option<u16>,
+}
+
 #[async_trait]
 impl SolverConfigBuilder for MagicHttpBuilder {
     fn new() -> Box<Self> {
@@ -428,25 +437,16 @@ impl SolverConfigBuilder for MagicHttpBuilder {
             bail!("The magic solver is not supported by your system");
         }
 
-        let validation_port = cmd_line_config
-            .matches
-            .get_one::<u16>("validation_port")
-            .copied();
-        if matches!(validation_port, Some(0)) {
-            bail!("Port 0 is not valid");
-        }
+        let options = MagicHttpOptions::from_arg_matches(&cmd_line_config.matches)?;
         Ok(SolverConfiguration::MagicHttp(
-            MagicHttpSolverConfiguration { validation_port },
+            MagicHttpSolverConfiguration {
+                validation_port: options.validation_port,
+            },
         ))
     }
 
     fn get_command_line(&self) -> Command {
-        // TODO: help text
-        Command::new("auto").about(self.description()).arg(
-            Arg::new("validation_port")
-                .long("validation-port")
-                .value_parser(value_parser!(u16)),
-        )
+        MagicHttpOptions::command()
     }
 }
 

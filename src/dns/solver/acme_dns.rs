@@ -4,7 +4,7 @@ use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{AcmeDnsConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
-use crate::{Identifier, acme};
+use crate::{Identifier, USER_AGENT};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use clap::{Args, Command, CommandFactory, FromArgMatches, Parser};
@@ -93,9 +93,7 @@ impl Client {
 
     pub fn new_with_default_transport(server_url: Url) -> anyhow::Result<Self> {
         // TODO: Reuse HTTP client from somewhere?
-        let reqwest_client = reqwest::Client::builder()
-            .user_agent(acme::http::USER_AGENT)
-            .build()?;
+        let reqwest_client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
         Ok(Self::new(server_url, reqwest_client))
     }
 
@@ -208,6 +206,105 @@ struct UpdateBody {
 #[derive(Debug, Clone, Default)]
 pub struct Builder {}
 
+impl Builder {
+    pub fn user_ask_server() -> anyhow::Result<Url> {
+        inquire::CustomType::<Url>::new("Enter the API URL of your acme-dns server")
+            .with_default(Url::from_str("https://auth.acme-dns.io")?)
+            .with_help_message("Refer to acme-dns documentation at https://github.com/joohoi/acme-dns for how to setup your own instance")
+            .with_validator(|url: &Url| {
+                if url.scheme() != "http" && url.scheme() != "https" {
+                    Ok(Validation::Invalid("Must be a HTTP(S) URL".into()))
+                } else {
+                    Ok(Validation::Valid)
+                }
+            })
+            .with_error_message("Enter a valid URL")
+            .prompt()
+            .context("No answer to acme-dns server prompt")
+    }
+
+    pub async fn user_ask_registration(client: &Client) -> anyhow::Result<Registration> {
+        let new_registration = inquire::Confirm::new("Create a fresh registration?")
+            .with_default(true)
+            .prompt()
+            .context("No answer to new registration prompt")?;
+
+        let registration: Registration = if new_registration {
+            client
+                .register(std::iter::empty())
+                .await
+                .context(format!(
+                    "Failed to register new account at acme-dns server {}",
+                    client.server_url
+                ))?
+                .into()
+        } else {
+            let dummy_registration = Registration {
+                full_domain: String::new(),
+                subdomain: String::new(),
+                username: String::new(),
+                password: String::new(),
+            };
+            InteractiveConfigEditor::new(
+                "Fill out all fields",
+                dummy_registration,
+                [
+                    ClosureEditor::new(
+                        "Full domain",
+                        |registration: &Registration| registration.full_domain.as_str().into(),
+                        |mut config: Registration| async {
+                            config.full_domain = inquire::Text::new("Enter the full domain (subdomain + acme-dns base domain) received during registration")
+                                .with_initial_value(&config.full_domain).prompt().context("No answer to full domain dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                    ClosureEditor::new(
+                        "Subdomain",
+                        |registration: &Registration| registration.subdomain.as_str().into(),
+                        |mut config: Registration| async {
+                            config.subdomain = inquire::Text::new("Enter the subdomain received during registration (usually first part of full domain)")
+                                .with_initial_value(&config.subdomain).prompt().context("No answer to subdomain dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                    ClosureEditor::new(
+                        "Username",
+                        |registration: &Registration| registration.username.as_str().into(),
+                        |mut config: Registration| async {
+                            config.username = inquire::Text::new("Enter the username received during registration")
+                                .with_initial_value(&config.username).prompt().context("No answer to username dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                    ClosureEditor::new(
+                        "Password",
+                        |registration: &Registration| registration.password.chars().map(|_| '*').collect(),
+                        |mut config: Registration| async {
+                            config.password = inquire::Password::new("Enter the password (or API-Key) received during registration")
+                                .with_display_mode(PasswordDisplayMode::Masked).prompt().context("No answer to password dialog")?;
+                            Ok(config)
+                        }.boxed(),
+                    ),
+                ]
+                    .into_iter(),
+                |registration: &Registration| {
+                    async {
+                        if registration.full_domain.is_empty() || registration.subdomain.is_empty() || registration.username.is_empty() || registration.password.is_empty() {
+                            println!("Error: No registration field may be empty");
+                            Ok(false)
+                        } else {
+                            Ok(true)
+                        }
+                    }.boxed()
+                },
+            )
+                .edit_config()
+                .await?
+        };
+        Ok(registration)
+    }
+}
+
 /// acme-dns (<https://github.com/joohoi/acme-dns>) solves the dns challenge for any domain by redirecting the challenge domain to an ACME-DNS server. Requires an acme-dns installation.
 #[derive(Debug, Parser)]
 #[command(about, name = "acme-dns")]
@@ -257,99 +354,12 @@ impl SolverConfigBuilder for Builder {
         if !self.supported(domains) {
             bail!("The acme-dns solver can only be used with domain names");
         }
-        let server = inquire::CustomType::<Url>::new("Enter the API URL of your acme-dns server")
-            .with_default(Url::from_str("https://auth.acme-dns.io")?)
-            .with_help_message("Refer to acme-dns documentation at https://github.com/joohoi/acme-dns for how to setup your own instance")
-            .with_validator(|url: &Url| {
-                if url.scheme() != "http" && url.scheme() != "https" {
-                    Ok(Validation::Invalid("Must be a HTTP(S) URL".into()))
-                } else {
-                    Ok(Validation::Valid)
-                }
-            })
-            .with_error_message("Enter a valid URL")
-            .prompt()
-            .context("No answer to acme-dns server prompt")?;
+        let server = Self::user_ask_server()?;
         let client = Client::new_with_default_transport(server.clone())?;
         println!(
             "You can provide an existing acme-dns account/registration if you want, or create a fresh one now."
         );
-        let new_registration = inquire::Confirm::new("Create a fresh registration?")
-            .with_default(true)
-            .prompt()
-            .context("No answer to new registration prompt")?;
-
-        let registration: Registration = if new_registration {
-            client
-                .register(std::iter::empty())
-                .await
-                .context(format!(
-                    "Failed to register new account at acme-dns server {server}"
-                ))?
-                .into()
-        } else {
-            let dummy_registration = Registration {
-                full_domain: String::new(),
-                subdomain: String::new(),
-                username: String::new(),
-                password: String::new(),
-            };
-            InteractiveConfigEditor::new(
-                "Fill out all fields",
-                dummy_registration,
-                [
-                    ClosureEditor::new(
-                    "Full domain",
-                    |registration: &Registration| registration.full_domain.as_str().into(),
-                    |mut config: Registration| async {
-                        config.full_domain = inquire::Text::new("Enter the full domain (subdomain + acme-dns base domain) received during registration")
-                            .with_initial_value(&config.full_domain).prompt().context("No answer to full domain dialog")?;
-                        Ok(config)
-                    }.boxed(),
-                ),
-                    ClosureEditor::new(
-                    "Subdomain",
-                    |registration: &Registration| registration.subdomain.as_str().into(),
-                    |mut config: Registration| async {
-                        config.subdomain = inquire::Text::new("Enter the subdomain received during registration (usually first part of full domain)")
-                            .with_initial_value(&config.subdomain).prompt().context("No answer to subdomain dialog")?;
-                        Ok(config)
-                    }.boxed(),
-                ),
-                    ClosureEditor::new(
-                        "Username",
-                        |registration: &Registration| registration.username.as_str().into(),
-                        |mut config: Registration| async {
-                            config.username = inquire::Text::new("Enter the username received during registration")
-                                .with_initial_value(&config.username).prompt().context("No answer to username dialog")?;
-                            Ok(config)
-                        }.boxed(),
-                    ),
-                    ClosureEditor::new(
-                        "Password",
-                        |registration: &Registration| registration.password.chars().map(|_| '*').collect(),
-                        |mut config: Registration| async {
-                            config.password = inquire::Password::new("Enter the password (or API-Key) received during registration")
-                                .with_display_mode(PasswordDisplayMode::Masked).prompt().context("No answer to password dialog")?;
-                            Ok(config)
-                        }.boxed(),
-                    ),
-                ]
-                .into_iter(),
-                |registration: &Registration| {
-                    async {
-                        if registration.full_domain.is_empty() || registration.subdomain.is_empty() || registration.username.is_empty() || registration.password.is_empty() {
-                            println!("Error: No registration field may be empty");
-                            Ok(false)
-                        } else {
-                            Ok(true)
-                        }
-                    }.boxed()
-                },
-            )
-            .edit_config()
-            .await?
-        };
+        let registration = Self::user_ask_registration(&client).await?;
         let mut challenge_domains = HashSet::new();
         for domain in domains {
             #[allow(irrefutable_let_patterns)]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_endian.h>
@@ -8,12 +9,13 @@
 #define AF_INET 2   /* Internet IP Protocol */
 #define AF_INET6 10 /* IP version 6			*/
 
-// The license declaration is send (by libbpf) to the kernel during BPF program load and, for libbpf, applies to all BPF programs within the same BPF-binary.
+// The license declaration is send (by libbpf) to the kernel during BPF program load and, for libbpf, applies to all
+// BPF programs within the same BPF-binary.
 // Certain features are only unlocked by the kernel if the program declares a GPL-compatible license.
 // This license only applies to the BPF program(s), but not necessarily to the userspace program.
-// TODO: Determine the license we want to use here.
-char LICENSE[] SEC("license") = "Proprietary"; // We're not actually proprietary - this file is licensed under the same conditions as the main project.
-// However, we need to tell the kernel that we're not GPLv2.
+char LICENSE[] SEC("license") = "Proprietary"; // We're not actually proprietary - this file is licensed under the
+// same conditions as the main project (see license info at the top).
+// However, we need to tell the kernel that we're not GPLv2-(compatible).
 
 // This map holds references to the socket where the HTTP-01 challenge solver listens on.
 // entry 0 is for the IPv4 socket, entry 1 for IPv6 (no dualstack socket for compatibility)

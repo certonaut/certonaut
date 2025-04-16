@@ -1,13 +1,12 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
 use anyhow::{Context, anyhow};
+use sqlx::Executor;
 use sqlx::sqlite::SqliteAutoVacuum;
-use sqlx::{ConnectOptions, Executor};
 use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 use time::OffsetDateTime;
-use tracing::log::LevelFilter;
 
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -41,8 +40,11 @@ impl crate::state::Database {
         let pool_options = sqlx::sqlite::SqlitePoolOptions::new();
 
         #[cfg(debug_assertions)]
-        let connect_options =
-            connect_options.log_slow_statements(LevelFilter::Debug, Duration::from_millis(500));
+        let connect_options = sqlx::ConnectOptions::log_slow_statements(
+            connect_options,
+            tracing::log::LevelFilter::Debug,
+            Duration::from_millis(500),
+        );
 
         let pool = pool_options.connect_with(connect_options).await?;
         let db = crate::state::Database { pool };

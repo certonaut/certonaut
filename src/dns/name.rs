@@ -55,6 +55,14 @@ impl DnsName {
         let acme_challenge_name = base.prepend_label("_acme-challenge")?;
         Ok(acme_challenge_name.into())
     }
+
+    pub fn to_base_name(&self) -> Self {
+        self.inner.base_name().into()
+    }
+
+    pub fn prepend_label(&self, label: &str) -> Result<Self, ParseError> {
+        Ok(self.inner.prepend_label(label)?.into())
+    }
 }
 
 impl PartialEq<Self> for DnsName {

@@ -35,6 +35,7 @@ const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2 * 60);
 /// Maximum time we wait for the server to progress in the state machine
 const MAX_POLL_DURATION: Duration = Duration::from_secs(5 * 60);
 
+/// `AcmeClientBuilder` allows to instantiate new `AcmeClient` instances, optionally with extra configuration
 pub struct AcmeClientBuilder {
     server_url: Url,
     http_client: Option<HttpClient>,
@@ -48,12 +49,15 @@ impl AcmeClientBuilder {
         }
     }
 
+    /// Optionally, use a custom `HttpClient` for HTTP requests instead of a default one.
     #[must_use]
     pub fn with_http_client(mut self, http_client: HttpClient) -> Self {
         self.http_client = Some(http_client);
         self
     }
 
+    /// Try to create a new `AcmeClient` with the current configuration. This will validate the configuration and
+    /// fetch the ACME directory from the CA. If this fails, an error is returned.
     pub async fn try_build(self) -> ProtocolResult<AcmeClient> {
         AcmeClient::try_new(self).await
     }
@@ -75,7 +79,7 @@ impl AcmeClient {
             .http_client
             .ok_or_else(HttpClient::try_new)
             .or_else(|e| e)?;
-        // TODO: Retry this or prefer fast fail when directory is invalid?
+        // TODO: Simple retry if response indicates a retry is possible (e.g. temporary rate limiting)
         let directory_response = http_client.get(builder.server_url).await?;
         let directory = match directory_response.status() {
             StatusCode::OK => directory_response.json().await?,
@@ -92,6 +96,7 @@ impl AcmeClient {
 // Main impl block
 #[cfg_attr(test, faux::methods)]
 impl AcmeClient {
+    // helper for faux
     fn new(
         http_client: HttpClient,
         directory: Directory,
@@ -104,6 +109,15 @@ impl AcmeClient {
         }
     }
 
+    /// Get an unused nonce suitable for use in an ACME-JWS.
+    ///
+    /// This returns a nonce from the pool if one is available, or requests a new nonce from the ACME CA.
+    /// This function implements automatic retries in case of sporadic errors. A returned nonce is guaranteed
+    /// not to have been returned previously.
+    ///
+    /// # Errors
+    ///
+    /// If no unused nonce could be retrieved from the pool or the ACME CA.
     pub async fn get_nonce(&self) -> ProtocolResult<Nonce> {
         let mut last_error;
         let mut retry = 0;
@@ -238,6 +252,17 @@ impl AcmeClient {
         &self.directory
     }
 
+    /// Register a new account at the CA.
+    ///
+    /// # Returns
+    ///
+    /// - A `JsonWebKey` that can sign ACME requests for the newly created account
+    /// - The account URL
+    /// - The created account resource
+    ///
+    /// # Errors
+    ///
+    /// If a network error occurs, or the CA refused account creation.
     pub async fn register_account(
         &self,
         options: AccountRegisterOptions,
@@ -260,6 +285,7 @@ impl AcmeClient {
         Ok((account_key, account_url, created_account))
     }
 
+    /// Fetch the account resource belonging to both the `account_key` and `account_url`
     pub async fn fetch_account(
         &self,
         account_key: &JsonWebKey,
@@ -330,12 +356,19 @@ impl AcmeClient {
         })
     }
 
+    /// Ask the ACME server to attempt validation of the challenge identified by `challenge_url`.
+    ///
+    /// Note: It is an error to attempt validation of a challenge that is not in a suitable state (e.g. not pending/processing).
+    /// This function does not check the state of the challenge before submitting the validation attempt.
+    ///
+    /// # Returns
+    ///
+    /// The validated challenge, or an error if validation failed.
     pub async fn validate_challenge(
         &self,
         account_key: &JsonWebKey,
         challenge_url: &Url,
     ) -> ProtocolResult<Challenge> {
-        // TODO: if already valid, returns error
         let response = self
             .post_with_retry(challenge_url, account_key, Some(&EmptyObject {}))
             .await?;

@@ -58,6 +58,18 @@ pub mod util;
 
 /// The name of the application
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+// As per RFC8555 Section 6.1, we should conform both to RFC 7525 and supply the name + version
+// of our HTTP library.
+pub const USER_AGENT: &str = concat!(
+    env!("CARGO_PKG_NAME"),
+    "/",
+    env!("CARGO_PKG_VERSION"),
+    " reqwest/",
+    env!("REQWEST_VERSION"),
+    " ( +",
+    env!("CARGO_PKG_REPOSITORY"),
+    " )"
+);
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(untagged)]

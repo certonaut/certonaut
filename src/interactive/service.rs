@@ -20,7 +20,6 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
-use std::str::FromStr;
 use std::sync::Mutex;
 use strum::VariantArray;
 use tokio::sync::RwLock;
@@ -873,25 +872,49 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             bail!("Domain list cannot be empty");
         }
         if domains.len() == 1 {
-            // TODO: Wildcards: If given name is a wildcard, suggest base domain name instead
             let domain = domains.iter().next().unwrap(/* Infallible */);
-            if domain.as_str().starts_with("www.") {
-                let base_name = Identifier::from_str(
-                    domain.as_str().strip_prefix("www.").unwrap(/* Infallible */),
-                )?;
-                let add_base_name = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the base domain to your certificate?", base_name.to_string().green().on_black()))
-                    .with_default(false)
-                    .prompt_skippable()?.unwrap_or(false);
-                if add_base_name {
-                    domains.insert(base_name);
-                }
-            } else {
-                let www_name = Identifier::from_str(&("www.".to_string() + domain.as_str()))?;
-                let add_www = Confirm::new(&format!("It is common to also include {} in certificates, so that visitors can use either name. Do you want to add the www subdomain to your certificate?", www_name.to_string().green().on_black()))
-                    .with_default(false)
-                    .prompt_skippable()?.unwrap_or(false);
-                if add_www {
-                    domains.insert(www_name);
+            match domain {
+                Identifier::Dns(domain) => {
+                    let ask_additional_identifier = if domain.is_wildcard() {
+                        let base_name = Identifier::Dns(domain.to_base_name());
+                        let base_name_formatted = base_name.to_string().green().on_black();
+                        Some((
+                            format!(
+                                "For wildcard certificates you will usually want to include {base_name_formatted} in the certificate as well. Otherwise the certificate is only valid for *.{base_name_formatted}. Add the base name?"
+                            ),
+                            base_name,
+                        ))
+                    } else if domain.as_ascii().starts_with("www.") {
+                        let base_name = Identifier::Dns(domain.to_base_name());
+                        let base_name_formatted = base_name.to_string().green().on_black();
+                        Some((
+                            format!(
+                                "It is common to also include {base_name_formatted} in certificates, so that visitors can use either name. Do you want to add the base domain to your certificate?"
+                            ),
+                            base_name,
+                        ))
+                    } else if let Ok(www_name) = domain.prepend_label("www") {
+                        let www_name = Identifier::Dns(www_name);
+                        let www_name_formatted = www_name.to_string().green().on_black();
+                        Some((
+                            format!(
+                                "It is common to also include {www_name_formatted} in certificates, so that visitors can use either name. Do you want to add the www subdomain to your certificate?"
+                            ),
+                            www_name,
+                        ))
+                    } else {
+                        None
+                    };
+
+                    if let Some((add_message, extra_name)) = ask_additional_identifier {
+                        let add_name = Confirm::new(&add_message)
+                            .with_default(false)
+                            .prompt_skippable()?
+                            .unwrap_or(false);
+                        if add_name {
+                            domains.insert(extra_name);
+                        }
+                    }
                 }
             }
         }
