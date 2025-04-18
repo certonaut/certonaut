@@ -94,14 +94,14 @@ impl Resolver {
             let new_source = lookup.record_iter().find_map(|record| {
                 let record_name: DnsName = record.name().into();
                 if let Some(cname) = record.data().as_cname() {
-                    if record_name.eq_ignore_root(&current) {
+                    if record_name == current {
                         return Some((&cname.0).into());
                     }
                 }
                 None
             });
             match new_source {
-                Some(new_source) if current.eq_ignore_root(&new_source) => {
+                Some(new_source) if current == new_source => {
                     // CNAME that points to itself? Abort search, consider this the final result
                     break new_source;
                 }

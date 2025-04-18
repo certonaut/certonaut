@@ -41,11 +41,6 @@ impl DnsName {
         self.inner.is_wildcard()
     }
 
-    // TODO: Can probably be simplified
-    pub fn eq_ignore_root(&self, other: &DnsName) -> bool {
-        self.inner.eq_ignore_root(&other.inner)
-    }
-
     pub fn to_acme_challenge_name(&self) -> Result<Self, ParseError> {
         let base = if self.is_wildcard() {
             &self.inner.base_name()
@@ -56,6 +51,7 @@ impl DnsName {
         Ok(acme_challenge_name.into())
     }
 
+    #[must_use]
     pub fn to_base_name(&self) -> Self {
         self.inner.base_name().into()
     }
@@ -339,7 +335,7 @@ mod tests {
         let first: DnsName = first_name.try_into().unwrap();
         let second: DnsName = second_name.try_into().unwrap();
 
-        let equal = first.eq_ignore_root(&second);
+        let equal = first == second;
 
         assert_eq!(equal, expected);
     }

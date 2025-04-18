@@ -41,11 +41,8 @@ pub enum Algorithm {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub enum KeyParameters {
-    // TODO: revocation with certificate key also uses jwk instead of kid.
-    // Either fake those via NewAccount, or introduce a CertificateKey enum
-    // that effectively only aliases?
     #[serde(rename = "jwk")]
-    NewAccount(JsonWebKeyParameters),
+    FullKey(JsonWebKeyParameters),
     #[serde(rename = "kid")]
     AccountUrl(Url),
 }
@@ -138,7 +135,7 @@ impl JsonWebKey {
         let thumbprint = JsonWebKey::compute_account_thumbprint(&parameters);
         Self {
             keypair,
-            parameters: KeyParameters::NewAccount(parameters),
+            parameters: KeyParameters::FullKey(parameters),
             thumbprint,
         }
     }
@@ -220,7 +217,7 @@ mod tests {
             algorithm: Algorithm::EcdsaP256Sha256,
             nonce: Nonce::try_from("QWERTZ".to_string()).unwrap(),
             target_url: Url::parse("https://example.com/protected-header-test").unwrap(),
-            key: KeyParameters::NewAccount(JsonWebKeyParameters::Ecdsa(JsonWebKeyEcdsa::new(
+            key: KeyParameters::FullKey(JsonWebKeyParameters::Ecdsa(JsonWebKeyEcdsa::new(
                 Curve::P256,
                 "MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4".to_string(),
                 "4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM".to_string(),
@@ -250,7 +247,7 @@ mod tests {
             algorithm: Algorithm::RsaPkcs1Sha256,
             nonce: Nonce::try_from("QWERTZ".to_string()).unwrap(),
             target_url: Url::parse("https://example.com/protected-header-test").unwrap(),
-            key: KeyParameters::NewAccount(JsonWebKeyParameters::Rsa(JsonWebKeyRsa::new(
+            key: KeyParameters::FullKey(JsonWebKeyParameters::Rsa(JsonWebKeyRsa::new(
                 "longModulusIsTooLongForTestSoThisSubstitutesBase64".to_string(),
                 "AQAB".to_string(),
             ))),
