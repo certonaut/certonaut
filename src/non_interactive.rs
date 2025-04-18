@@ -8,6 +8,7 @@ use crate::config::{
     ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::crypto::jws::ExternalAccountBinding;
 use crate::{Certonaut, NewAccountOptions};
 use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
@@ -74,6 +75,15 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         let account_id = cmd
             .account_id
             .unwrap_or_else(|| format!("{ca_id}@{account_num}"));
+        let eab = if let Some(kid) = cmd.external_account_kid {
+            if let Some(hmac_base64) = cmd.external_account_hmac_key {
+                Some(ExternalAccountBinding::try_new(kid, hmac_base64)?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let new_account = Certonaut::<CB>::create_account(
             acme_client,
             NewAccountOptions {
@@ -82,6 +92,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                 contacts,
                 key_type: KeyType::Ecdsa(Curve::P256),
                 terms_of_service_agreed: Some(cmd.terms_of_service_agreed),
+                external_account_binding: eab,
             },
         )
         .await?;

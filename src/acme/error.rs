@@ -1,6 +1,6 @@
 use crate::acme::http::HttpClient;
 use crate::acme::object::Identifier;
-use crate::crypto::asymmetric::SignatureError;
+use crate::crypto::SignatureError;
 use serde::Deserialize;
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;

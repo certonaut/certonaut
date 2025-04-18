@@ -31,6 +31,7 @@ pub struct CommandLineArguments {
     pub verbose: bool,
     /// Force certonaut to disable all interactive prompts, even if a terminal was detected
     #[clap(long, action)]
+    #[clap(alias = "non-interactive")]
     pub noninteractive: bool,
 }
 
@@ -120,7 +121,12 @@ pub struct AccountCreateCommand {
     /// Set to indicate that you agree to the CA's terms of service
     #[arg(long)]
     pub terms_of_service_agreed: bool,
-    // TODO: EAB, others?
+    /// The `EAB_KID` (Key ID) for ACME External Account Binding (EAB)
+    #[arg(long = "eab-kid", requires = "external_account_hmac_key")]
+    pub external_account_kid: Option<String>,
+    /// The `EAB_HMAC_KEY` (HMAC Key) for ACME External Account Binding (EAB)
+    #[arg(long = "eab-hmac-key", requires = "external_account_kid")]
+    pub external_account_hmac_key: Option<String>,
 }
 
 #[derive(Debug, Args, Default)]

@@ -8,7 +8,7 @@ use crate::acme::object::{
     OrderStatus, RenewalInfo,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{EMPTY_PAYLOAD, JsonWebKey, ProtectedHeader};
+use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
 use crate::util::serde_helper::PassthroughBytes;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -269,10 +269,15 @@ impl AcmeClient {
     ) -> ProtocolResult<(JsonWebKey, Url, Account)> {
         let jwk = JsonWebKey::new(options.key);
         let target_url = &self.get_directory().new_account;
+        let eab = if let Some(eab) = options.external_account_binding {
+            Some(eab.sign(target_url.clone(), &jwk)?)
+        } else {
+            None
+        };
         let payload = AccountRequest {
             contact: options.contact,
             terms_of_service_agreed: options.terms_of_service_agreed,
-            external_account_binding: None,
+            external_account_binding: eab,
         };
         let response = self
             .post_with_retry(target_url, &jwk, Some(&payload))
@@ -584,6 +589,7 @@ pub struct AccountRegisterOptions {
     pub key: KeyPair,
     pub contact: Vec<Url>,
     pub terms_of_service_agreed: Option<bool>,
+    pub external_account_binding: Option<ExternalAccountBinding>,
 }
 
 #[derive(Debug)]

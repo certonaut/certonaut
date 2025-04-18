@@ -1,3 +1,4 @@
+use crate::crypto::SignatureError;
 use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
 use anyhow::{Context, anyhow, bail};
 use aws_lc_rs::encoding::AsBigEndian;
@@ -7,7 +8,6 @@ use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use pem::Pem;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -326,39 +326,6 @@ pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
             KeyPair::Rsa(RsaKeyPair::new(keypair))
         }
     })
-}
-
-#[derive(Debug)]
-pub enum SignatureError {
-    Serialization(serde_json::Error),
-    SignatureGeneration(&'static str),
-    EncodingFailed(&'static str),
-}
-
-impl Error for SignatureError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match &self {
-            SignatureError::Serialization(ser) => ser.source(),
-            SignatureError::EncodingFailed(_) | SignatureError::SignatureGeneration(_) => None,
-        }
-    }
-}
-
-impl Display for SignatureError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            SignatureError::Serialization(e) => write!(f, "JSON encoding failed: {e}"),
-            SignatureError::EncodingFailed(msg) | SignatureError::SignatureGeneration(msg) => {
-                write!(f, "{msg}")
-            }
-        }
-    }
-}
-
-impl From<serde_json::Error> for SignatureError {
-    fn from(e: serde_json::Error) -> Self {
-        SignatureError::Serialization(e)
-    }
 }
 
 #[cfg(test)]

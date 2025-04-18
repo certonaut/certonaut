@@ -14,7 +14,7 @@ use crate::config::{
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::KeyType;
-use crate::crypto::jws::JsonWebKey;
+use crate::crypto::jws::{ExternalAccountBinding, JsonWebKey};
 use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
@@ -341,6 +341,7 @@ pub struct NewAccountOptions {
     pub contacts: Vec<Url>,
     pub key_type: KeyType,
     pub terms_of_service_agreed: Option<bool>,
+    pub external_account_binding: Option<ExternalAccountBinding>,
 }
 
 #[derive(Debug)]
@@ -503,6 +504,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             key: keypair,
             contact: options.contacts,
             terms_of_service_agreed: options.terms_of_service_agreed,
+            external_account_binding: options.external_account_binding,
         };
         let (jwk, url, _account) = match client
             .register_account(options)
@@ -904,6 +906,12 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 Ok(account) => {
                     println!("Status: {}", account.status);
                     println!("Contact: {}", account.contact.into_iter().join(", "));
+                    if let Some(eab_header) = account
+                        .external_account_binding
+                        .and_then(|eab| eab.header_json().ok())
+                    {
+                        println!("External Account Binding: {eab_header}");
+                    }
                 }
                 Err(e) => {
                     warn!("Failed to retrieve account from CA: {e:#}");

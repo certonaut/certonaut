@@ -5,6 +5,7 @@ use crate::config::{
     CertificateConfiguration, ConfigBackend, InstallerConfiguration,
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
@@ -1103,7 +1104,7 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         let ca_name = ca.config.name.as_str().green();
         println!("Creating a new account at CA {ca_name}");
         let acme_client = ca.client().await?;
-        let tos_status = Self::user_create_account_ca_specific_features(ca).await?;
+        let (tos_status, eab) = Self::user_create_account_ca_specific_features(ca).await?;
         println!(
             "You can provide one or more contact addresses to the CA. Please provide a comma-separated list \
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
@@ -1171,6 +1172,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
                 // TODO: We could try EdDSA keys first, check for a badSignatureError, and then retry with P256?
                 key_type: KeyType::Ecdsa(Curve::P256),
                 terms_of_service_agreed: tos_status,
+                external_account_binding: eab,
             },
         )
         .await
@@ -1178,11 +1180,12 @@ of email addresses below, or leave the field empty to not provide any contact ad
 
     async fn user_create_account_ca_specific_features(
         ca: &AcmeIssuer,
-    ) -> anyhow::Result<Option<bool>> {
+    ) -> anyhow::Result<(Option<bool>, Option<ExternalAccountBinding>)> {
         let ca_name = ca.config.name.as_str().green();
         let acme_client = ca.client().await?;
         let directory = acme_client.get_directory();
         let mut tos_status = None;
+        let mut eab = None;
         if let Some(meta) = &directory.meta {
             if let Some(website) = &meta.website {
                 println!(
@@ -1202,6 +1205,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
                     .context("No answer to TOS prompt")?;
                 tos_status = Some(tos_agreed);
             }
+            // TODO: Also allow for EAB if not mandated by CA
             if meta.external_account_required {
                 println!(
                     "This CA indicates that you need a separate account, not managed by \
@@ -1221,7 +1225,15 @@ You may need to create an account at the CA's website first.",
                     .prompt()
                     .context("No answer to EAB check-question")?;
                 if has_eab {
-                    todo!("EAB currently not implemented")
+                    let kid = Text::new("Enter the EAB Key ID (EAB_KID):")
+                        .with_help_message("This value is a text string provided to you by the CA")
+                        .prompt()
+                        .context("No EAB_KID provided")?;
+                    let hmac_key_base64 = Text::new("Enter the EAB HMAC Key (EAB_HMAC_KEY):")
+                        .with_help_message("This value must be in base64-url format")
+                        .prompt()
+                        .context("No EAB_HMAC_KEY provided")?;
+                    eab = Some(ExternalAccountBinding::try_new(kid, hmac_key_base64)?);
                 } else {
                     bail!(
                         "EAB is required for this CA. Please review the CA's website to find instructions, or select a different CA."
@@ -1229,7 +1241,7 @@ You may need to create an account at the CA's website first.",
                 }
             }
         }
-        Ok(tos_status)
+        Ok((tos_status, eab))
     }
 
     fn user_ask_installer(

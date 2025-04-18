@@ -1,4 +1,5 @@
 use crate::acme::error::{Error, Problem};
+use crate::crypto::jws::FlatJsonWebSignature;
 use crate::util::serde_helper::optional_offset_date_time;
 use anyhow::Context;
 use base64::Engine;
@@ -129,7 +130,7 @@ pub struct AccountRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terms_of_service_agreed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub external_account_binding: Option<String>,
+    pub external_account_binding: Option<FlatJsonWebSignature>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,7 +141,9 @@ pub struct Account {
     #[serde(default)]
     pub contact: Vec<Url>,
     pub orders: Option<Url>,
-    // TODO: EAB + Orders (not supported by Boulder)
+    #[serde(default)]
+    pub external_account_binding: Option<FlatJsonWebSignature>,
+    // TODO: Orders (not supported by Boulder)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
@@ -456,6 +459,7 @@ mod tests {
     use rstest::rstest;
     use std::fs::File;
     use std::path::PathBuf;
+    use std::string::ToString;
     use time::macros::datetime;
 
     #[rstest]
@@ -468,7 +472,8 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_directory_invalid(
-        #[files("testdata/serialization/deserialize_invalid_test_directory_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_directory_*.json")]
+        testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Directory> = serde_json::from_reader(file);
@@ -485,7 +490,8 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_metadata_invalid(
-        #[files("testdata/serialization/deserialize_invalid_test_metadata_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_metadata_*.json")]
+        testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Metadata> = serde_json::from_reader(file);
@@ -536,7 +542,8 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_account_invalid(
-        #[files("testdata/serialization/deserialize_invalid_test_account_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_account_*.json")]
+        testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Account> = serde_json::from_reader(file);
@@ -588,7 +595,8 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_challenge_invalid(
-        #[files("testdata/serialization/deserialize_invalid_test_challenge_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_challenge_*.json")]
+        testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<Challenge> = serde_json::from_reader(file);
@@ -688,8 +696,8 @@ mod tests {
         AccountRequest{
             contact: vec!(Url::parse("mailto:admin@example.org").unwrap()),
             terms_of_service_agreed: Some(true),
-            external_account_binding: Some("ThisIsAPlaceholderForAnURLEncodedEABObject".to_string()),
-            }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true,"externalAccountBinding":"ThisIsAPlaceholderForAnURLEncodedEABObject"}"#
+            external_account_binding: Some(FlatJsonWebSignature::new_test_values("header", "payload", "signature")),
+            }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true,"externalAccountBinding":{"protected":"header","payload":"payload","signature":"signature"}}"#
     )]
     #[case(AccountRequest{
             contact: vec!(),
@@ -805,7 +813,8 @@ mod tests {
 
     #[rstest]
     fn test_deserialize_renewal_info_invalid(
-        #[files("testdata/serialization/deserialize_invalid_test_renewalInfo_*.json")] testfile: PathBuf,
+        #[files("testdata/serialization/deserialize_invalid_test_renewalInfo_*.json")]
+        testfile: PathBuf,
     ) {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<RenewalInfo> = serde_json::from_reader(file);

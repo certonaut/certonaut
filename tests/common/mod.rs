@@ -159,6 +159,7 @@ pub async fn setup_pebble_issuer<T: ConfigBackend>(
         key: keypair,
         contact: vec!["mailto:admin@example.org".parse()?],
         terms_of_service_agreed: Some(true),
+        external_account_binding: None,
     };
     let (jwk, account_url, _account) = acme_client.register_account(register_options).await?;
     certonaut.add_new_ca(CertificateAuthorityConfiguration {

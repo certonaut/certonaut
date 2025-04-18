@@ -1,9 +1,11 @@
 use crate::acme::object::Nonce;
-use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, SignatureError};
-use crate::crypto::sha256;
+use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair};
+use crate::crypto::symmetric::{MacKey, SymmetricKeyOperation};
+use crate::crypto::{SignatureError, sha256};
+use anyhow::Context;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Debug, Serialize)]
@@ -29,7 +31,7 @@ impl ProtectedHeader {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
 pub enum Algorithm {
     #[serde(rename = "ES256")]
     EcdsaP256Sha256,
@@ -37,6 +39,8 @@ pub enum Algorithm {
     EcdsaP384Sha384,
     #[serde(rename = "RS256")]
     RsaPkcs1Sha256,
+    #[serde(rename = "HS256")]
+    HmacSha256,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -45,6 +49,8 @@ pub enum KeyParameters {
     FullKey(JsonWebKeyParameters),
     #[serde(rename = "kid")]
     AccountUrl(Url),
+    #[serde(rename = "kid")]
+    ExternalKey(String),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -192,7 +198,7 @@ impl JsonWebKey {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FlatJsonWebSignature {
     #[serde(rename = "protected")]
     header: String,
@@ -201,14 +207,93 @@ pub struct FlatJsonWebSignature {
 }
 
 #[cfg(test)]
+impl FlatJsonWebSignature {
+    pub fn new_test_values(header: &str, payload: &str, signature: &str) -> Self {
+        Self {
+            header: header.to_string(),
+            payload: payload.to_string(),
+            signature: signature.to_string(),
+        }
+    }
+}
+
+impl FlatJsonWebSignature {
+    fn parse_base64_json(value: &str) -> anyhow::Result<serde_json::Value> {
+        let raw_json = BASE64_URL_SAFE_NO_PAD.decode(value)?;
+        Ok(serde_json::from_slice(&raw_json)?)
+    }
+
+    pub fn header_json(&self) -> anyhow::Result<serde_json::Value> {
+        Self::parse_base64_json(&self.header)
+    }
+
+    pub fn payload_json(&self) -> anyhow::Result<serde_json::Value> {
+        Self::parse_base64_json(&self.payload)
+    }
+}
+
+#[derive(Debug)]
+pub struct ExternalAccountBinding {
+    key_id: String,
+    key: MacKey,
+}
+
+impl ExternalAccountBinding {
+    pub fn try_new(key_id: String, encoded_key: String) -> anyhow::Result<Self> {
+        let key_bytes = BASE64_URL_SAFE_NO_PAD
+            .decode(encoded_key)
+            .context("EAB key does not appear to be base64-url encoded. Check the key was entered correctly.")?;
+        Ok(Self {
+            key_id,
+            key: MacKey::new_hmac(&key_bytes),
+        })
+    }
+
+    pub fn sign(
+        &self,
+        url: Url,
+        account_key: &JsonWebKey,
+    ) -> Result<FlatJsonWebSignature, SignatureError> {
+        let algorithm = self.key.algorithm();
+        let header = ProtectedHeader {
+            algorithm,
+            nonce: Nonce::new_empty(),
+            target_url: url,
+            key: KeyParameters::ExternalKey(self.key_id.clone()),
+        };
+        let header = serde_json::to_string(&header)?;
+        let header = BASE64_URL_SAFE_NO_PAD.encode(header);
+        let payload = account_key.get_parameters();
+        let KeyParameters::FullKey(payload) = payload else {
+            return Err(SignatureError::EncodingFailed(
+                "EAB signing requires a full account key",
+            ));
+        };
+        let payload = serde_json::to_string(payload)?;
+        let payload = BASE64_URL_SAFE_NO_PAD.encode(payload);
+        let to_sign = format!("{header}.{payload}");
+        let signature = self.key.sign(to_sign.as_bytes())?;
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(signature);
+        Ok(FlatJsonWebSignature {
+            header,
+            payload,
+            signature,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use crate::acme::object::Nonce;
-    use crate::crypto::asymmetric::Curve;
+    use crate::crypto::asymmetric::{Curve, KeyPair};
     use crate::crypto::jws::{
-        Algorithm, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters,
-        ProtectedHeader,
+        Algorithm, ExternalAccountBinding, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters,
+        JsonWebKeyRsa, KeyParameters, ProtectedHeader,
     };
+    use base64::Engine;
+    use base64::prelude::BASE64_URL_SAFE_NO_PAD;
     use rstest::rstest;
+    use std::fs::File;
     use url::Url;
 
     #[test]
@@ -288,5 +373,27 @@ mod tests {
             &actual_thumbprint, expected_thumbprint,
             "computed thumbprint not equal"
         );
+    }
+
+    #[test]
+    fn test_external_account_binding_sign() -> anyhow::Result<()> {
+        let eab = ExternalAccountBinding::try_new(
+            "my-key-id".to_string(),
+            BASE64_URL_SAFE_NO_PAD.encode("my-key"),
+        )?;
+        let test_url = Url::parse("https://example.com/eab-test")?;
+        let test_key_file = File::open("testdata/keys/account.key")?;
+        let test_key = JsonWebKey::new(KeyPair::load_from_disk(test_key_file)?);
+        let expected_signature = r#"{
+  "protected": "eyJhbGciOiJIUzI1NiIsInVybCI6Imh0dHBzOi8vZXhhbXBsZS5jb20vZWFiLXRlc3QiLCJraWQiOiJteS1rZXktaWQifQ",
+  "payload": "eyJrdHkiOiJFQyIsImNydiI6IlAtMzg0IiwieCI6Ii1mZmVsbFhIb29qaEdzSG1YX2FDNnhQeHMwQ19pU2MyNFViT1dtZzY2Q2pZdnQ5YTJaLXFMSUZ2aGZmeUhPUlciLCJ5IjoiajVFX1luRFRHeHVsYjdXaEdXOXo4YjY2Tjk2dFFZd3F4VU10RmFMTW5Ld2JHSVZyMnVDVDdtZmFqRnItSTdwdCJ9",
+  "signature": "AtwFS3r6nTz1nvAA7DNIrVlSoDFWMBPgUuCmiR0FJ2w"
+}"#;
+
+        let signature = eab.sign(test_url.clone(), &test_key)?;
+        let signature_json = serde_json::to_string_pretty(&signature)?;
+
+        assert_eq!(signature_json, expected_signature, "{signature_json}");
+        Ok(())
     }
 }
