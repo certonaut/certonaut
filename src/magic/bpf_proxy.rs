@@ -2,14 +2,15 @@ use crate::CRATE_NAME;
 use crate::challenge_solver::HttpChallengeParameters;
 use anyhow::{Context, anyhow};
 use caps::{CapSet, Capability};
-use futures::future;
+use futures::stream::FuturesUnordered;
+use futures::{StreamExt, future};
 use http::HeaderName;
 use http_body_util::{Either, Full};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use libbpf_rs::{Link, MapCore, MapFlags};
 use std::fs::File;
@@ -17,14 +18,18 @@ use std::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tokio::task;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
-const MAX_OPEN_CONNECTIONS: usize = 200;
+const MAX_OPEN_CONNECTIONS: usize = 100;
+const EMPTY_ACCEPT_QUEUE_TIMEOUT: Duration = Duration::from_millis(200);
+const PROXY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 const MINIMUM_KERNEL_MAJOR: usize = 5;
 const MINIMUM_KERNEL_MINOR: usize = 9;
@@ -89,121 +94,130 @@ where
     Ok(proxy_challenge_link)
 }
 
-async fn http_handler(
-    params: &HttpChallengeParameters,
-    client_addr: SocketAddr,
-    request: Request<hyper::body::Incoming>,
-) -> anyhow::Result<Response<Either<Full<Bytes>, hyper::body::Incoming>>> {
-    let path = request.uri().path();
-    // This condition is slightly too broad as it will also answer with the challenge on paths like
-    // /.well-known/acme-challenge/something/token, but it avoids string allocations for an exact match.
-    if path.starts_with("/.well-known/acme-challenge/") && path.ends_with(params.token.as_str()) {
-        Ok(Response::builder()
-            .status(200)
-            .header(http::header::SERVER, CRATE_NAME)
-            .header(http::header::CONTENT_TYPE, "application/octet-stream")
-            .body(Either::Left(Full::new(Bytes::from(
-                params.key_authorization.to_string(),
-            ))))?)
-    } else {
-        // Reverse proxy to the actual server
-        proxy_http(client_addr, params.challenge_port, request)
-            .await
-            .map(|response| {
-                let (mut parts, body) = response.into_parts();
-                for hop_header in HOP_BY_HOP_HEADERS.iter() {
-                    parts.headers.remove(hop_header);
-                }
-                Response::from_parts(parts, Either::Right(body))
-            })
-            .or_else(|e| {
-                warn!("Forwarding failed: {e}");
-                Ok(Response::builder()
-                    .status(502)
-                    .header(http::header::SERVER, CRATE_NAME)
-                    .header(http::header::CONTENT_TYPE, "text/plain")
-                    .body(Either::Left(Full::new(Bytes::from(
-                        "Unable to forward request to HTTP server",
-                    ))))?)
-            })
-    }
+#[derive(Debug)]
+struct SimpleReverseProxy {
+    path: String,
+    token: String,
+    port: u16,
 }
 
-async fn proxy_http(
-    client_addr: SocketAddr,
-    challenge_port: u16,
-    request: Request<hyper::body::Incoming>,
-) -> anyhow::Result<Response<hyper::body::Incoming>> {
-    // TODO: Reuse connections
-    let stream = TcpStream::connect(("127.0.0.1", challenge_port)).await?;
-    let io = TokioIo::new(stream);
-
-    let max_headers = request.headers().len() + 10;
-
-    let mut client_builder = hyper::client::conn::http1::Builder::new();
-    client_builder
-        .preserve_header_case(true)
-        .http09_responses(true);
-    // For performance reasons, only set this field if it exceeds hyper's default
-    if max_headers > 100 {
-        client_builder.max_headers(max_headers);
-    }
-    let (mut sender, conn) = client_builder.handshake(io).await?;
-    tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            warn!("Connection failed: {err:#}");
+impl SimpleReverseProxy {
+    async fn http_handler(
+        &self,
+        client_addr: SocketAddr,
+        request: Request<hyper::body::Incoming>,
+    ) -> anyhow::Result<Response<Either<Full<Bytes>, hyper::body::Incoming>>> {
+        let path = request.uri().path();
+        debug!("Handling http request from {client_addr} for path {path}");
+        if path == self.path {
+            debug!("Answering acme-challenge request with token");
+            Ok(Response::builder()
+                .status(200)
+                .header(http::header::SERVER, CRATE_NAME)
+                .header(http::header::CONTENT_TYPE, "application/octet-stream")
+                .body(Either::Left(Full::new(Bytes::from(self.token.clone()))))?)
+        } else {
+            // Reverse proxy to the actual server
+            self.proxy_http(client_addr, request)
+                .await
+                .map(|response| {
+                    let (mut parts, body) = response.into_parts();
+                    for hop_header in HOP_BY_HOP_HEADERS.iter() {
+                        parts.headers.remove(hop_header);
+                    }
+                    Response::from_parts(parts, Either::Right(body))
+                })
+                .or_else(|e| {
+                    warn!("Forwarding failed: {e}");
+                    Ok(Response::builder()
+                        .status(502)
+                        .header(http::header::SERVER, CRATE_NAME)
+                        .header(http::header::CONTENT_TYPE, "text/plain")
+                        .body(Either::Left(Full::new(Bytes::from(
+                            "Unable to forward request to HTTP server",
+                        ))))?)
+                })
         }
-    });
+    }
 
-    let mut req_builder = Request::builder()
-        .method(request.method())
-        .uri(request.uri());
+    async fn proxy_http(
+        &self,
+        client_addr: SocketAddr,
+        request: Request<hyper::body::Incoming>,
+    ) -> anyhow::Result<Response<hyper::body::Incoming>> {
+        // TODO: Reuse connections
+        let stream = TcpStream::connect(("127.0.0.1", self.port)).await?;
+        let io = TokioIo::new(stream);
 
-    for (header_name, header_value) in request.headers() {
-        if HOP_BY_HOP_HEADERS.contains(header_name) {
-            continue;
+        let max_headers = request.headers().len() + 10;
+
+        let mut client_builder = hyper::client::conn::http1::Builder::new();
+        client_builder
+            .preserve_header_case(true)
+            .http09_responses(true);
+        // For performance reasons, only set this field if it exceeds hyper's default
+        if max_headers > 100 {
+            client_builder.max_headers(max_headers);
         }
-        req_builder = req_builder.header(header_name, header_value);
+        let (mut sender, conn) = client_builder.handshake(io).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                warn!("Reverse proxy connection for {client_addr} failed: {err:#}");
+            }
+        });
+
+        let mut req_builder = Request::builder()
+            .method(request.method())
+            .uri(request.uri());
+
+        for (header_name, header_value) in request.headers() {
+            if HOP_BY_HOP_HEADERS.contains(header_name) {
+                continue;
+            }
+            req_builder = req_builder.header(header_name, header_value);
+        }
+
+        let additional_hop_headers = request
+            .headers()
+            .get(http::header::CONNECTION)
+            .and_then(|connection| connection.to_str().ok())
+            .map(|connection| connection.split(','))
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|hop_header| {
+                let lower = hop_header.to_lowercase();
+                lower != "close" && lower != "keep-alive" && lower != "upgrade"
+            })
+            .collect::<Vec<&str>>();
+        // Re-add the Connection header if it contains additional hop-by-hop headers
+        if !additional_hop_headers.is_empty() {
+            req_builder = req_builder.header(
+                http::header::CONNECTION,
+                "close, ".to_string() + &additional_hop_headers.join(", "),
+            );
+        }
+
+        let client_ip = client_addr.ip().to_string();
+        let client_port = client_addr.port();
+        let client_forwarded_for = match client_addr.ip() {
+            IpAddr::V4(v4) => format!("{v4}:{client_port}"),
+            IpAddr::V6(v6) => format!(r#""[{v6}]:{client_port}""#),
+        };
+        req_builder = req_builder
+            .header(
+                http::header::FORWARDED,
+                format!("for={client_forwarded_for};proto=http"),
+            )
+            .header("X-Forwarded-Proto", "http")
+            .header("X-Forwarded-For", &client_ip);
+
+        let request = req_builder.body(request.into_body())?;
+        let res = timeout(PROXY_REQUEST_TIMEOUT, sender.send_request(request))
+            .await
+            .context("Timeout waiting for proxy server response")??;
+        Ok(res)
     }
-
-    let additional_hop_headers = request
-        .headers()
-        .get(http::header::CONNECTION)
-        .and_then(|connection| connection.to_str().ok())
-        .map(|connection| connection.split(','))
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|hop_header| {
-            let lower = hop_header.to_lowercase();
-            lower != "close" && lower != "keep-alive" && lower != "upgrade"
-        })
-        .collect::<Vec<&str>>();
-    // Re-add the Connection header if it contains additional hop-by-hop headers
-    if !additional_hop_headers.is_empty() {
-        req_builder = req_builder.header(
-            http::header::CONNECTION,
-            "close, ".to_string() + &additional_hop_headers.join(", "),
-        );
-    }
-
-    let client_ip = client_addr.ip().to_string();
-    let client_port = client_addr.port();
-    let client_forwarded_for = match client_addr.ip() {
-        IpAddr::V4(v4) => format!("{v4}:{client_port}"),
-        IpAddr::V6(v6) => format!(r#""[{v6}]:{client_port}""#),
-    };
-    req_builder = req_builder
-        .header(
-            http::header::FORWARDED,
-            format!("for={client_forwarded_for};proto=http"),
-        )
-        .header("X-Forwarded-Proto", "http")
-        .header("X-Forwarded-For", &client_ip);
-
-    let request = req_builder.body(request.into_body())?;
-    let res = sender.send_request(request).await?;
-    Ok(res)
 }
 
 // TODO: Unsupported HTTP features
@@ -232,7 +246,12 @@ pub async fn deploy_challenge(
     let link = load_bpf(challenge_port, sockets.iter()).context("Loading BPF program failed")?;
     // Limit the max number of open connections to avoid an FD-based DoS
     let connection_limiter = Arc::new(Semaphore::new(MAX_OPEN_CONNECTIONS));
-    let params = Arc::new(params);
+    let mut open_connections = FuturesUnordered::new();
+    let proxy = Arc::new(SimpleReverseProxy {
+        path: format!("/.well-known/acme-challenge/{}", params.token),
+        token: params.key_authorization,
+        port: challenge_port,
+    });
 
     Ok(task::spawn(async move {
         loop {
@@ -242,51 +261,93 @@ pub async fn deploy_challenge(
                 .await
                 .context("Connection Limiter failed")?;
             let accepts = sockets.iter().map(|socket| Box::pin(socket.accept()));
-            let (client, client_addr) = tokio::select! {
+            tokio::select! {
                 accept_result = future::select_ok(accepts) => {
                     match accept_result {
-                        Ok(((client, client_addr), _)) => (client, client_addr),
+                        Ok(((client, client_addr), _)) => {
+                            let new_connection = handle_connection(client, client_addr, proxy.clone(), permit);
+                            open_connections.push(new_connection);
+                        },
                         Err(e) => {
                             error!("Failed to accept incoming connections for BPF challenge solver: {e}");
                             return Err(e.into());
                         }
                     }
                 }
+                // Drain the list of open connections regularly, such that it doesn't grow too fast
+                completed_connection = open_connections.next() => {
+                    if let Some(Err(e)) = completed_connection {
+                        warn!("Connection panicked: {e:#}");
+                    }
+                },
                 () = cancellation_token.cancelled() => {
-                    // TODO: Drain the accept queue before leaving
+                    // Disconnect the link to stop receiving new connections
+                    // However, it's possible that the accept queue still has pending connections, which we need to handle
+                    // as they will see TCP Reset errors otherwise (the kernel cannot re-assign them to the original socket
+                    // if they're already in the queue)
+                    debug!("Shutdown requested, stopping BPF program");
+                    drop(link);
+                    drop(permit);
+                    loop {
+                         let permit = connection_limiter
+                            .clone()
+                            .acquire_owned()
+                            .await
+                            .context("Connection Limiter failed")?;
+                        let accepts = sockets.iter().map(|socket| Box::pin(socket.accept()));
+                        if let Ok(Ok(((client, client_addr), _))) = timeout(EMPTY_ACCEPT_QUEUE_TIMEOUT, future::select_ok(accepts)).await {
+                            let new_connection = handle_connection(client, client_addr, proxy.clone(), permit);
+                            open_connections.push(new_connection);
+                        } else {
+                            debug!("No sockets left in accept queue");
+                            // Either the timeout elapsed or no accept was successful - leave
+                            break;
+                        }
+                    }
+                    // Finally, ensure that all currently open connections are completed before leaving
+                    debug!("Waiting for open connections to finish");
+                    while let Some(completed_connection) = open_connections.next().await {
+                        if let Err(e) = completed_connection {
+                            warn!("Connection panicked: {e:#}");
+                        }
+                    }
+                    debug!("All connections finished");
                     break;
                 }
-            };
-
-            let io = TokioIo::new(client);
-
-            let params = params.clone();
-            tokio::task::spawn(async move {
-                if let Err(err) = http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
-                    .half_close(true)
-                    .keep_alive(false)
-                    .serve_connection(
-                        io,
-                        service_fn(|request| async {
-                            http_handler(&params, client_addr, request).await
-                        }),
-                    )
-                    .await
-                {
-                    error!("Error serving connection: {err}");
-                }
-                // Explicit drop to move the permit to this task
-                drop(permit);
-            });
+            }
         }
-        // Explicit drop to move the link and guard to this task
-        // Drop order matters: Disconnect the BPF program before allowing a new one
-        drop(link);
+        debug!("Solver shutting down");
+        // Explicit drop to move the guard to this task
         drop(guard);
         Ok(())
     }))
+}
+
+fn handle_connection(
+    client: TcpStream,
+    client_addr: SocketAddr,
+    proxy: Arc<SimpleReverseProxy>,
+    permit: OwnedSemaphorePermit,
+) -> JoinHandle<()> {
+    let io = TokioIo::new(client);
+    tokio::task::spawn(async move {
+        if let Err(err) = http1::Builder::new()
+            .preserve_header_case(true)
+            .title_case_headers(true)
+            .half_close(true)
+            .keep_alive(false)
+            .timer(TokioTimer::new())
+            .serve_connection(
+                io,
+                service_fn(|request| async { proxy.http_handler(client_addr, request).await }),
+            )
+            .await
+        {
+            warn!("Error handling connection for {client_addr}: {err}");
+        }
+        // Explicit drop to move the permit to this task
+        drop(permit);
+    })
 }
 
 fn get_kernel_version() -> anyhow::Result<(usize, usize, usize)> {
