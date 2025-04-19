@@ -76,6 +76,9 @@ impl ChallengeSolver for Solver {
     }
 
     async fn cleanup_challenge(self: Box<Self>) -> Result<(), Error> {
+        // There is a 1s TTL on acme-dns records. Sleep 1s+1s margin to avoid very tight races
+        // in case we do another acme-dns challenge right after this one
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         Ok(())
     }
 }
