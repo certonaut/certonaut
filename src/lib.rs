@@ -374,11 +374,11 @@ async fn new_acme_client(
     ca_config: &CertificateAuthorityConfiguration,
 ) -> Result<AcmeClient, Error> {
     let name = &ca_config.name;
-    let http_client = if !ca_config.trusted_roots.is_empty() {
+    let http_client = if ca_config.trusted_roots.is_empty() {
+        HttpClient::try_new()?
+    } else {
         let root_certs = cert::load_reqwest_certificates(ca_config.trusted_roots.iter()).await?;
         HttpClient::try_new_with_custom_roots(root_certs)?
-    } else {
-        HttpClient::try_new()?
     };
     let client = acme::client::AcmeClientBuilder::new(ca_config.acme_directory.clone())
         .with_http_client(http_client)
@@ -856,7 +856,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         for issuer in self
             .issuers
             .values()
-            .sorted_by_key(|issuer| issuer.config.name.clone())
+            .sorted_by_key(|issuer| issuer.config.name.as_str())
         {
             if issuer.num_accounts() == 0 {
                 continue;
@@ -928,7 +928,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         for issuer in self
             .issuers
             .values()
-            .sorted_by_key(|issuer| issuer.config.name.clone())
+            .sorted_by_key(|issuer| issuer.config.name.as_str())
         {
             Self::print_issuer(issuer).await;
             println!();
@@ -997,75 +997,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         let has_certificates = !self.certificates.is_empty();
         for (cert_id, cert) in self
             .certificates
-            .clone()
-            .into_iter()
-            .sorted_by_key(|(_, cert)| cert.display_name.clone())
+            .iter()
+            .sorted_by_key(|(_, cert)| cert.display_name.as_str())
         {
-            println!("=== {} ===", cert.display_name);
-            println!("ID: {cert_id}");
-            println!(
-                "Domains: {}",
-                cert.domains_and_solvers.domains.keys().sorted().join(", ")
-            );
-            let ca_name = self
-                .issuers
-                .get(&cert.ca_identifier)
-                .map_or("CA not found".to_string(), |ca| ca.config.name.clone());
-            println!("CA: {ca_name} (ID: {})", cert.ca_identifier);
-            println!("Account ID: {}", cert.account_identifier);
-            println!("Key Type: {}", cert.key_type);
-            println!(
-                "Renew disabled: {}",
-                if cert.auto_renew { "no" } else { "yes" }
-            );
-            println!(
-                "Key reuse: {}",
-                if cert.advanced.reuse_key { "yes" } else { "no" }
-            );
-            // TODO: path to cert+key?
-
-            match self.config.load_certificate_files(&cert_id, Some(1)) {
-                Ok(x509_certs) => {
-                    if let Some(cert) = x509_certs.first() {
-                        let serial = cert.serial.to_bytes_be();
-                        println!(
-                            "Certificate Serial: {}",
-                            util::format_hex_with_colon(serial)
-                        );
-                        let spki = &cert.subject_public_key_sha256;
-                        println!(
-                            "Public Key Hash (SHA256): {}",
-                            util::format_hex_with_colon(spki)
-                        );
-
-                        let not_after = cert.validity.not_after.to_string();
-                        let time_until_expired = cert.validity.time_to_expiration();
-                        if time_until_expired > ::time::Duration::ZERO {
-                            let time_until_expired = humanize_duration(time_until_expired);
-                            println!(
-                                "Certificate is valid until: {not_after} (Expires in {time_until_expired})",
-                            );
-                        } else {
-                            let expired_since = time_until_expired.neg();
-                            let expired_since = humanize_duration(expired_since);
-                            println!(
-                                "Certificate is valid until: {not_after} (EXPIRED {expired_since} ago)"
-                            );
-                        }
-                    } else {
-                        warn!(
-                            "Failed to load certificate {}: No certificate found in file",
-                            cert.display_name
-                        );
-                    }
-                }
-                Err(error) => {
-                    warn!(
-                        "Failed to load certificate {}: {:#}",
-                        cert.display_name, error
-                    );
-                }
-            }
+            self.print_certificate(cert_id, cert);
             println!();
         }
 
@@ -1076,6 +1011,77 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 "Hint: Either issue a new certificate, or verify that the configuration file @ {} is correct",
                 config_dir.display()
             );
+        }
+    }
+
+    pub fn print_certificate(&self, cert_id: &str, cert: &CertificateConfiguration) {
+        println!("=== {} ===", cert.display_name);
+        println!("ID: {cert_id}");
+        println!(
+            "Domains: {}",
+            cert.domains_and_solvers.domains.keys().sorted().join(", ")
+        );
+        let ca_name = self
+            .issuers
+            .get(&cert.ca_identifier)
+            .map_or("CA not found".to_string(), |ca| ca.config.name.clone());
+        println!("CA: {ca_name} (ID: {})", cert.ca_identifier);
+        println!("Account ID: {}", cert.account_identifier);
+        println!("Key Type: {}", cert.key_type);
+        println!(
+            "Renew disabled: {}",
+            if cert.auto_renew { "no" } else { "yes" }
+        );
+        println!(
+            "Key reuse: {}",
+            if cert.advanced.reuse_key { "yes" } else { "no" }
+        );
+        let mut cert_dir = self.config.certificate_directory(cert_id);
+        // To ensure the returned path is a directory
+        cert_dir.push("");
+        println!("Certificate directory: {}", cert_dir.display());
+
+        match self.config.load_certificate_files(cert_id, Some(1)) {
+            Ok(x509_certs) => {
+                if let Some(cert) = x509_certs.first() {
+                    let serial = cert.serial.to_bytes_be();
+                    println!(
+                        "Certificate Serial: {}",
+                        util::format_hex_with_colon(serial)
+                    );
+                    let spki = &cert.subject_public_key_sha256;
+                    println!(
+                        "Public Key Hash (SHA256): {}",
+                        util::format_hex_with_colon(spki)
+                    );
+
+                    let not_after = cert.validity.not_after.to_string();
+                    let time_until_expired = cert.validity.time_to_expiration();
+                    if time_until_expired > ::time::Duration::ZERO {
+                        let time_until_expired = humanize_duration(time_until_expired);
+                        println!(
+                            "Certificate is valid until: {not_after} (Expires in {time_until_expired})",
+                        );
+                    } else {
+                        let expired_since = time_until_expired.neg();
+                        let expired_since = humanize_duration(expired_since);
+                        println!(
+                            "Certificate is valid until: {not_after} (EXPIRED {expired_since} ago)"
+                        );
+                    }
+                } else {
+                    warn!(
+                        "Failed to load certificate {}: No certificate found in file",
+                        cert.display_name
+                    );
+                }
+            }
+            Err(error) => {
+                warn!(
+                    "Failed to load certificate {}: {:#}",
+                    cert.display_name, error
+                );
+            }
         }
     }
 }
