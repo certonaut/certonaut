@@ -13,6 +13,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use tempfile::{TempDir, tempdir};
+use test_log::test;
 use testcontainers::core::{IntoContainerPort, Mount};
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
@@ -82,7 +83,6 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
 }
 
 async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
-    tracing_subscriber::fmt::try_init().ok();
     let containers = setup_pebble_containers_once().await?;
     let test_db = certonaut::state::open_test_db().await;
     let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
@@ -100,7 +100,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
     Ok((containers, certonaut))
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally

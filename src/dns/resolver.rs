@@ -182,7 +182,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(lookup.records().len(), 1);
+        assert_eq!(lookup.records().len(), 2);
     }
 
     #[tokio::test]

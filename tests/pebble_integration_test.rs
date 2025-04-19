@@ -10,6 +10,7 @@ use hickory_resolver::config::NameServerConfigGroup;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
+use test_log::test;
 use tokio::sync::Mutex;
 
 const CA_NAME: &str = "pebble";
@@ -41,7 +42,6 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
 }
 
 async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
-    tracing_subscriber::fmt::try_init().ok();
     let containers = setup_pebble_containers_once().await?;
     let test_db = certonaut::state::open_test_db().await;
     let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
@@ -59,7 +59,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
     Ok((containers, certonaut))
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
@@ -81,7 +81,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
@@ -101,7 +101,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
@@ -121,7 +121,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
@@ -155,7 +155,7 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
@@ -182,7 +182,7 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
 }
 
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
-#[tokio::test]
+#[test(tokio::test)]
 #[ignore]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally

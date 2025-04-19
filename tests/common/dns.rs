@@ -479,7 +479,45 @@ mod tests {
                 .iter()
                 .filter(|record| record.record_type() == RecordType::TXT)
                 .count(),
-            1
+            2
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_stub_dns_resolver_local_data_combines_with_upstream() -> anyhow::Result<()> {
+        let server = StubDnsResolver::try_new(
+            "127.0.0.1:0".parse()?,
+            DnsName::try_from("example.org")?.into(),
+            NameServerConfigGroup::cloudflare(),
+        )
+        .await?;
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
+            NameServerConfigGroup::from_ips_clear(
+                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+                server.listen_port(),
+                true,
+            ),
+        );
+        let source_name = DnsName::try_from("initial-name-local-test.example.org")?;
+        let destination_name = DnsName::try_from("cname-3.test.certonaut.net")?;
+        let authority = server.authority();
+        authority
+            .add_record(
+                source_name.clone().into(),
+                RData::CNAME(CNAME(destination_name.clone().into())),
+            )
+            .await;
+        let lookup = resolver
+            .lookup_generic(source_name, RecordType::TXT)
+            .await?;
+        assert_eq!(
+            lookup
+                .records()
+                .iter()
+                .filter(|record| record.record_type() == RecordType::TXT)
+                .count(),
+            2
         );
         Ok(())
     }
