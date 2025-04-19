@@ -8,6 +8,7 @@ use anyhow::{Context, anyhow, bail};
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use itertools::Itertools;
+use rand::random_range;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Sub;
@@ -16,7 +17,8 @@ use strum::IntoDiscriminant;
 use time::{Duration, OffsetDateTime};
 use tracing::{debug, error, info, warn};
 
-const MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS: i64 = 300;
+const MAX_RANDOM_SLEEP_BEFORE_RENEW_SECONDS: i64 = Duration::minutes(10).whole_seconds();
+const MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS: i64 = Duration::minutes(5).whole_seconds();
 
 #[allow(clippy::module_name_repetitions)]
 pub struct RenewService<CB> {
@@ -49,20 +51,30 @@ impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
             }));
         }
 
-        let mut errors = 0;
+        let mut errors = Vec::new();
         while let Some(renew_task) = renew_tasks.next().await {
             if let Err(e) = renew_task.context("Renew task panicked").and_then(|e| e) {
-                errors += 1;
                 eprintln!("Error: {e:?}");
                 eprintln!();
+                errors.push(e);
             }
         }
 
-        if errors > 0 {
-            if errors == 1 {
+        if !errors.is_empty() {
+            // Repeat the error messages one more time at the end, because the original message may be hidden among
+            // other log output.
+            eprintln!("=== Error Summary ===");
+            let error_len = errors.len();
+            for error in errors {
+                eprintln!("Error: {error:?}");
+                eprintln!();
+            }
+            if error_len == 1 {
                 bail!("1 attempted renewal failed. See the error message above for details.");
             }
-            bail!("{errors} attempted renewals failed. See the error messages above for details.");
+            bail!(
+                "{error_len} attempted renewals failed. See the error messages above for details."
+            );
         }
         drop(lock);
         Ok(())
@@ -87,7 +99,21 @@ impl<CB: ConfigBackend> RenewTask<CB> {
 
     pub async fn run(self) -> anyhow::Result<()> {
         if !self.interactive {
-            // TODO: Sleep for a random duration
+            let random_sleep_seconds = random_range(0..MAX_RANDOM_SLEEP_BEFORE_RENEW_SECONDS);
+            let random_sleep = Duration::seconds(random_sleep_seconds);
+            info!(
+                "Sleeping for {} before checking certificate {}",
+                humanize_duration(random_sleep),
+                self.cert_id
+            );
+            tokio::time::sleep(
+                random_sleep
+                    .try_into()
+                    .unwrap_or(std::time::Duration::from_secs(
+                        MAX_RANDOM_SLEEP_BEFORE_RENEW_SECONDS as u64,
+                    )),
+            )
+            .await;
         }
         let cert_id = &self.cert_id;
         let cert_config = self
