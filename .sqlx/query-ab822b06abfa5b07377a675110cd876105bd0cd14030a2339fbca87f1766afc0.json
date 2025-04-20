@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM renewal_info WHERE next_update_unix < unixepoch($1, 'subsec')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "ab822b06abfa5b07377a675110cd876105bd0cd14030a2339fbca87f1766afc0"
+}

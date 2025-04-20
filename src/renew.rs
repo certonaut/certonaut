@@ -180,7 +180,7 @@ impl<CB: ConfigBackend> RenewTask<CB> {
         let recent_renewals = self
             .client
             .database
-            .get_latest_renewals(&self.cert_id, &cutoff)
+            .get_latest_renewals(&self.cert_id, cutoff)
             .await?;
         let last_success = recent_renewals
             .iter()

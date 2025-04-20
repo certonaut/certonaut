@@ -5,6 +5,7 @@ use certonaut::dns::resolver::Resolver;
 use certonaut::state::Database;
 use certonaut::{Certonaut, config};
 use std::io::IsTerminal;
+use tracing::error;
 use tracing_subscriber::EnvFilter;
 
 const ENV_FILTER_NAME: &str = "CERTONAUT_LOG";
@@ -37,14 +38,26 @@ async fn main() -> anyhow::Result<()> {
         .context("Loading configuration data from filesystem")?;
     let database = Database::open(config_directory(), "database.sqlite")
         .await
-        .context("Opening local database")?;
+        .context(format!("Opening local database {}", config_directory().join("database.sqlite").display()))?;
     let resolver = Resolver::new();
     let client =
         Certonaut::try_new(config, database, resolver).context("Loading configuration failed")?;
+    let maintenance = client.maintenance_task();
     let result = handle_cli_command(cli.command, &matches, client, interactive).await;
     if interactive && result.is_err() {
         // Wrap last line to avoid anyhow conflicts with the interactive terminal
         println!();
+    }
+    if let Err(maintenance_err) = maintenance
+        .await
+        .map_err(|panic_err| anyhow::Error::from(panic_err).context("Background cleanup panic"))
+        .and_then(|maintenance| maintenance)
+    {
+        if result.is_err() {
+            error!("Maintenance tasks failed: {maintenance_err:#}");
+        } else {
+            return Err(maintenance_err);
+        }
     }
     result
 }

@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use time::OffsetDateTime;
 
 pub(crate) mod serde_helper {
     use core::fmt;
@@ -259,6 +260,13 @@ pub(crate) mod serde_helper {
 
 pub fn format_hex_with_colon<T: AsRef<[u8]>>(bytes: T) -> String {
     bytes.as_ref().iter().map(|b| format!("{b:02x}")).join(":")
+}
+
+#[allow(clippy::missing_panics_doc)]
+pub fn truncate_to_millis(dt: OffsetDateTime) -> OffsetDateTime {
+    let nanos = dt.nanosecond();
+    let nanos_truncated = nanos - (nanos % 1_000_000); // truncate to millis
+    dt.replace_nanosecond(nanos_truncated).unwrap(/* Infallible */)
 }
 
 #[cfg(test)]

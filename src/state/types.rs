@@ -4,11 +4,15 @@ pub(super) mod internal {
     use time::OffsetDateTime;
 
     #[derive(Debug, sqlx::FromRow)]
+    #[allow(dead_code)]
     pub(in crate::state) struct RenewalInformation {
         pub cert_id: String,
         pub fetched_at: OffsetDateTime,
+        pub fetched_at_unix: f64,
         pub renewal_time: OffsetDateTime,
+        pub renewal_time_unix: f64,
         pub next_update: OffsetDateTime,
+        pub next_update_unix: f64,
     }
 
     #[derive(Debug, sqlx::Type, FromRepr, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -49,17 +53,20 @@ pub(super) mod internal {
     }
 
     #[derive(Debug, sqlx::FromRow)]
+    #[allow(dead_code)]
     pub(in crate::state) struct Renewal {
         pub id: i64,
         pub cert_id: String,
         pub outcome: RenewalOutcome,
         pub failure: Option<String>,
         pub timestamp: OffsetDateTime,
+        pub timestamp_unix: f64,
     }
 }
 
 pub mod external {
     use crate::state::types::internal;
+    use crate::util::truncate_to_millis;
     use std::fmt::Display;
     use time::OffsetDateTime;
     use tracing::warn;
@@ -158,12 +165,19 @@ pub mod external {
     }
 
     impl From<RenewalInformation> for internal::RenewalInformation {
-        fn from(value: RenewalInformation) -> Self {
+        fn from(mut value: RenewalInformation) -> Self {
+            // Truncate timestamps to milliseconds on insertion
+            value.next_update = truncate_to_millis(value.next_update);
+            value.renewal_time = truncate_to_millis(value.renewal_time);
+            value.fetched_at = truncate_to_millis(value.fetched_at);
             Self {
                 cert_id: value.cert_id,
                 fetched_at: value.fetched_at,
+                fetched_at_unix: f64::NAN,
                 renewal_time: value.renewal_time,
+                renewal_time_unix: f64::NAN,
                 next_update: value.next_update,
+                next_update_unix: f64::NAN,
             }
         }
     }

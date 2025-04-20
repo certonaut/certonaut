@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM renewals WHERE timestamp_unix < unixepoch($1, 'subsec')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "440c6e510db1c710047ee9841d9cd2043a44b4d5d388853e9de7d3f915ea3230"
+}

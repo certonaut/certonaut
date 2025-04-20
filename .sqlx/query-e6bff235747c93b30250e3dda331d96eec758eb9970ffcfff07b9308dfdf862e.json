@@ -14,20 +14,38 @@
         "type_info": "Datetime"
       },
       {
-        "name": "renewal_time",
+        "name": "fetched_at_unix",
         "ordinal": 2,
+        "type_info": "Float"
+      },
+      {
+        "name": "renewal_time",
+        "ordinal": 3,
         "type_info": "Datetime"
       },
       {
+        "name": "renewal_time_unix",
+        "ordinal": 4,
+        "type_info": "Float"
+      },
+      {
         "name": "next_update",
-        "ordinal": 3,
+        "ordinal": 5,
         "type_info": "Datetime"
+      },
+      {
+        "name": "next_update_unix",
+        "ordinal": 6,
+        "type_info": "Float"
       }
     ],
     "parameters": {
       "Right": 1
     },
     "nullable": [
+      false,
+      false,
+      false,
       false,
       false,
       false,

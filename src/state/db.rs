@@ -1,5 +1,6 @@
 use crate::error::IssueResult;
 use crate::state::types::{external, internal};
+use crate::util::truncate_to_millis;
 use anyhow::{Context, anyhow};
 use sqlx::Executor;
 use sqlx::sqlite::SqliteAutoVacuum;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(60);
+const EXPIRE_RENEWALS_AFTER: time::Duration = time::Duration::days(91);
 
 #[derive(Debug)]
 pub struct Database {
@@ -62,7 +64,7 @@ impl crate::state::Database {
             Ok(_) => None,
             Err(err) => Some(err.to_database_string()),
         };
-        let timestamp = OffsetDateTime::now_utc();
+        let timestamp = truncate_to_millis(OffsetDateTime::now_utc());
         sqlx::query!(
             "INSERT INTO renewals(cert_id, outcome, failure, timestamp) VALUES ($1, $2, $3, $4)",
             cert_id,
@@ -78,13 +80,12 @@ impl crate::state::Database {
     pub async fn get_latest_renewals(
         &self,
         cert_id: &str,
-        since: &OffsetDateTime,
+        since: OffsetDateTime,
     ) -> anyhow::Result<Vec<external::Renewal>> {
-        // TODO: There's a minor bug here where the timestamp filtering doesn't work correctly with < second precision
-        // because we actually store a variable number of fractional seconds, which doesn't compare lexicographically
+        let since = truncate_to_millis(since);
         let renewals = sqlx::query_as!(
             internal::Renewal,
-            "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp >= $2 ORDER BY id;",
+            "SELECT * FROM renewals WHERE cert_id = $1 AND timestamp_unix >= unixepoch($2, 'subsec') ORDER BY id;",
             cert_id,
             since
         )
@@ -130,19 +131,32 @@ impl crate::state::Database {
         Ok(())
     }
 
-    pub async fn close(&self) {
-        self.pool.close().await;
-    }
-}
-
-impl Drop for crate::state::Database {
-    fn drop(&mut self) {
-        // FIXME: move to async drop when #![feature(async_drop))] is stable
-        // TODO: As this task is not awaited, there's no gurantee it will ever run
+    pub fn background_cleanup(&self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        // Pool is internally an Arc, so this is the same pool
         let pool = self.pool.clone();
         tokio::task::spawn(async move {
-            pool.execute("PRAGMA main.incremental_vacuum;").await.ok();
-        });
+            let expire_after =
+                truncate_to_millis(OffsetDateTime::now_utc() - EXPIRE_RENEWALS_AFTER);
+            sqlx::query!(
+                "DELETE FROM renewals WHERE timestamp_unix < unixepoch($1, 'subsec')",
+                expire_after
+            )
+            .execute(&pool)
+            .await?;
+            sqlx::query!(
+                "DELETE FROM renewal_info WHERE next_update_unix < unixepoch($1, 'subsec')",
+                expire_after
+            )
+            .execute(&pool)
+            .await?;
+            pool.execute("PRAGMA main.incremental_vacuum;").await?;
+            pool.execute("VACUUM main;").await?;
+            Ok(())
+        })
+    }
+
+    pub async fn close(&self) {
+        self.pool.close().await;
     }
 }
 
@@ -225,14 +239,14 @@ mod tests {
         let renewals_1 = db_1
             .get_latest_renewals(
                 "cert_1",
-                &OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
+                OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
             )
             .await
             .unwrap();
         let renewals_2 = db_2
             .get_latest_renewals(
                 "cert_1",
-                &OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
+                OffsetDateTime::now_utc().sub(Duration::from_secs(30)),
             )
             .await
             .unwrap();
@@ -249,7 +263,7 @@ mod tests {
         let renewals = db
             .get_latest_renewals(
                 "cert_1",
-                &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
             )
             .await
             .unwrap();
@@ -285,7 +299,7 @@ mod tests {
         let renewals = db
             .get_latest_renewals(
                 "cert_1",
-                &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
             )
             .await
             .unwrap();
@@ -311,7 +325,7 @@ mod tests {
 
         db.add_new_renewal(cert_name, &results[0]).await.unwrap();
         let insert_time = db
-            .get_latest_renewals(cert_name, &epoch)
+            .get_latest_renewals(cert_name, epoch)
             .await
             .unwrap()
             .first()
@@ -329,7 +343,10 @@ mod tests {
         }
 
         let latest_renewals = db
-            .get_latest_renewals(cert_name, &insert_time.add(time::Duration::seconds(1)))
+            .get_latest_renewals(
+                cert_name,
+                insert_time.add(time::Duration::milliseconds(500)),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -361,7 +378,7 @@ mod tests {
             let latest_renewals = db
                 .get_latest_renewals(
                     cert_name,
-                    &OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
+                    OffsetDateTime::now_utc().sub(Duration::from_secs(5)),
                 )
                 .await
                 .unwrap();
@@ -372,11 +389,12 @@ mod tests {
     #[tokio::test]
     async fn test_get_renewal_information() {
         let db = open_db().await;
+        let now_truncated = truncate_to_millis(OffsetDateTime::now_utc());
         let renewal_info = external::RenewalInformation {
             cert_id: "test-cert".to_string(),
-            fetched_at: OffsetDateTime::now_utc(),
-            renewal_time: OffsetDateTime::now_utc(),
-            next_update: OffsetDateTime::now_utc(),
+            fetched_at: now_truncated,
+            renewal_time: now_truncated,
+            next_update: now_truncated,
         };
         db.set_renewal_information(renewal_info.clone())
             .await
@@ -402,17 +420,18 @@ mod tests {
     #[tokio::test]
     async fn test_get_renewal_information_with_multiple_sets() {
         let db = open_db().await;
+        let now_truncated = truncate_to_millis(OffsetDateTime::now_utc());
         let renewal_info_1 = external::RenewalInformation {
             cert_id: "test-cert".to_string(),
-            fetched_at: OffsetDateTime::now_utc(),
-            renewal_time: OffsetDateTime::now_utc(),
-            next_update: OffsetDateTime::now_utc(),
+            fetched_at: now_truncated,
+            renewal_time: now_truncated,
+            next_update: now_truncated,
         };
         let renewal_info_2 = external::RenewalInformation {
             cert_id: "test-cert".to_string(),
-            fetched_at: OffsetDateTime::now_utc().add(time::Duration::hours(1)),
-            renewal_time: OffsetDateTime::now_utc().add(time::Duration::hours(2)),
-            next_update: OffsetDateTime::now_utc().add(time::Duration::hours(3)),
+            fetched_at: now_truncated.add(time::Duration::hours(1)),
+            renewal_time: now_truncated.add(time::Duration::hours(2)),
+            next_update: now_truncated.add(time::Duration::hours(3)),
         };
         db.set_renewal_information(renewal_info_1).await.unwrap();
         db.set_renewal_information(renewal_info_2.clone())
@@ -425,5 +444,52 @@ mod tests {
             .unwrap();
 
         assert_eq!(renewal_info_2, stored_renewal_info.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_background_cleanup_with_empty_db() -> anyhow::Result<()> {
+        let db = open_db().await;
+
+        db.background_cleanup().await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_background_cleanup_with_recent_entry() -> anyhow::Result<()> {
+        let db = open_db().await;
+        let renewal_info = external::RenewalInformation {
+            cert_id: "test-cert".to_string(),
+            fetched_at: OffsetDateTime::now_utc(),
+            renewal_time: OffsetDateTime::now_utc(),
+            next_update: OffsetDateTime::now_utc(),
+        };
+        db.set_renewal_information(renewal_info).await?;
+
+        db.background_cleanup().await??;
+
+        let renewals = db.get_renewal_information("test-cert").await?;
+        assert!(renewals.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_background_cleanup_with_old_entry() -> anyhow::Result<()> {
+        let db = open_db().await;
+        let old_date = truncate_to_millis(OffsetDateTime::now_utc())
+            - time::Duration::days(91).add(time::Duration::milliseconds(1));
+        let renewal_info = external::RenewalInformation {
+            cert_id: "test-cert".to_string(),
+            fetched_at: old_date,
+            renewal_time: old_date,
+            next_update: old_date,
+        };
+        db.set_renewal_information(renewal_info).await?;
+
+        db.background_cleanup().await??;
+
+        let renewals = db.get_renewal_information("test-cert").await?;
+        assert!(renewals.is_none());
+        Ok(())
     }
 }

@@ -851,6 +851,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         new_renewal_info
     }
 
+    pub fn maintenance_task(&self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        self.database.background_cleanup()
+    }
+
     pub async fn print_accounts(&self) {
         let mut has_accounts = false;
         for issuer in self
