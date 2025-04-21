@@ -25,7 +25,7 @@ impl crate::state::Database {
         let mut file = base_directory
             .as_ref()
             .canonicalize()
-            .context("Normalizing database directory path failed")?;
+            .context(format!("Normalizing database directory path {} failed", base_directory.as_ref().display()))?;
         file.push(database_file_name);
         let file_uri = url::Url::from_file_path(&file)
             .map_err(|()| anyhow!("Failed to parse database URI {}", file.display()))?;
