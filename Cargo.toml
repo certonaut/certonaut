@@ -1,7 +1,7 @@
 [package]
 name = "certonaut"
 version = "0.1.0"
-repository = "TODO"
+repository = "https://github.com/certonaut/certonaut"
 license = "MIT"
 edition = "2024"
 rust-version = "1.85.0"
