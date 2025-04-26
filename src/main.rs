@@ -29,8 +29,12 @@ async fn main() -> anyhow::Result<()> {
             })
         })
     });
-    tracing_subscriber::fmt().with_env_filter(filter).init();
     let interactive = is_interactive() && !cli.noninteractive;
+    let mut fmt = tracing_subscriber::fmt().with_env_filter(filter);
+    if !interactive {
+        fmt = fmt.with_ansi(false);
+    }
+    fmt.init();
     CONFIG_FILE
         .set(cli.config)
         .expect("Config file already set");
