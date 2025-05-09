@@ -1,6 +1,6 @@
-use crate::USER_AGENT;
 use crate::acme::error::ProtocolResult;
 use crate::acme::object::Nonce;
+use crate::USER_AGENT;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
@@ -154,20 +154,32 @@ pub struct RelationLink {
 
 #[cfg(test)]
 pub mod test_helper {
-    use httptest::http::Uri;
-    use httptest::{ServerHandle, ServerPool};
+    use mockito::{Mock, ServerGuard};
+    use serde::Serialize;
     use url::Url;
 
-    pub static SERVER_POOL: ServerPool = ServerPool::new(20);
+    pub trait AbsoluteUrl {
+        fn absolute_url(&self, path: &str) -> Url;
+    }
 
-    pub type Server = ServerHandle<'static>;
+    impl AbsoluteUrl for ServerGuard {
+        fn absolute_url(&self, path: &str) -> Url {
+            let base = self.url();
+            Url::parse(&(base + path)).unwrap()
+        }
+    }
 
-    // It's so annoying that the http crate and url crate don't interop by default...
-    // Fortunately this is only a problem in test code.
-    #[allow(clippy::needless_pass_by_value, clippy::missing_panics_doc)]
-    pub fn uri_to_url(uri: Uri) -> Url {
-        let uri_string = uri.to_string();
-        Url::parse(&uri_string).unwrap()
+    pub trait MockJsonResponse {
+        #[must_use]
+        fn with_json_body<T: serde::Serialize>(self, body: &T) -> Self;
+    }
+
+    impl MockJsonResponse for Mock {
+        fn with_json_body<T: Serialize>(self, body: &T) -> Self {
+            let body = serde_json::to_vec(body).expect("JSON serialization failed");
+            self.with_header("content-type", "application/json")
+                .with_body(body)
+        }
     }
 }
 
@@ -175,10 +187,7 @@ pub mod test_helper {
 mod tests {
     use super::test_helper::*;
     use super::*;
-    use httptest::Expectation;
-    use httptest::matchers::contains;
-    use httptest::matchers::request::{headers, method_path};
-    use httptest::responders::status_code;
+    use mockito::Server;
     use std::str::FromStr;
     use time::macros::datetime;
 
@@ -189,85 +198,155 @@ mod tests {
 
     #[tokio::test]
     async fn test_sends_user_agent() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(headers(contains(("user-agent", USER_AGENT))))
-                .times(3)
-                .respond_with(status_code(200)),
-        );
-
+        let mut server = Server::new_async().await;
+        let head_mock = server
+            .mock("HEAD", "/")
+            .match_header("user-agent", USER_AGENT)
+            .create_async()
+            .await;
+        let post_mock = server
+            .mock("POST", "/")
+            .match_header("user-agent", USER_AGENT)
+            .create_async()
+            .await;
+        let get_mock = server
+            .mock("GET", "/")
+            .match_header("user-agent", USER_AGENT)
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        client.head(uri_to_url(server.url("/"))).await.unwrap();
-        client.post(uri_to_url(server.url("/")), &()).await.unwrap();
-        client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        client
+            .head(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+        client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
+        client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+
+        head_mock.assert_async().await;
+        post_mock.assert_async().await;
+        get_mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_sends_accept_language() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(headers(contains(("accept-language", "en"))))
-                .times(3)
-                .respond_with(status_code(200)),
-        );
-
+        let mut server = Server::new_async().await;
+        let head_mock = server
+            .mock("HEAD", "/")
+            .match_header("accept-language", "en")
+            .create_async()
+            .await;
+        let post_mock = server
+            .mock("POST", "/")
+            .match_header("accept-language", "en")
+            .create_async()
+            .await;
+        let get_mock = server
+            .mock("GET", "/")
+            .match_header("accept-language", "en")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        client.head(uri_to_url(server.url("/"))).await.unwrap();
-        client.post(uri_to_url(server.url("/")), &()).await.unwrap();
-        client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        client
+            .head(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+        client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
+        client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+
+        head_mock.assert_async().await;
+        post_mock.assert_async().await;
+        get_mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_post_sends_content_type() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(headers(contains(("content-type", "application/jose+json"))))
-                .respond_with(status_code(200)),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_header("content-type", "application/jose+json")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        client.post(uri_to_url(server.url("/")), &()).await.unwrap();
+
+        client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_nonce() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("HEAD", "/"))
-                .respond_with(status_code(200).append_header(REPLAY_NONCE, "nonceValue")),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("HEAD", "/")
+            .with_header(REPLAY_NONCE, "nonceValue")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.head(uri_to_url(server.url("/"))).await.unwrap();
+
+        let response = client
+            .head(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
         let nonce = HttpClient::extract_nonce(&response).expect("No nonce found");
+
         assert_eq!(nonce.to_string(), "nonceValue");
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_nonce_with_invalid_nonce() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("HEAD", "/"))
-                .respond_with(status_code(200).append_header(REPLAY_NONCE, "!invalid-nonce!")),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("HEAD", "/")
+            .with_header(REPLAY_NONCE, "!invalid-nonce!")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.head(uri_to_url(server.url("/"))).await.unwrap();
-        assert!(HttpClient::extract_nonce(&response).is_none());
+
+        let response = client
+            .head(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+        let nonce = HttpClient::extract_nonce(&response);
+
+        assert!(nonce.is_none());
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_backoff_with_seconds() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("GET", "/"))
-                .respond_with(status_code(200).append_header("retry-after", "60")),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_header("retry-after", "60")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        let response = client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
         let retry_after =
             HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
+
         let backoff = retry_after.duration_since(SystemTime::now()).unwrap();
         let difference = backoff.abs_diff(Duration::from_secs(60));
         // Allow some leeway to account for a slow test or jumping clock
@@ -275,98 +354,133 @@ mod tests {
             difference < Duration::from_secs(3),
             "Time difference greater than 3s: {difference:?}"
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_backoff_with_timestamp() {
-        let server = SERVER_POOL.get_server();
-        server.expect(Expectation::matching(method_path("GET", "/")).respond_with(
-            status_code(200).append_header("retry-after", "Sun, 06 Nov 1994 08:49:37 GMT"),
-        ));
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_header("retry-after", "Sun, 06 Nov 1994 08:49:37 GMT")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        let response = client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
         let retry_after =
             HttpClient::extract_backoff(&response).expect("No retry after value or parsed");
+
         assert_eq!(
             retry_after,
             SystemTime::from(datetime!(1994-11-06 08:49:37 UTC))
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_backoff_with_invalid_timestamp() {
-        let server = SERVER_POOL.get_server();
-        server.expect(Expectation::matching(method_path("GET", "/")).respond_with(
-            status_code(200).append_header(
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_header(
                 "retry-after",
                 "Well, what if there is no tomorrow? There wasn’t one today.",
-            ),
-        ));
-
+            )
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
-        assert!(HttpClient::extract_backoff(&response).is_none());
+
+        let response = client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
+        let backoff = HttpClient::extract_backoff(&response);
+
+        assert!(backoff.is_none());
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_location() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("POST", "/")).respond_with(
-                status_code(201).append_header("Location", "https://example.com/look-here"),
-            ),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_header("Location", "https://example.com/look-here")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.post(uri_to_url(server.url("/")), &()).await.unwrap();
+
+        let response = client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
         let location = HttpClient::extract_location(&response).unwrap();
+
         assert_eq!(location.as_str(), "https://example.com/look-here");
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_location_with_invalid_value() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("POST", "/")).respond_with(
-                status_code(201)
-                    .append_header("Location", "These aren’t the droids you’re looking for."),
-            ),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_header("Location", "These aren’t the droids you’re looking for.")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.post(uri_to_url(server.url("/")), &()).await.unwrap();
-        assert!(HttpClient::extract_location(&response).is_none());
+
+        let response = client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
+        let location = HttpClient::extract_location(&response);
+
+        assert!(location.is_none());
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_location_with_relative_url() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("POST", "/")).respond_with(
-                status_code(201).append_header("Location", "/everything-is-relative"),
-            ),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .with_header("Location", "/everything-is-relative")
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.post(uri_to_url(server.url("/")), &()).await.unwrap();
+
+        let response = client
+            .post(server.absolute_url(String::new().as_str()), &())
+            .await
+            .unwrap();
         let location = HttpClient::extract_location(&response).unwrap();
-        assert_eq!(location.as_str(), server.url_str("/everything-is-relative"));
+
+        assert_eq!(location, server.absolute_url("/everything-is-relative"));
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_relation_links() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("GET", "/")).respond_with(status_code(200).append_header(
-                "Link",
-                r#"<https://example.com/TheBook/chapter2>; rel="previous"; title="previous chapter""#,
-            )),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_header("Link",
+                         r#"<https://example.com/TheBook/chapter2>; rel="previous"; title="previous chapter""#)
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        let response = client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
         let links = HttpClient::extract_relation_links(&response);
+
         assert_eq!(links.len(), 1);
         assert_eq!(
             links[0],
@@ -375,24 +489,30 @@ mod tests {
                 url: Url::parse("https://example.com/TheBook/chapter2").unwrap()
             }
         );
+        mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_extract_relation_links_with_complex_links() {
-        let server = SERVER_POOL.get_server();
-        server.expect(
-            Expectation::matching(method_path("GET", "/")).respond_with(status_code(200).append_header(
-                "Link",
-                r#"</TheBook/chapter2>; rel="previous"; title*=UTF-8'de'letztes%20Kapitel,  </TheBook/chapter4>;    rel="next"; title*=UTF-8'de'n%c3%a4chstes%20Kapitel"#,
-            ).append_header("Link",
-                            r#"<https://example.org/>;   rel="start https://example.net/relation/other""#)),
-        );
-
+        let mut server = Server::new_async().await;
+        let mock = server
+            .mock("GET", "/")
+            .with_header("Link",
+                         r#"</TheBook/chapter2>; rel="previous"; title*=UTF-8'de'letztes%20Kapitel,  </TheBook/chapter4>;    rel="next"; title*=UTF-8'de'n%c3%a4chstes%20Kapitel"#)
+            .with_header("Link",
+                         r#"<https://example.org/>;   rel="start https://example.net/relation/other""#)
+            .create_async()
+            .await;
         let client = HttpClient::try_new().unwrap();
-        let response = client.get(uri_to_url(server.url("/"))).await.unwrap();
+
+        let response = client
+            .get(server.absolute_url(String::new().as_str()))
+            .await
+            .unwrap();
         let links = HttpClient::extract_relation_links(&response);
+
         assert_eq!(links.len(), 3);
-        let link = uri_to_url(server.url("/TheBook/chapter2"));
+        let link = server.absolute_url("/TheBook/chapter2");
         assert_eq!(
             links[0],
             RelationLink {
@@ -400,7 +520,7 @@ mod tests {
                 url: link
             }
         );
-        let link = uri_to_url(server.url("/TheBook/chapter4"));
+        let link = server.absolute_url("/TheBook/chapter4");
         assert_eq!(
             links[1],
             RelationLink {
@@ -416,5 +536,6 @@ mod tests {
                 url: link
             }
         );
+        mock.assert_async().await;
     }
 }

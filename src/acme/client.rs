@@ -15,9 +15,9 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde::de::value::BytesDeserializer;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
@@ -637,37 +637,71 @@ fn backoff_from_retry_after(retry_after: Option<SystemTime>) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::super::http::test_helper::*;
     use super::*;
+    use crate::acme::http::test_helper::{AbsoluteUrl, MockJsonResponse};
     use crate::acme::object::SuggestedWindow;
-    use bstr::ByteSlice;
-    use httptest::matchers::request::method_path;
-    use httptest::matchers::{ExecutionContext, Matcher, request};
-    use httptest::responders::{json_encoded, status_code};
-    use httptest::{Expectation, IntoTimes, all_of, cycle};
+    use crate::crypto::jws::FlatJsonWebSignature;
+    use mockito::{Mock, ServerGuard};
     use serde_json::json;
-    use std::fmt::Formatter;
     use std::fs::File;
     use time::macros::datetime;
 
     const NONCE_VALUE: &str = "notActuallyRandom";
     const ACCOUNT_URL: &str = "http://localhost/account-url";
 
-    fn create_acme_server() -> Server {
-        let server = SERVER_POOL.get_server();
+    trait JoseMatcher {
+        fn match_jose<F>(self, request_matcher: F) -> Self
+        where
+            F: Fn(FlatJsonWebSignature) -> bool + Send + Sync + 'static;
+    }
+
+    impl JoseMatcher for Mock {
+        fn match_jose<F>(self, request_matcher: F) -> Self
+        where
+            F: Fn(FlatJsonWebSignature) -> bool + Send + Sync + 'static,
+        {
+            self.match_request(move |request| {
+                let body = request
+                    .body()
+                    .expect("Must have a request body when matching");
+                let Ok(json) = serde_json::de::from_slice::<serde_json::Value>(body) else {
+                    return false;
+                };
+                let Some(json) = json.as_object() else {
+                    return false;
+                };
+                let Some(header) = json.get("protected").and_then(|value| value.as_str()) else {
+                    return false;
+                };
+                let Some(payload) = json.get("payload").and_then(|value| value.as_str()) else {
+                    return false;
+                };
+                let Some(signature) = json.get("signature").and_then(|value| value.as_str()) else {
+                    return false;
+                };
+                let jws = FlatJsonWebSignature::new_test_values(header, payload, signature);
+                request_matcher(jws)
+            })
+        }
+    }
+
+    async fn create_acme_server() -> ServerGuard {
+        let mut server = mockito::Server::new_async().await;
         let directory = Directory {
-            new_nonce: uri_to_url(server.url("/new-nonce")),
-            new_account: uri_to_url(server.url("/new-account")),
-            new_order: uri_to_url(server.url("/new-order")),
+            new_nonce: server.absolute_url("/new-nonce"),
+            new_account: server.absolute_url("/new-account"),
+            new_order: server.absolute_url("/new-order"),
             new_authz: None,
-            revoke_cert: uri_to_url(server.url("/revoke-cert")),
-            key_change: uri_to_url(server.url("/key-change")),
-            renewal_info: Some(uri_to_url(server.url("/renewal-info"))),
+            revoke_cert: server.absolute_url("/revoke-cert"),
+            key_change: server.absolute_url("/key-change"),
+            renewal_info: Some(server.absolute_url("/renewal-info")),
             meta: None,
         };
-        server.expect(
-            Expectation::matching(method_path("GET", "/")).respond_with(json_encoded(directory)),
-        );
+        server
+            .mock("GET", "/")
+            .with_json_body(&directory)
+            .create_async()
+            .await;
         server
     }
 
@@ -678,19 +712,18 @@ mod tests {
         )
     }
 
-    fn setup_nonces<R>(server: &Server, num_nonces: R)
-    where
-        R: IntoTimes,
-    {
-        server.expect(
-            Expectation::matching(method_path("HEAD", "/new-nonce"))
-                .times(num_nonces)
-                .respond_with(status_code(200).append_header("Replay-Nonce", NONCE_VALUE)),
-        );
+    async fn setup_nonces(server: &mut ServerGuard, num_nonces: usize) -> Mock {
+        server
+            .mock("HEAD", "/new-nonce")
+            .expect(num_nonces)
+            .with_status(200)
+            .with_header("Replay-Nonce", NONCE_VALUE)
+            .create_async()
+            .await
     }
 
-    async fn build_acme_client(server: &Server) -> AcmeClient {
-        AcmeClientBuilder::new(uri_to_url(server.url("/")))
+    async fn build_acme_client(server: &ServerGuard) -> AcmeClient {
+        AcmeClientBuilder::new(server.absolute_url(String::new().as_str()))
             .try_build()
             .await
             .unwrap()
@@ -698,31 +731,44 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_new() {
-        let server = create_acme_server();
+        let server = create_acme_server().await;
         let _ = build_acme_client(&server).await;
     }
 
     #[tokio::test]
     async fn test_new_nonce() {
-        let server = create_acme_server();
-        setup_nonces(&server, 1);
+        let mut server = create_acme_server().await;
+        let nonces = setup_nonces(&mut server, 1).await;
         let client = build_acme_client(&server).await;
         let nonce = client.get_nonce().await.unwrap();
+        nonces.assert_async().await;
         assert_eq!(nonce.to_string(), NONCE_VALUE);
     }
 
     #[tokio::test]
     async fn test_new_nonce_with_retry() {
-        let server = create_acme_server();
-        server.expect(
-            Expectation::matching(method_path("HEAD", "/new-nonce"))
-                .times(3)
-                .respond_with(cycle!(
-                    status_code(429).append_header("Retry-After", "1"),
-                    status_code(429).append_header("Retry-After", "1"),
-                    status_code(200).append_header("Replay-Nonce", NONCE_VALUE)
-                )),
-        );
+        let mut server = create_acme_server().await;
+        server
+            .mock("HEAD", "/new-nonce")
+            .expect(1)
+            .with_status(200)
+            .with_header("Replay-Nonce", NONCE_VALUE)
+            .create_async()
+            .await;
+        server
+            .mock("HEAD", "/new-nonce")
+            .expect(1)
+            .with_status(429)
+            .with_header("Retry-After", "1")
+            .create_async()
+            .await;
+        server
+            .mock("HEAD", "/new-nonce")
+            .expect(1)
+            .with_status(429)
+            .with_header("Retry-After", "1")
+            .create_async()
+            .await;
         let client = build_acme_client(&server).await;
         let nonce = client.get_nonce().await.unwrap();
         assert_eq!(nonce.to_string(), NONCE_VALUE);
@@ -730,100 +776,83 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_nonce_when_unreachable_errors() {
-        let server = create_acme_server();
-        server.expect(
-            Expectation::matching(method_path("HEAD", "/new-nonce"))
-                .times(4)
-                .respond_with(status_code(429).append_header("Retry-After", "1")),
-        );
+        let mut server = create_acme_server().await;
+        let nonce_mock = server
+            .mock("HEAD", "/new-nonce")
+            .expect(4)
+            .with_status(429)
+            .with_header("Retry-After", "1")
+            .create_async()
+            .await;
         let client = build_acme_client(&server).await;
         let err = client.get_nonce().await.unwrap_err();
         assert_eq!(
             err.to_string(),
             "The CA reported a problem: HTTP error: 429 Too Many Requests"
         );
+        nonce_mock.assert_async().await;
     }
 
     #[tokio::test]
     async fn test_post_with_retry_when_bad_nonce_retries() {
-        #[derive(Debug)]
-        struct NonceMatcher {
-            num: usize,
-        }
-
-        impl NonceMatcher {
-            fn __matches(&mut self, body: &[u8]) -> Option<bool> {
-                // println!("{}", body.to_str_lossy());
-                let header: serde_json::Value = serde_json::from_slice(body).ok()?;
-                let header = header.as_object()?.get("protected")?.as_str()?;
-                // println!("protected header {header}");
-                let header = BASE64_URL_SAFE_NO_PAD.decode(header).ok()?;
-                let body_json: serde_json::Value = serde_json::from_slice(&header).ok()?;
-                // println!("got header {body_json}");
-                let request_nonce = body_json.as_object()?.get("nonce")?.as_str()?;
-                let num = self.num;
-                // println!("Request nonce is {request_nonce}, request num is {num}");
-                let matches = match num {
-                    0 => request_nonce == NONCE_VALUE,
-                    1 => request_nonce == "ThisNonceIsNotValid",
-                    2 => request_nonce == "NonceIsNotValidEither-Sorry",
-                    3 => request_nonce == "ThisNonceIsValid",
-                    _ => false,
-                };
-                // println!("Nonce valid: {matches}");
-                self.num += 1;
-                Some(matches)
-            }
-        }
-
-        impl Matcher<bstr::BStr> for NonceMatcher {
-            fn matches(&mut self, input: &bstr::BStr, _ctx: &mut ExecutionContext) -> bool {
-                self.__matches(input.as_bytes()).unwrap_or(false)
-            }
-
-            fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
-                write!(f, "{self:?}")
-            }
+        fn match_nonce(jws: &FlatJsonWebSignature, expected_nonce: &str) -> bool {
+            let Ok(header) = jws.header_json() else {
+                return false;
+            };
+            let Some(nonce) = header.get("nonce").and_then(|value| value.as_str()) else {
+                return false;
+            };
+            nonce == expected_nonce
         }
 
         let bad_nonce_error = json!({
          "type": "urn:ietf:params:acme:error:badNonce",
         })
         .to_string();
-        let server = create_acme_server();
-        setup_nonces(&server, 1);
-        server.expect(
-            Expectation::matching(all_of!(
-                method_path("POST", "/retry-test"),
-                request::body(NonceMatcher { num: 0 })
-            ))
-            .times(4)
-            .respond_with(cycle!(
-                status_code(400)
-                    .append_header("Replay-Nonce", "ThisNonceIsNotValid")
-                    .append_header("Content-Type", "application/problem+json")
-                    .append_header("Retry-After", "1")
-                    .body(bad_nonce_error.clone()),
-                status_code(400)
-                    .append_header("Replay-Nonce", "NonceIsNotValidEither-Sorry")
-                    .append_header("Content-Type", "application/problem+json")
-                    .append_header("Retry-After", "1")
-                    .body(bad_nonce_error.clone()),
-                status_code(400)
-                    .append_header("Replay-Nonce", "ThisNonceIsValid")
-                    .append_header("Content-Type", "application/problem+json")
-                    .append_header("Retry-After", "1")
-                    .body(bad_nonce_error),
-                status_code(200).body(r"null")
-            )),
-        );
+        let mut server = create_acme_server().await;
+        let first_nonce = setup_nonces(&mut server, 1).await;
+        server
+            .mock("POST", "/retry-test")
+            .match_jose(|jws| match_nonce(&jws, NONCE_VALUE))
+            .with_status(400)
+            .with_header("Replay-Nonce", "ThisNonceIsNotValid")
+            .with_header("Content-Type", "application/problem+json")
+            .with_body(&bad_nonce_error)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/retry-test")
+            .match_jose(|jws| match_nonce(&jws, "ThisNonceIsNotValid"))
+            .with_status(400)
+            .with_header("Replay-Nonce", "NonceIsNotValidEither-Sorry")
+            .with_header("Content-Type", "application/problem+json")
+            .with_body(&bad_nonce_error)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/retry-test")
+            .match_jose(|jws| match_nonce(&jws, "NonceIsNotValidEither-Sorry"))
+            .with_status(400)
+            .with_header("Replay-Nonce", "ThisNonceIsValid")
+            .with_header("Content-Type", "application/problem+json")
+            .with_body(&bad_nonce_error)
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/retry-test")
+            .match_jose(|jws| match_nonce(&jws, "ThisNonceIsValid"))
+            .with_status(200)
+            .with_body("null")
+            .create_async()
+            .await;
         let client = build_acme_client(&server).await;
         let jwk = test_jwk();
         let response: AcmeResponse<()> = client
-            .post_with_retry(&uri_to_url(server.url("/retry-test")), &jwk, EMPTY_PAYLOAD)
+            .post_with_retry(&server.absolute_url("/retry-test"), &jwk, EMPTY_PAYLOAD)
             .await
             .unwrap();
         assert_eq!(response.status, StatusCode::OK);
+        first_nonce.assert_async().await;
     }
 
     #[test]
@@ -848,26 +877,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_renewal_info() {
-        let server = create_acme_server();
-        server.expect(
-            Expectation::matching(method_path(
-                "GET",
-                "/renewal-info/aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE",
-            ))
-            .times(1)
-            .respond_with(
-                status_code(200).append_header("Retry-After", "21600").body(
-                    json!({
-                      "suggestedWindow": {
-                        "start": "2025-01-02T04:00:00Z",
-                        "end": "2025-01-03T04:00:00Z"
-                      },
-                      "explanationURL": "https://acme.example.com/docs/ari"
-                    })
-                    .to_string(),
-                ),
-            ),
-        );
+        let mut server = create_acme_server().await;
+        server
+            .mock("GET", "/renewal-info/aYhba4dGQEHhs3uEe6CuLN4ByNQ.AIdlQyE")
+            .expect(1)
+            .with_header("Retry-After", "21600")
+            .with_json_body(&json!({
+              "suggestedWindow": {
+                "start": "2025-01-02T04:00:00Z",
+                "end": "2025-01-03T04:00:00Z"
+              },
+              "explanationURL": "https://acme.example.com/docs/ari"
+            }))
+            .create_async()
+            .await;
         let client = build_acme_client(&server).await;
         let identifier = AcmeRenewalIdentifier::new(
             &[
