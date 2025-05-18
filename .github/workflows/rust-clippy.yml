@@ -28,6 +28,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install deps
+        run: |
+           sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang build-essential autoconf autopoint flex bison gawk make pkg-config
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af #@v1
         with:
