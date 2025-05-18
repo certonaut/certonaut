@@ -6,6 +6,8 @@ use anyhow::Context;
 use certonaut::challenge_solver::WebrootSolver;
 use certonaut::config::WebrootSolverConfiguration;
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::crypto::asymmetric;
+use certonaut::crypto::asymmetric::{Curve, KeyType};
 use certonaut::dns::resolver::Resolver;
 use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
@@ -107,7 +109,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
 async fn webroot_solver_e2e_test() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("webroot-e2e-test.example.org")?,
         WebrootSolver::from_config(WebrootSolverConfiguration {

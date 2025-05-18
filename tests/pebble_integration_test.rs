@@ -3,6 +3,8 @@ mod common;
 use crate::common::{ChallengeTestServerContainer, PebbleContainer};
 use certonaut::config::PebbleHttpSolverConfiguration;
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::crypto::asymmetric;
+use certonaut::crypto::asymmetric::{Curve, KeyType};
 use certonaut::dns::resolver::Resolver;
 use certonaut::pebble::{ChallengeTestDnsSolver, ChallengeTestHttpSolver};
 use certonaut::{Authorizer, Certonaut, Identifier};
@@ -66,7 +68,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
 async fn pebble_e2e_test_http() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-http01.example.com")?,
         ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
@@ -88,7 +90,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
 async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("pebble-e2e-dns01.example.com")?,
         ChallengeTestDnsSolver::new(containers.1.get_management_url()),
@@ -108,7 +110,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![Authorizer::new_boxed(
         Identifier::from_str("*.pebble-e2e-wildcard-single.example.com")?,
         ChallengeTestDnsSolver::new(containers.1.get_management_url()),
@@ -128,7 +130,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
 async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![
         Authorizer::new_boxed(
             Identifier::from_str("*.pebble-e2e-wildcard-multi.example.com")?,
@@ -162,7 +164,7 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
 async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
     let (containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![
         Authorizer::new_boxed(
             Identifier::from_str("*.Bücher.example")?,
@@ -191,7 +193,7 @@ async fn magic_solver_e2e_test() -> anyhow::Result<()> {
     let test_host = "magic-solver-e2e-test.example.org";
     let (_containers, certonaut) = test_setup().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let http_port = 5002;
     println!("Validation port is {http_port}");
     let authorizers = vec![Authorizer::new(

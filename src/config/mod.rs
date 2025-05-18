@@ -2,18 +2,16 @@ use crate::acme::client::DownloadedCertificate;
 use crate::cert::{ParsedX509Certificate, load_certificates_from_file};
 use crate::challenge_solver::{ChallengeSolver, NullSolver, WebrootSolver};
 use crate::config::toml::TomlConfiguration;
-use crate::crypto::asymmetric;
-use crate::crypto::asymmetric::KeyType;
+use crate::crypto::asymmetric::{KeyPair, KeyType};
 use crate::dns::solver::acme_dns;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
 use crate::util::serde_helper::key_type_config_serializer;
 use crate::{CRATE_NAME, Identifier};
 use anyhow::{Context, Error};
-use rcgen::KeyPair;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -101,16 +99,11 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
     fn load_certificate_private_key(&self, id: &str) -> Result<KeyPair, Error> {
         let cert_path = self.certificate_path(id);
         let key_file = cert_path.join("privkey.pem");
-        asymmetric::KeyPair::load_from_disk(
+        KeyPair::load_from_disk(
             File::open(&key_file)
                 .context(format!("Opening private key file {}", key_file.display()))?,
         )
-        .context(format!("Loading private key {}", key_file.display()))?
-        .to_rcgen_keypair()
-        .context(format!(
-            "Converting private key {} to rcgen format",
-            key_file.display()
-        ))
+        .context(format!("Loading private key {}", key_file.display()))
     }
 
     fn load_certificate_files(
@@ -140,11 +133,12 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             cert_path.display()
         ))?;
         let key_file = cert_path.join("privkey.pem");
-        let pem = key.serialize_pem();
-        std::fs::write(&key_file, pem.as_bytes()).context(format!(
-            "Writing private key to file {}",
-            key_file.display()
-        ))?;
+        let key_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&key_file)
+            .context(format!("Opening private key file {}", key_file.display()))?;
+        key.save_to_disk(key_file)?;
         Ok(())
     }
 
@@ -588,8 +582,8 @@ pub mod test_backend {
     use crate::config::{
         CertificateConfiguration, ConfigBackend, ConfigurationManager, MainConfiguration,
     };
+    use crate::crypto::asymmetric::KeyPair;
     use anyhow::Error;
-    use rcgen::KeyPair;
     use std::path::PathBuf;
 
     pub fn new_configuration_manager_with_noop_backend() -> ConfigurationManager<NoopBackend> {

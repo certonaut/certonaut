@@ -23,6 +23,7 @@ use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
 use anyhow::{Context, Error, anyhow, bail};
+use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,6 +34,7 @@ use std::ops::Neg;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use strum::VariantArray;
 use tracing::{error, info, warn};
 use url::Url;
 
@@ -180,6 +182,50 @@ impl Debug for Authorizer {
             .field("identifier", &self.identifier)
             .field("solver", &self.solver.short_name())
             .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum, VariantArray)]
+pub enum RevocationReason {
+    /// No reason given, any reason.
+    #[default]
+    Unspecified,
+    /// The certificate key was compromised. CAs will usually block the affected key in future certificates, and may even revoke other certificates with the same key.
+    KeyCompromise,
+    /// Refer to the CA documentation to determine if and when to use this reason code.
+    AffiliationChanged,
+    /// Refer to the CA documentation to determine if and when to use this reason code.
+    Superseded,
+    /// Refer to the CA documentation to determine if and when to use this reason code.
+    CessationOfOperation,
+    /// Refer to the CA documentation to determine if and when to use this reason code.
+    PrivilegeWithdrawn,
+}
+
+impl Display for RevocationReason {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let clap_value = self
+            .to_possible_value()
+            .expect("Reason must not be skippable");
+        write!(
+            f,
+            "{} - {}",
+            clap_value.get_name(),
+            clap_value.get_help().expect("Reason must have help text")
+        )
+    }
+}
+
+impl From<RevocationReason> for acme::object::RevocationReason {
+    fn from(value: RevocationReason) -> Self {
+        match value {
+            RevocationReason::Unspecified => Self::Unspecified,
+            RevocationReason::KeyCompromise => Self::KeyCompromise,
+            RevocationReason::AffiliationChanged => Self::AffiliationChanged,
+            RevocationReason::Superseded => Self::Superseded,
+            RevocationReason::CessationOfOperation => Self::CessationOfOperation,
+            RevocationReason::PrivilegeWithdrawn => Self::PrivilegeWithdrawn,
+        }
     }
 }
 
@@ -649,11 +695,9 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         let ca_name = &issuer.issuer.config.name;
         let key_type = cert_config.key_type;
-        let cert_key = asymmetric::new_key(key_type)
-            .and_then(|keypair| keypair.to_rcgen_keypair())
-            .context(format!(
-                "Could not generate certificate key with type {key_type}"
-            ))?;
+        let cert_key = asymmetric::new_key(key_type).context(format!(
+            "Could not generate certificate key with type {key_type}"
+        ))?;
         let lifetime = cert_config
             .advanced
             .lifetime_seconds
@@ -711,10 +755,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 issuer.issuer.config.name
             );
             let cert_key = if cert_config.advanced.reuse_key {
-                self.config.load_certificate_private_key(cert_id)?
+                self.config.load_certificate_private_key(cert_id)
             } else {
-                asymmetric::new_key(cert_config.key_type)?.to_rcgen_keypair()?
-            };
+                asymmetric::new_key(cert_config.key_type)
+            }?;
             let authorizers = authorizers_from_config(cert_config.clone())?;
             let lifetime = cert_config
                 .advanced
@@ -826,9 +870,57 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         }
     }
 
+    pub async fn revoke_certificate(
+        &self,
+        cert_id: &str,
+        reason: Option<RevocationReason>,
+    ) -> anyhow::Result<()> {
+        let certificate_config = self
+            .get_certificate(cert_id)
+            .context(format!("Cert {cert_id} not found"))?;
+        let parsed_cert = self
+            .config
+            .load_certificate_files(cert_id, Some(1))?
+            .pop()
+            .context(format!(
+                "No certificate found in certificate file for {cert_id}"
+            ))?;
+        let maybe_err = match self.config.load_certificate_private_key(cert_id) {
+            Ok(cert_key) => {
+                match self
+                    .get_ca(&certificate_config.ca_identifier)
+                    .context(format!("CA {} not found", certificate_config.ca_identifier))
+                {
+                    Ok(issuer) => {
+                        issuer
+                            .revoke_with_cert_key(&parsed_cert, cert_key, reason)
+                            .await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            Err(e) => Err(e.context(format!("Cannot load private key for {cert_id}"))),
+        };
+        if let Err(e) = maybe_err {
+            warn!("Revoking certificate with certificate key failed: {e:#}");
+            warn!("Attempting revocation using account key instead");
+            let issuer = self.get_issuer_with_account(
+                &certificate_config.ca_identifier,
+                &certificate_config.account_identifier,
+            )?;
+            issuer.revoke_with_account_key(&parsed_cert, reason).await?;
+        }
+        // Also attempt an ARI update after revocation, if possible
+        if let Some(issuer) = self.get_ca(&certificate_config.ca_identifier) {
+            self.try_fetch_and_store_ari(issuer, cert_id.to_string(), &parsed_cert)
+                .await;
+        }
+        Ok(())
+    }
+
     pub async fn try_fetch_and_store_ari(
         &self,
-        issuer: &AcmeIssuerWithAccount<'_>,
+        issuer: &AcmeIssuer,
         cert_id: String,
         cert: &ParsedX509Certificate,
     ) -> Option<RenewalInformation> {

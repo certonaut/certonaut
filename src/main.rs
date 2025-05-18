@@ -39,12 +39,20 @@ async fn main() -> anyhow::Result<()> {
         .set(cli.config)
         .expect("Config file already set");
     let config_dir = config_directory();
-    tokio::fs::create_dir_all(config_dir).await.context(format!("Failed to create config directory {}", config_dir.display()))?;
+    tokio::fs::create_dir_all(config_dir)
+        .await
+        .context(format!(
+            "Failed to create config directory {}",
+            config_dir.display()
+        ))?;
     let config = config::new_configuration_manager_with_default_config()
         .context("Loading configuration data from filesystem")?;
     let database = Database::open(config_dir, "database.sqlite")
         .await
-        .context(format!("Opening local database {}", config_dir.join("database.sqlite").display()))?;
+        .context(format!(
+            "Opening local database {}",
+            config_dir.join("database.sqlite").display()
+        ))?;
     let resolver = Resolver::new();
     let client =
         Certonaut::try_new(config, database, resolver).context("Loading configuration failed")?;

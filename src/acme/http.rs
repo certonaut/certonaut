@@ -1,6 +1,6 @@
+use crate::USER_AGENT;
 use crate::acme::error::ProtocolResult;
 use crate::acme::object::Nonce;
-use crate::USER_AGENT;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};

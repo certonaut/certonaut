@@ -2,6 +2,8 @@ use crate::common::dns::StubDnsResolver;
 use crate::common::{ACCOUNT_NAME, CA_NAME, HOST_NETWORK, PebbleContainer, TestLogConsumer};
 use anyhow::{Context, bail};
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
+use certonaut::crypto::asymmetric;
+use certonaut::crypto::asymmetric::{Curve, KeyType};
 use certonaut::dns::name::DnsName;
 use certonaut::dns::resolver::Resolver;
 use certonaut::dns::solver::acme_dns;
@@ -127,7 +129,7 @@ async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
     .await?;
     let acme_dns = AcmeDnsContainer::spawn().await?;
     let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
-    let new_key = rcgen::KeyPair::generate()?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let acme_dns_client = acme_dns::Client::new(acme_dns.get_api_url(), reqwest::Client::new());
     let registration: Registration = acme_dns_client.register(std::iter::empty()).await?.into();
     let domain_name = Identifier::from_str("acme-dns-e2e-test.local.test")?;

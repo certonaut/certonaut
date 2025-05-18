@@ -43,10 +43,10 @@ Supports HTTP-01 and DNS-01 challenges, in a fully guided interactive mode. Feat
 - **Certificate Issuance & Renewal**  
   Issue and renew certificates with custom key types (ECDSA, RSA up to 8192‑bit)
 
-- **ARI support**
+- **ARI support**  
   Full support for [ACME Renewal Information (ARI) extension](https://datatracker.ietf.org/doc/draft-ietf-acme-ari/)
 
-- **Profile support**
+- **Profile support**  
   Full support for [ACME profiles extension](https://datatracker.ietf.org/doc/draft-aaron-acme-profiles/)
 
 - **Installer Hooks**  

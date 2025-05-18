@@ -8,16 +8,19 @@ use crate::cert::{ParsedX509Certificate, create_and_sign_csr};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
+use crate::crypto::asymmetric::KeyPair;
+use crate::crypto::jws::JsonWebKey;
 use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{AcmeAccount, Authorizer, Identifier, acme, new_acme_client};
+use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
 use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use time::error::ConversionRange;
@@ -108,6 +111,20 @@ impl AcmeIssuer {
 
     pub fn remove_account(&mut self, account_id: &str) -> Option<AcmeAccount> {
         self.accounts.remove(account_id)
+    }
+
+    pub async fn revoke_with_cert_key(
+        &self,
+        cert: &ParsedX509Certificate,
+        cert_key: KeyPair,
+        reason: Option<RevocationReason>,
+    ) -> anyhow::Result<()> {
+        let client = self.client().await?;
+        let revoke_key = JsonWebKey::new(cert_key);
+        client
+            .revoke_certificate(&revoke_key, cert.as_der_bytes(), reason.map(Into::into))
+            .await?;
+        Ok(())
     }
 
     pub async fn get_renewal_info(
@@ -214,11 +231,6 @@ pub struct AcmeIssuerWithAccount<'a> {
 }
 
 impl AcmeIssuerWithAccount<'_> {
-    #[inline]
-    async fn client(&self) -> Result<&AcmeClient, Error> {
-        self.issuer.client().await
-    }
-
     async fn get_cert_from_finalized_order(
         &self,
         order: Order,
@@ -244,7 +256,7 @@ impl AcmeIssuerWithAccount<'_> {
 
     pub async fn issue(
         &self,
-        cert_key: &rcgen::KeyPair,
+        cert_key: &KeyPair,
         cert_lifetime: Option<Duration>,
         authorizers: Vec<Authorizer>,
         replaces: Option<AcmeRenewalIdentifier>,
@@ -578,16 +590,28 @@ impl AcmeIssuerWithAccount<'_> {
         }
     }
 
-    pub async fn get_renewal_info(
+    pub async fn revoke_with_account_key(
         &self,
-        cert_id: String,
         cert: &ParsedX509Certificate,
-    ) -> anyhow::Result<Option<RenewalInformation>> {
-        self.issuer.get_renewal_info(cert_id, cert).await
+        reason: Option<RevocationReason>,
+    ) -> anyhow::Result<()> {
+        let client = self.client().await?;
+        client
+            .revoke_certificate(
+                &self.account.jwk,
+                cert.as_der_bytes(),
+                reason.map(Into::into),
+            )
+            .await?;
+        Ok(())
     }
+}
 
-    pub async fn get_profiles(&self) -> anyhow::Result<&HashMap<String, String>> {
-        self.issuer.get_profiles().await
+impl Deref for AcmeIssuerWithAccount<'_> {
+    type Target = AcmeIssuer;
+
+    fn deref(&self) -> &Self::Target {
+        self.issuer
     }
 }
 
@@ -694,6 +718,7 @@ mod tests {
             subject_alternative_names: vec![],
             acme_renewal_identifier: Some(AcmeRenewalIdentifier::new(&[0xDE, 0xAD], &[0xBE, 0xEF])),
             subject_public_key_sha256: [0x00; 32],
+            raw_bytes: vec![],
         }
     }
 
@@ -714,7 +739,7 @@ mod tests {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
         let mut mock_client = AcmeClient::faux();
         faux::when!(mock_client.new_order)
             .once()
@@ -821,7 +846,7 @@ mod tests {
             .then_return(certificate);
         let issuer = setup_fake_issuer(mock_client)?;
         let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
 
         let cert = issuer_with_account
             .issue(
@@ -857,7 +882,7 @@ mod tests {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
         let new_order_request = NewOrderRequest {
             identifiers: vec![Identifier::from_str("example.com")?.into()],
             not_before: None,
@@ -912,7 +937,7 @@ mod tests {
             pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?.to_rcgen_keypair()?;
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
         let new_order_request = NewOrderRequest {
             identifiers: vec![Identifier::from_str("example.com")?.into()],
             not_before: None,

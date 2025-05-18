@@ -4,7 +4,7 @@ use crate::util::serde_helper::optional_offset_date_time;
 use anyhow::Context;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
@@ -396,6 +396,40 @@ impl Default for Deactivation {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Revocation {
+    pub certificate: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<RevocationReason>,
+}
+
+/// Reason codes as per RFC5280 section 5.3.1
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum RevocationReason {
+    #[default]
+    Unspecified = 0,
+    KeyCompromise = 1,
+    CaCompromise = 2,
+    AffiliationChanged = 3,
+    Superseded = 4,
+    CessationOfOperation = 5,
+    CertificateHold = 6,
+    RemoveFromCrl = 8,
+    PrivilegeWithdrawn = 9,
+    AttributeAuthorityCompromise = 10,
+}
+
+impl Serialize for RevocationReason {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        (*self as u8).serialize(serializer)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[cfg_attr(test, derive(Serialize, PartialEq, Eq))]
 #[serde(rename_all = "camelCase")]
@@ -721,7 +755,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
         identifiers: vec![Identifier::from_str("example.com").unwrap()],
         not_before: None,
         not_after: None,
@@ -729,7 +763,7 @@ mod tests {
         profile: None,
         },
         r#"{"identifiers":[{"type":"dns","value":"example.com"}]}"#)]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
         identifiers: vec![Identifier::from_str("example.com").unwrap(), Identifier::from_str("api.example.com").unwrap()],
         not_before: None,
         not_after: None,
@@ -737,7 +771,7 @@ mod tests {
         profile: None,
         },
         r#"{"identifiers":[{"type":"dns","value":"example.com"},{"type":"dns","value":"api.example.com"}]}"#)]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
         identifiers: vec![Identifier::from_str("example.com").unwrap()],
         not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
         not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
@@ -746,7 +780,7 @@ mod tests {
         },
         r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z"}"#
     )]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
         identifiers: vec![Identifier::from_str("example.com").unwrap()],
         not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
         not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
@@ -755,7 +789,7 @@ mod tests {
         },
         r#"{"identifiers":[{"type":"dns","value":"example.com"}],"notBefore":"2024-12-12T12:12:12Z","notAfter":"2024-12-13T12:12:12Z","replaces":"3q0.vu8"}"#
     )]
-    #[case(NewOrderRequest {
+    #[case(NewOrderRequest{
         identifiers: vec![Identifier::from_str("example.com").unwrap()],
         not_before: Some(datetime!(2024-12-12 12:12:12 UTC)),
         not_after: Some(datetime!(2024-12-13 12:12:12 UTC)),
@@ -819,6 +853,33 @@ mod tests {
         let file = File::open(testfile).unwrap();
         let maybe_err: serde_json::Result<RenewalInfo> = serde_json::from_reader(file);
         maybe_err.expect_err("Deserialization must fail");
+    }
+
+    #[rstest]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: None,}, r#"{"certificate":"Base64PlaceHolder"}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::Unspecified),},
+        r#"{"certificate":"Base64PlaceHolder","reason":0}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::KeyCompromise),},
+        r#"{"certificate":"Base64PlaceHolder","reason":1}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CaCompromise),},
+        r#"{"certificate":"Base64PlaceHolder","reason":2}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AffiliationChanged),},
+        r#"{"certificate":"Base64PlaceHolder","reason":3}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::Superseded),},
+        r#"{"certificate":"Base64PlaceHolder","reason":4}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CessationOfOperation),},
+        r#"{"certificate":"Base64PlaceHolder","reason":5}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CertificateHold),},
+        r#"{"certificate":"Base64PlaceHolder","reason":6}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::RemoveFromCrl),},
+        r#"{"certificate":"Base64PlaceHolder","reason":8}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::PrivilegeWithdrawn),},
+        r#"{"certificate":"Base64PlaceHolder","reason":9}"#)]
+    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AttributeAuthorityCompromise),},
+        r#"{"certificate":"Base64PlaceHolder","reason":10}"#)]
+    fn test_serialize_revocation(#[case] revocation: Revocation, #[case] expected: &str) {
+        let serialized = serde_json::to_string(&revocation).expect("serialization must not fail");
+        assert_eq!(serialized, expected);
     }
 
     // TODO: Add RFC tests where provided

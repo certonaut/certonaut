@@ -1,4 +1,3 @@
-use crate::Certonaut;
 use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::config;
 use crate::config::ConfigBackend;
@@ -8,6 +7,7 @@ use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::time::parse_duration;
 use crate::{CRATE_NAME, Identifier};
+use crate::{Certonaut, RevocationReason};
 use anyhow::{Context, bail};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
@@ -149,6 +149,8 @@ pub enum CertificateCommand {
     List,
     /// Change the renewal configuration of an existing certificate
     Modify(CertificateModifyCommand),
+    /// Revoke an existing certificate
+    Revoke(RevokeCommand),
 }
 
 impl Display for CertificateCommand {
@@ -158,6 +160,7 @@ impl Display for CertificateCommand {
             CertificateCommand::Renew(_) => write!(f, "Renew your certificates"),
             CertificateCommand::List => write!(f, "List available certificates"),
             CertificateCommand::Modify(_) => write!(f, "Modify existing certificate"),
+            CertificateCommand::Revoke(_) => write!(f, "Revoke an existing certificate"),
         }
     }
 }
@@ -333,6 +336,19 @@ pub struct CertificateModifyCommand {
     pub new_config: IssueCommand,
 }
 
+#[derive(Debug, Args, Default)]
+pub struct RevokeCommand {
+    /// The identifier of the certificate to revoke
+    #[clap(long = "cert")]
+    pub cert_id: Option<String>,
+    /// The reason code for which this certificate is revoked (optional).
+    ///
+    /// These codes may differ in their semantics from CA to CA. Not all CAs support all reason codes.
+    /// For all reason codes, consult the CA's documentation to determine when they are appropriate.
+    #[clap(long)]
+    pub reason: Option<RevocationReason>,
+}
+
 pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     mut cmd: Option<Command>,
     matches: &ArgMatches,
@@ -392,6 +408,7 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                         CertificateCommand::Issue(IssueCommand::default()),
                         CertificateCommand::Renew(RenewCommand::default()),
                         CertificateCommand::Modify(CertificateModifyCommand::default()),
+                        CertificateCommand::Revoke(RevokeCommand::default()),
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
@@ -524,6 +541,15 @@ async fn handle_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
             } else {
                 let mut service = NonInteractiveService::new(client);
                 service.modify_cert_config(modify).await
+            }
+        }
+        CertificateCommand::Revoke(revoke) => {
+            if interactive {
+                let service = InteractiveService::new(client);
+                service.interactive_revoke_certificate(revoke).await
+            } else {
+                let service = NonInteractiveService::new(client);
+                service.revoke_certificate(revoke).await
             }
         }
     }

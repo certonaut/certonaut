@@ -1,7 +1,7 @@
 use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
-    IssuerAddCommand, IssuerRemoveCommand,
+    IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
 };
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration,
@@ -228,5 +228,16 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                 .install_script
                 .map(|script| InstallerConfiguration::Script { script }),
         })
+    }
+
+    pub async fn revoke_certificate(&self, revoke_cmd: RevokeCommand) -> anyhow::Result<()> {
+        let cert_id = revoke_cmd
+            .cert_id
+            .context("A certificate ID to revoke must be specified in non-interactive mode")?;
+        let reason = revoke_cmd.reason;
+        self.client
+            .revoke_certificate(&cert_id, reason)
+            .await
+            .context("Failed to revoke certificate")
     }
 }

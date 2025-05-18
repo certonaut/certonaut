@@ -1,5 +1,5 @@
 use crate::challenge_solver::CHALLENGE_SOLVER_REGISTRY;
-use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand};
+use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand, RevokeCommand};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
     CertificateConfiguration, ConfigBackend, InstallerConfiguration,
@@ -10,7 +10,7 @@ use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
     AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
-    DomainSolverMap, Identifier, NewAccountOptions, choose_solver_name,
+    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, choose_solver_name,
 };
 use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
@@ -176,18 +176,6 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         Ok(())
     }
 
-    fn interactive_select_ca(&mut self, allow_creation: bool) -> Result<String, Error> {
-        Ok(match Self::user_select_ca(&self.client, allow_creation)? {
-            CaChoice::ExistingCa(ca) => ca.identifier,
-            CaChoice::NewCa => {
-                let new_ca = Self::user_create_ca(&mut self.client)?;
-                let id = new_ca.identifier.clone();
-                self.client.add_new_ca(new_ca)?;
-                id
-            }
-        })
-    }
-
     pub async fn interactive_modify_cert_configuration(
         &mut self,
         cmd: CertificateModifyCommand,
@@ -212,6 +200,58 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             "Successfully modified certificate configuration. The new configuration will become effective on the next renewal."
         );
         Ok(())
+    }
+
+    pub async fn interactive_revoke_certificate(&self, cmd: RevokeCommand) -> Result<(), Error> {
+        let cert_id = match cmd.cert_id {
+            Some(cert_id) => cert_id,
+            None => self.user_select_cert()?,
+        };
+        let reason = match cmd.reason {
+            Some(reason) => Some(reason),
+            None => Self::user_ask_revocation_reason()?,
+        };
+        println!(
+            "Revocation is a potentially destructive action that can (usually) not be undone. It will not affect rate limiting by the CA."
+        );
+        let confirm = Confirm::new(&format!(
+            "Do you really want to revoke certificate {cert_id}?"
+        ))
+        .with_default(false)
+        .prompt()
+        .context("No revocation confirmation given")?;
+        if !confirm {
+            println!("Certificate NOT revoked.");
+            return Ok(());
+        }
+        self.client
+            .revoke_certificate(&cert_id, reason)
+            .await
+            .context("Failed to revoke certificate")?;
+        println!(
+            "The certificate has been successfully revoked, and is no longer valid. Continued use of the certificate may result in errors."
+        );
+        let renew = Confirm::new("Do you wish to replace it with a valid certificate now?")
+            .with_default(false)
+            .with_help_message("Selecting yes will attempt a normal renewal of the certificate")
+            .prompt()
+            .context("No answer to renew prompt")?;
+        if renew {
+            // TODO: Use renew service to renew now
+        }
+        Ok(())
+    }
+
+    fn interactive_select_ca(&mut self, allow_creation: bool) -> Result<String, Error> {
+        Ok(match Self::user_select_ca(&self.client, allow_creation)? {
+            CaChoice::ExistingCa(ca) => ca.identifier,
+            CaChoice::NewCa => {
+                let new_ca = Self::user_create_ca(&mut self.client)?;
+                let id = new_ca.identifier.clone();
+                self.client.add_new_ca(new_ca)?;
+                id
+            }
+        })
     }
 
     fn user_select_cert(&self) -> Result<String, Error> {
@@ -1281,6 +1321,26 @@ You may need to create an account at the CA's website first.",
                 }
             });
         Ok(script)
+    }
+
+    fn user_ask_revocation_reason() -> Result<Option<RevocationReason>, Error> {
+        let options = RevocationReason::VARIANTS.into();
+        println!(
+            "You can signal a reason for revocation to the CA. Certain reason codes may change the semantics of the revocation."
+        );
+        println!(
+            "Not all CAs support all reason codes, and revocation requirements differ from CA to CA."
+        );
+        println!(
+            "Consult the CA's documentation to determine the reason code to use in a given scenario. You can also opt to not supply a reason code."
+        );
+        let reason = Select::new(
+            "Select the reason why you're revoking this certificate (optional):",
+            options,
+        )
+        .prompt_skippable()
+        .context("No answer to revocation reason prompt")?;
+        Ok(reason)
     }
 }
 

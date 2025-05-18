@@ -26,6 +26,10 @@ pub struct RenewService<CB> {
     client: Arc<Certonaut<CB>>,
 }
 
+// TODO: Allow for the renew service to only renew a subset of certificates
+// TODO: Allow to override renewal time checks ("force")
+// TODO: Revocation needs to use the above (see TODO in interactive service)
+
 impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
     pub fn new(client: Certonaut<CB>, interactive: bool) -> Self {
         Self {

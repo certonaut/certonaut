@@ -5,7 +5,7 @@ use crate::acme::http::RelationLink;
 use crate::acme::object::{
     Account, AccountRequest, AcmeRenewalIdentifier, Authorization, Challenge, ChallengeStatus,
     Deactivation, Directory, EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order,
-    OrderStatus, RenewalInfo,
+    OrderStatus, RenewalInfo, Revocation, RevocationReason,
 };
 use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
@@ -15,9 +15,9 @@ use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::de::value::BytesDeserializer;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::de::value::BytesDeserializer;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
@@ -516,6 +516,36 @@ impl AcmeClient {
         Ok(response.body)
     }
 
+    /// Request revocation of a certificate by the CA.
+    ///
+    /// # Arguments
+    ///
+    /// - `revocation_key` - The key with which to revoke the certificate. This can be either an ACME Account Key
+    ///   (that was used to issue the certificate), or alternatively also the private key of the certificate.
+    ///   Some CAs require that a specific key is used for a particular revocation scenario, e.g. the certificate
+    ///   key may be required for the `RevocationReason::KeyCompromise` reason code.
+    /// - `certificate_der` - The certificate's bytes in DER encoding
+    /// - `reason` - Optional reason for revocation to be signalled to the CA. This may change the semantics of the revocation.
+    ///   Not all CAs support all reason codes.
+    pub async fn revoke_certificate(
+        &self,
+        revocation_key: &JsonWebKey,
+        certificate_der: &[u8],
+        reason: Option<RevocationReason>,
+    ) -> ProtocolResult<()> {
+        let revoke_url = &self.get_directory().revoke_cert;
+        let payload = Revocation {
+            certificate: BASE64_URL_SAFE_NO_PAD.encode(certificate_der),
+            reason,
+        };
+        // This is a bit annoying: The revocation success response is not JSON, but an entirely empty body. To avoid
+        // the parser tripping on an empty body, request an unparsed response instead (which we will then just ignore).
+        let _response: AcmeResponse<PassthroughBytes> = self
+            .post_with_retry(revoke_url, revocation_key, Some(&payload))
+            .await?;
+        Ok(())
+    }
+
     #[allow(clippy::missing_panics_doc)]
     pub async fn get_renewal_info(
         &self,
@@ -913,6 +943,39 @@ mod tests {
         );
         let time_delta = response.retry_after - time::OffsetDateTime::now_utc();
         assert!(time_delta >= time::Duration::hours(5) && time_delta <= time::Duration::hours(7));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_certificate() -> ProtocolResult<()> {
+        let mut server = create_acme_server().await;
+        let mock = server
+            .mock("POST", "/revoke-cert")
+            .match_jose(|jws| {
+                let Ok(payload) = jws.payload_json() else {
+                    return false;
+                };
+                let Some(payload) = payload.as_object() else {
+                    return false;
+                };
+                let Some(certificate) = payload.get("certificate").and_then(|value| value.as_str())
+                else {
+                    return false;
+                };
+                certificate == "3q2-7w"
+            })
+            .create_async()
+            .await;
+        let nonce_mock = setup_nonces(&mut server, 1).await;
+        let client = build_acme_client(&server).await;
+        let jwk = test_jwk();
+
+        client
+            .revoke_certificate(&jwk, &[0xDE, 0xAD, 0xBE, 0xEF], None)
+            .await?;
+
+        mock.assert_async().await;
+        nonce_mock.assert_async().await;
+        Ok(())
     }
 
     // TODO: Other methods
