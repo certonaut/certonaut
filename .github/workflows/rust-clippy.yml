@@ -32,13 +32,16 @@ jobs:
         run: |
            sudo apt-get update && sudo apt-get install --yes --no-install-recommends clang build-essential autoconf autopoint flex bison gawk make pkg-config
 
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af #@v1
+      - name: Rust Cache
+        uses: actions/cache@v4
         with:
-          profile: minimal
-          toolchain: stable
-          components: clippy
-          override: true
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install required cargo
         run: cargo install clippy-sarif sarif-fmt
