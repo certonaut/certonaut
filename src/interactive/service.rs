@@ -7,6 +7,7 @@ use crate::config::{
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
+use crate::renew::RenewService;
 use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
     AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
@@ -33,7 +34,7 @@ pub struct InteractiveService<CB> {
     client: Certonaut<CB>,
 }
 
-impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
+impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
     pub fn new(client: Certonaut<CB>) -> Self {
         Self { client }
     }
@@ -202,7 +203,7 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
         Ok(())
     }
 
-    pub async fn interactive_revoke_certificate(&self, cmd: RevokeCommand) -> Result<(), Error> {
+    pub async fn interactive_revoke_certificate(self, cmd: RevokeCommand) -> Result<(), Error> {
         let cert_id = match cmd.cert_id {
             Some(cert_id) => cert_id,
             None => self.user_select_cert()?,
@@ -237,7 +238,8 @@ impl<CB: ConfigBackend + Send + Sync> InteractiveService<CB> {
             .prompt()
             .context("No answer to renew prompt")?;
         if renew {
-            // TODO: Use renew service to renew now
+            let renew_service = RenewService::new(self.client, true);
+            renew_service.renew_single_cert(cert_id, true).await?;
         }
         Ok(())
     }

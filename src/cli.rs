@@ -297,7 +297,14 @@ impl From<CommandLineKeyType> for KeyType {
 }
 
 #[derive(Debug, Args, Default)]
-pub struct RenewCommand {}
+pub struct RenewCommand {
+    /// Optional: The ID of a cert to be renewed. If not given, all certificates will be renewed.
+    #[clap(long = "cert")]
+    pub cert_id: Option<String>,
+    /// Renew the specified certificate early, ignoring the normal renewal schedule. Can only be used for a single certificate.
+    #[clap(long, requires = "cert_id")]
+    pub renew_early: bool,
+}
 
 #[derive(Debug, Args, Clone)]
 #[command(subcommand_precedence_over_arg = true)]
@@ -477,7 +484,7 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     }
 }
 
-async fn handle_issuer_command<CB: ConfigBackend + Send + Sync>(
+async fn handle_issuer_command<CB: ConfigBackend + Send + Sync + 'static>(
     cmd: IssuerCommand,
     client: Certonaut<CB>,
     interactive: bool,
@@ -525,9 +532,16 @@ async fn handle_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
                 service.noninteractive_issuance(issue_cmd).await
             }
         }
-        CertificateCommand::Renew(_renew_cmd) => {
+        CertificateCommand::Renew(renew_cmd) => {
             let service = RenewService::new(client, interactive);
-            service.run().await
+            match renew_cmd.cert_id {
+                None => service.renew_all().await,
+                Some(cert_id) => {
+                    service
+                        .renew_single_cert(cert_id, renew_cmd.renew_early)
+                        .await
+                }
+            }
         }
         CertificateCommand::List => {
             client.print_certificates();
@@ -555,7 +569,7 @@ async fn handle_certificate_command<CB: ConfigBackend + Send + Sync + 'static>(
     }
 }
 
-async fn handle_account_command<CB: ConfigBackend + Send + Sync>(
+async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
     cmd: AccountCommand,
     client: Certonaut<CB>,
     interactive: bool,

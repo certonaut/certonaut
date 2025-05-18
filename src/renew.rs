@@ -26,10 +26,6 @@ pub struct RenewService<CB> {
     client: Arc<Certonaut<CB>>,
 }
 
-// TODO: Allow for the renew service to only renew a subset of certificates
-// TODO: Allow to override renewal time checks ("force")
-// TODO: Revocation needs to use the above (see TODO in interactive service)
-
 impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
     pub fn new(client: Certonaut<CB>, interactive: bool) -> Self {
         Self {
@@ -38,17 +34,41 @@ impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
         }
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn renew_single_cert(
+        self,
+        cert_name: String,
+        renew_early: bool,
+    ) -> anyhow::Result<()> {
+        let mut config = RenewConfig::new(self.interactive);
+        if renew_early {
+            config.renew_early = true;
+            config.sleep = false;
+        }
+        let certs = [(cert_name, config)].into();
+        self.run(certs).await
+    }
+
+    pub async fn renew_all(self) -> anyhow::Result<()> {
+        let certs = self
+            .client
+            .certificates
+            .keys()
+            .cloned()
+            .map(|cert_name| (cert_name, RenewConfig::new(self.interactive)))
+            .collect();
+        self.run(certs).await
+    }
+
+    async fn run(self, renew_configs: HashMap<String, RenewConfig>) -> anyhow::Result<()> {
         let lock = state::RenewalLock::exclusive_lock(config_directory())
             .await
             .context("Failed to acquire exclusive file lock for renewal")?;
-        let certs = &self.client.certificates;
         let mut renew_tasks = FuturesUnordered::new();
-        for cert_name in certs.keys() {
+        for (cert_name, renew_config) in renew_configs.into_iter() {
             let cert_name = cert_name.to_owned();
             let client = self.client.clone();
             renew_tasks.push(tokio::spawn(async move {
-                RenewTask::new(self.interactive, cert_name.clone(), client)
+                RenewTask::new(renew_config, cert_name.clone(), client)
                     .run()
                     .await
                     .context(format!("Renewing certificate {cert_name}"))
@@ -86,23 +106,51 @@ impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
 }
 
 #[allow(clippy::module_name_repetitions)]
-pub struct RenewTask<CB: ConfigBackend> {
-    interactive: bool,
+#[derive(Debug, Clone)]
+struct RenewConfig {
+    _interactive: bool,
+    renew_early: bool,
+    sleep: bool,
+}
+
+impl Default for RenewConfig {
+    fn default() -> Self {
+        Self {
+            _interactive: false,
+            renew_early: false,
+            sleep: true,
+        }
+    }
+}
+
+impl RenewConfig {
+    pub fn new(interactive: bool) -> Self {
+        Self {
+            _interactive: interactive,
+            sleep: !interactive,
+            ..Self::default()
+        }
+    }
+}
+
+#[allow(clippy::module_name_repetitions)]
+struct RenewTask<CB: ConfigBackend> {
     cert_id: String,
     client: Arc<Certonaut<CB>>,
+    config: RenewConfig,
 }
 
 impl<CB: ConfigBackend> RenewTask<CB> {
-    pub fn new(interactive: bool, cert_name: String, client: Arc<Certonaut<CB>>) -> Self {
+    pub fn new(config: RenewConfig, cert_name: String, client: Arc<Certonaut<CB>>) -> Self {
         Self {
-            interactive,
             cert_id: cert_name,
             client,
+            config,
         }
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        if !self.interactive {
+        if self.config.sleep {
             let random_sleep_seconds = random_range(0..MAX_RANDOM_SLEEP_BEFORE_RENEW_SECONDS);
             let random_sleep = Duration::seconds(random_sleep_seconds);
             info!(
@@ -135,7 +183,11 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             .client
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         if let Some(leaf) = certificates.first() {
-            let renew_in = self.renew_in(&issuer, leaf).await;
+            let renew_in = if self.config.renew_early {
+                Duration::ZERO
+            } else {
+                self.renew_in(&issuer, leaf).await
+            };
             let renew_in_humanized = humanize_duration(renew_in);
             if renew_in > Duration::new(MAX_SHORT_SLEEP_BEFORE_RENEW_SECONDS, 0) {
                 info!("Certificate {cert_name} is not due for renewal for {renew_in_humanized}");
@@ -144,10 +196,10 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             match self.decide_noninteractive_renewal().await? {
                 BackoffDecision::NoBackoff => {}
                 BackoffDecision::Backoff(reason) => {
-                    if issuer.issuer.config.testing {
+                    if issuer.config.testing {
                         warn!(
                             "Certificate {cert_name} has repeated renewal failures. Trying to renew anyway since {} is a test CA",
-                            { &issuer.issuer.config.name }
+                            { &issuer.config.name }
                         );
                         info!(
                             "If this were not a test CA, then we would not renew because of: {reason}"
@@ -179,6 +231,11 @@ impl<CB: ConfigBackend> RenewTask<CB> {
     /// Decide whether renewal can be attempted now, based on previous renewal history.
     /// Specifically, this code will suggest backoff if recent renewals failed repeatedly.
     async fn decide_noninteractive_renewal(&self) -> anyhow::Result<BackoffDecision> {
+        if self.config.renew_early {
+            // User asked to renew now. Honor the user's request.
+            return Ok(BackoffDecision::NoBackoff);
+        }
+
         // Events older than the cutoff are not considered for decision-making
         let cutoff = OffsetDateTime::now_utc().sub(Duration::days(7));
         let recent_renewals = self
