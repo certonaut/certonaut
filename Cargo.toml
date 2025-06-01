@@ -21,7 +21,7 @@ futures = "0.3.31"
 httpdate = "1.0.3"
 inquire = { version = "0.7.5", features = ["editor"] }
 nom-rfc8288 = "0.2.3"
-parking_lot = "0.12.3"
+parking_lot = "0.12.4"
 pem = "3.0.4"
 rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 # TODO: In order to avoid reqwest depending on ring, we (currently) need to build the TLS client ourselves,
