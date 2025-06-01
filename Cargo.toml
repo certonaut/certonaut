@@ -52,7 +52,7 @@ libbpf-rs = { version = "0.24.8", features = ["static", "vendored"], optional = 
 http = { version = "1.2.0", optional = true }
 http-body-util = { version = "0.1.2", optional = true }
 hyper = { version = "1.5.1", features = ["client", "server"], optional = true }
-hyper-util = { version = "0.1.10", optional = true }
+hyper-util = { version = "0.1.13", optional = true }
 
 [build-dependencies]
 toml = "0.8.19"
