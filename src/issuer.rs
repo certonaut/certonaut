@@ -84,7 +84,7 @@ impl AcmeIssuer {
         }
     }
 
-    pub fn with_account(&self, account_id: &str) -> Option<AcmeIssuerWithAccount> {
+    pub fn with_account(&self, account_id: &str) -> Option<AcmeIssuerWithAccount<'_>> {
         let account = self.accounts.get(account_id)?;
         Some(AcmeIssuerWithAccount {
             issuer: self,

@@ -502,7 +502,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         &self,
         issuer: &str,
         account: &str,
-    ) -> anyhow::Result<AcmeIssuerWithAccount> {
+    ) -> anyhow::Result<AcmeIssuerWithAccount<'_>> {
         self.get_ca(issuer)
             .ok_or(anyhow!("CA {issuer} not found"))?
             .with_account(account)
