@@ -136,6 +136,7 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
         let key_file = OpenOptions::new()
             .write(true)
             .truncate(true)
+            .create(true)
             .open(&key_file)
             .context(format!("Opening private key file {}", key_file.display()))?;
         key.save_to_disk(key_file)?;
