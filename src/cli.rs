@@ -453,7 +453,7 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                         AccountCommand::Create(AccountCreateCommand::default()),
                         // AccountCommand::Modify,
                         AccountCommand::Delete(AccountDeleteCommand::default()),
-                        // AccountCommand::Import,
+                        AccountCommand::Import(AccountImportCommand::default()),
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
