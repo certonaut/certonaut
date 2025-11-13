@@ -3,26 +3,26 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
+use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
 use crate::challenge_solver::ChallengeSolver;
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
-    ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
-    SolverConfiguration, config_directory,
+    config_directory, AccountConfiguration,
+    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
+    ConfigBackend, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
+    MainConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
-use crate::crypto::asymmetric::KeyType;
+use crate::crypto::asymmetric::{KeyPair, KeyType};
 use crate::crypto::jws::{ExternalAccountBinding, JsonWebKey};
 use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
-use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
+use crate::state::Database;
 use crate::time::humanize_duration;
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -602,6 +602,43 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .save_main(&self.current_main_config())
             .context("Saving new configuration")?;
         Ok(())
+    }
+
+    pub async fn import_account(
+        &mut self,
+        ca_id: &str,
+        account_id: &str,
+        account_name: &str,
+        account_key: KeyPair,
+    ) -> Result<AcmeAccount, Error> {
+        let ca = self
+            .get_ca_mut(ca_id)
+            .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
+        let config_path = config_directory();
+        let key_path = config_path
+            .join("account_keys")
+            .join(format!("{account_id}.key"));
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).context("Creating account key directory")?;
+        }
+        let account_file = File::create_new(&key_path).context("Saving account key to file")?;
+        account_key
+            .save_to_disk(account_file)
+            .context("Saving account key to file")?;
+        let key_path = key_path
+            .canonicalize()
+            .context("Saving account key to file")?;
+        let (jwk, account_url) = ca.fetch_account_from_ca(account_key).await?;
+        let imported_account = AcmeAccount {
+            config: AccountConfiguration {
+                name: account_name.to_string(),
+                identifier: account_id.to_string(),
+                key_file: key_path,
+                url: account_url,
+            },
+            jwk,
+        };
+        Ok(imported_account)
     }
 
     pub fn choose_ca_id_from_name(&self, friendly_name: &str) -> String {

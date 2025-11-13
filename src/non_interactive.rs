@@ -1,7 +1,6 @@
-use crate::CRATE_NAME;
 use crate::cli::{
-    AccountCreateCommand, AccountDeleteCommand, CertificateModifyCommand, IssueCommand,
-    IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
+    AccountCreateCommand, AccountDeleteCommand, AccountImportCommand, CertificateModifyCommand,
+    IssueCommand, IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
 };
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration,
@@ -9,8 +8,9 @@ use crate::config::{
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
+use crate::CRATE_NAME;
 use crate::{Certonaut, NewAccountOptions};
-use anyhow::{Context, Error, bail};
+use anyhow::{bail, Context, Error};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;
@@ -101,6 +101,28 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
         Certonaut::<CB>::print_account(&account).await;
         println!("Successfully added new account");
+        Ok(())
+    }
+
+    pub async fn import_account(&mut self, cmd: AccountImportCommand) -> Result<(), Error> {
+        let Some(ca_id) = cmd.ca_identifier else {
+            bail!("A certificate authority must be specified in noninteractive mode")
+        };
+        let Some(account_id) = cmd.account_id else {
+            bail!("An account ID in noninteractive mode")
+        };
+        let account_name = cmd.account_name.unwrap_or_else(|| account_id.clone());
+        let Some(key_path) = cmd.key_file else {
+            bail!("A path to the account key file must be specified in noninteractive mode")
+        };
+        let key_file = std::fs::File::open(key_path).context("Failed to open account key file")?;
+        let account_key = crate::crypto::asymmetric::KeyPair::load_from_disk(key_file)
+            .context("Failed to load account key file. Make sure it is in PEM format.")?;
+        let imported_account = self
+            .client
+            .import_account(&ca_id, &account_id, &account_name, account_key)
+            .await?;
+        self.client.add_new_account(&ca_id, imported_account)?;
         Ok(())
     }
 

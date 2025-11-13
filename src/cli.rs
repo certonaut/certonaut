@@ -1,4 +1,4 @@
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::config;
 use crate::config::ConfigBackend;
 use crate::crypto::asymmetric::{Curve, KeyType};
@@ -6,9 +6,9 @@ use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::time::parse_duration;
-use crate::{CRATE_NAME, Identifier};
 use crate::{Certonaut, RevocationReason};
-use anyhow::{Context, bail};
+use crate::{Identifier, CRATE_NAME};
+use anyhow::{bail, Context};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;
@@ -81,8 +81,8 @@ pub enum AccountCommand {
     List,
     /// Create a new account
     Create(AccountCreateCommand),
-    // /// Import an existing account from another ACME client software
-    // Import,
+    /// Import an existing account from another computer or another ACME client software
+    Import(AccountImportCommand),
     // /// Change settings of an existing account
     // Modify,
     /// Delete and deactivate an account
@@ -95,10 +95,10 @@ impl Display for AccountCommand {
             AccountCommand::List => write!(f, "List accounts"),
             AccountCommand::Create(_) => write!(f, "Create new account"),
             // AccountCommand::Modify => write!(f, "Modify existing account"),
-            // AccountCommand::Import => write!(
-            //     f,
-            //     "Import existing account from another installation or ACME client"
-            // ),
+            AccountCommand::Import(_) => write!(
+                f,
+                "Import existing account from another installation or ACME client"
+            ),
             AccountCommand::Delete(_) => write!(f, "Delete (deactivate) account"),
         }
     }
@@ -127,6 +127,22 @@ pub struct AccountCreateCommand {
     /// The `EAB_HMAC_KEY` (HMAC Key) for ACME External Account Binding (EAB)
     #[arg(long = "eab-hmac-key", requires = "external_account_kid")]
     pub external_account_hmac_key: Option<String>,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AccountImportCommand {
+    /// Display name of the new account
+    #[arg(short, long)]
+    pub account_name: Option<String>,
+    /// Unique identifier of the new account
+    #[arg(long = "id")]
+    pub account_id: Option<String>,
+    /// Identifier of the certificate authority where to create the account
+    #[arg(short, long = "ca")]
+    pub ca_identifier: Option<String>,
+    /// File path for the existing account key (PEM format)
+    #[arg(short, long)]
+    pub key_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Args, Default)]
@@ -589,9 +605,16 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
                 service.create_account(create).await
             }
         }
-        // AccountCommand::Import => {
-        //     todo!()
-        // }
+        AccountCommand::Import(import) => {
+            if interactive {
+                let mut service = InteractiveService::new(client);
+                // TODO: Honor create command
+                service.interactive_import_account(import).await
+            } else {
+                let mut service = NonInteractiveService::new(client);
+                service.import_account(import).await
+            }
+        }
         // AccountCommand::Modify => {
         //     todo!()
         // }

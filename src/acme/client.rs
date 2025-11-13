@@ -8,16 +8,16 @@ use crate::acme::object::{
     OrderStatus, RenewalInfo, Revocation, RevocationReason,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
+use crate::crypto::jws::{ExternalAccountBinding, JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
 use crate::util::serde_helper::PassthroughBytes;
-use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 use serde::de::value::BytesDeserializer;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
@@ -278,6 +278,7 @@ impl AcmeClient {
             contact: options.contact,
             terms_of_service_agreed: options.terms_of_service_agreed,
             external_account_binding: eab,
+            only_return_existing: None,
         };
         let response = self
             .post_with_retry(target_url, &jwk, Some(&payload))
@@ -300,6 +301,30 @@ impl AcmeClient {
             .post_with_retry(account_url, account_key, EMPTY_PAYLOAD)
             .await?;
         Ok(response.body)
+    }
+
+    /// Fetch the account resource belonging to both the `account_key`, when the `account_url` is not known
+    pub async fn fetch_unknown_account(
+        &self,
+        account_key: KeyPair,
+    ) -> ProtocolResult<(JsonWebKey, Url, Account)> {
+        let jwk = JsonWebKey::new(account_key);
+        let target_url = &self.get_directory().new_account;
+        let payload = AccountRequest {
+            contact: Vec::new(),
+            terms_of_service_agreed: None,
+            external_account_binding: None,
+            only_return_existing: Some(true),
+        };
+        let response = self
+            .post_with_retry(target_url, &jwk, Some(&payload))
+            .await?;
+        let account_url = response.location.ok_or(Error::ProtocolViolation(
+            "ACME server did not provide an account URL for created account",
+        ))?;
+        let created_account = response.body;
+        let account_key = jwk.into_existing(account_url.clone());
+        Ok((account_key, account_url, created_account))
     }
 
     pub async fn new_order(

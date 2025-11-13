@@ -1,5 +1,7 @@
 use crate::challenge_solver::CHALLENGE_SOLVER_REGISTRY;
-use crate::cli::{CertificateModifyCommand, CommandLineKeyType, IssueCommand, RevokeCommand};
+use crate::cli::{
+    AccountImportCommand, CertificateModifyCommand, CommandLineKeyType, IssueCommand, RevokeCommand,
+};
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
     CertificateConfiguration, ConfigBackend, InstallerConfiguration,
@@ -8,12 +10,12 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::renew::RenewService;
-use crate::time::{ParsedDuration, humanize_duration};
+use crate::time::{humanize_duration, ParsedDuration};
 use crate::{
-    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
-    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, choose_solver_name,
+    choose_solver_name, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, Certonaut,
+    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, CRATE_NAME,
 };
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -22,10 +24,11 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
+use std::fs::File;
 use std::sync::Mutex;
 use strum::VariantArray;
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{error, warn};
 use url::Url;
 
 #[allow(clippy::module_name_repetitions)]
@@ -111,6 +114,89 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
+    pub async fn interactive_import_account(
+        &mut self,
+        import: AccountImportCommand,
+    ) -> Result<(), Error> {
+        println!("Please select the CA for which the existing account is valid");
+        let ca_id = match import.ca_identifier {
+            Some(ca_id) => ca_id,
+            None => self.interactive_select_ca(true)?,
+        };
+        let account_key = match import.key_file {
+            Some(key_file) => {
+                let key_file = File::open(key_file).context("Failed to open key file")?;
+                crate::crypto::asymmetric::KeyPair::load_from_disk(key_file)?
+            }
+            None => loop {
+                let key_file = CustomType::<String>::new(
+                    "Enter the path to the private key (.pem format) of the account key:",
+                )
+                .with_validator(|path: &String| {
+                    Ok(match std::fs::exists(path) {
+                        Ok(true) => Validation::Valid,
+                        Ok(false) => Validation::Invalid(
+                            format!("Path {path} is not a valid path on-disk").into(),
+                        ),
+                        Err(e) => Validation::Invalid(
+                            format!("Failed to determine if {path} exists on-disk: {e:#}").into(),
+                        ),
+                    })
+                })
+                .with_help_message("Enter a filename (with path)")
+                .prompt()
+                .context("No filename entered")?;
+                match File::open(key_file).context("Failed to open key file") {
+                    Ok(key_file) => {
+                        match crate::crypto::asymmetric::KeyPair::load_from_disk(key_file) {
+                            Ok(account_key) => break account_key,
+                            Err(e) => {
+                                error!(
+                                    "Failed to parse account key file: {e:#}. File must be in PEM format. Please try again."
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to open account key file: {e:#}. Please try again.");
+                    }
+                };
+            },
+        };
+        let account_id = match import.account_id {
+            Some(account_id) => account_id,
+            None => loop {
+                let account_id = Text::new(
+                    "Please give this account an identifier (must be unique and a valid filename)",
+                )
+                .prompt()
+                .context("No account name given")?;
+                if self
+                    .client
+                    // .get_issuer_with_account("a", "b")
+                    .get_issuer_with_account(&ca_id, &account_id)
+                    .is_ok()
+                {
+                    warn!("{account_id} already exists for this CA, choose another name");
+                    continue;
+                }
+                break account_id;
+            },
+        };
+        let account_name = match &import.account_name {
+            Some(account_name) => account_name,
+            None => &account_id,
+        };
+        let account = self
+            .client
+            .import_account(&ca_id, &account_id, account_name, account_key)
+            .await?;
+        let url = account.config.url.to_string();
+        self.client.add_new_account(&ca_id, account)?;
+        println!("Successfully imported account {url}");
+        Ok(())
+    }
+
     pub async fn interactive_remove_ca(&mut self) -> Result<(), Error> {
         let ca_id = self.interactive_select_ca(false)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
@@ -152,11 +238,11 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         );
         Certonaut::<CB>::print_account(&account).await;
         let delete = Confirm::new(
-            "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
-        )
-            .with_default(false)
-            .prompt()
-            .context("No answer to deletion prompt")?;
+                "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
+            )
+                .with_default(false)
+                .prompt()
+                .context("No answer to deletion prompt")?;
         // TODO: Verify whether any certs reference this account ID
         if delete {
             // First, deactivate account at CA
@@ -1071,18 +1157,18 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             .context("No answer for ACME directory URL")?;
         let acme_url = Url::parse(&acme_url).context("Invalid URL")?;
         let public = Confirm::new("Is this a public CA?")
-            .with_default(false)
-            .with_help_message("Enter no for a private/enterprise CA, yes for others. This is used to control whether we run pre-issuance checks by default")
-            .prompt_skippable().context("No answer to public CA question")?
-            .unwrap_or(false);
+                .with_default(false)
+                .with_help_message("Enter no for a private/enterprise CA, yes for others. This is used to control whether we run pre-issuance checks by default")
+                .prompt_skippable().context("No answer to public CA question")?
+                .unwrap_or(false);
         let testing = Confirm::new("Is this a CA used for testing?")
-            .with_default(false)
-            .with_help_message(
-                "Enter no if this CA issues production-ready certs, yes if the certificates are meant for testing.",
-            )
-            .prompt_skippable()
-            .context("No answer to test CA question")?
-            .unwrap_or(false);
+                .with_default(false)
+                .with_help_message(
+                    "Enter no if this CA issues production-ready certs, yes if the certificates are meant for testing.",
+                )
+                .prompt_skippable()
+                .context("No answer to test CA question")?
+                .unwrap_or(false);
         let current_default = client.issuers.values().find(|ca| ca.config.default);
         let mut new_default_prompt =
             Confirm::new("Do you want to use this CA as your default?").with_default(false);
@@ -1152,36 +1238,36 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
         );
         let email_prompt = Text::new("Email(s):")
-            .with_help_message("Enter an email address, or press ESC to leave empty. Comma-separate multiple addresses")
-            .with_placeholder("email@example.com, another-address@example.org")
-            .with_validator(|input: &str| {
-                Ok(input
-                    .split(',')
-                    .map(|address| {
-                        // Lax email validation. The CA may apply stricter requirements.
-                        let address = address.trim();
-                        if address.is_empty() {
-                            // Empty addresses are valid, but skipped
-                            return Validation::Valid;
-                        }
-                        let parts = address.split('@').collect::<Vec<_>>();
-                        if parts.len() != 2 {
-                            return Validation::Invalid(
-                                (address.to_string() + " does not look like an email address").into(),
-                            );
-                        }
-                        if !parts[1].contains('.') {
-                            return Validation::Invalid(
-                                (address.to_string() + " does not look like an email address").into(),
-                            );
-                        }
-                        // There are still lots of possible invalid addresses here, but we don't know exactly
-                        // what the CA will accept anyway.
-                        Validation::Valid
-                    })
-                    .find(|validation| matches!(validation, Validation::Invalid(_)))
-                    .unwrap_or(Validation::Valid))
-            });
+                .with_help_message("Enter an email address, or press ESC to leave empty. Comma-separate multiple addresses")
+                .with_placeholder("email@example.com, another-address@example.org")
+                .with_validator(|input: &str| {
+                    Ok(input
+                        .split(',')
+                        .map(|address| {
+                            // Lax email validation. The CA may apply stricter requirements.
+                            let address = address.trim();
+                            if address.is_empty() {
+                                // Empty addresses are valid, but skipped
+                                return Validation::Valid;
+                            }
+                            let parts = address.split('@').collect::<Vec<_>>();
+                            if parts.len() != 2 {
+                                return Validation::Invalid(
+                                    (address.to_string() + " does not look like an email address").into(),
+                                );
+                            }
+                            if !parts[1].contains('.') {
+                                return Validation::Invalid(
+                                    (address.to_string() + " does not look like an email address").into(),
+                                );
+                            }
+                            // There are still lots of possible invalid addresses here, but we don't know exactly
+                            // what the CA will accept anyway.
+                            Validation::Valid
+                        })
+                        .find(|validation| matches!(validation, Validation::Invalid(_)))
+                        .unwrap_or(Validation::Valid))
+                });
         let email_string = email_prompt
             .prompt_skippable()
             .context("No answer to email dialog")?
@@ -1256,16 +1342,16 @@ of email addresses below, or leave the field empty to not provide any contact ad
 You may need to create an account at the CA's website first.",
                 );
                 let has_eab = Confirm::new(&format!(
-                    "Do you have the {} and {} provided by the CA?",
-                    "EAB_KID".dark_green().on_black(),
-                    "EAB_HMAC_KEY".dark_green().on_black()
-                ))
-                    .with_help_message(
-                        "If not, please review the CA's website to find these. They are required to proceed.",
-                    )
-                    .with_default(false)
-                    .prompt()
-                    .context("No answer to EAB check-question")?;
+                        "Do you have the {} and {} provided by the CA?",
+                        "EAB_KID".dark_green().on_black(),
+                        "EAB_HMAC_KEY".dark_green().on_black()
+                    ))
+                        .with_help_message(
+                            "If not, please review the CA's website to find these. They are required to proceed.",
+                        )
+                        .with_default(false)
+                        .prompt()
+                        .context("No answer to EAB check-question")?;
                 if has_eab {
                     let kid = Text::new("Enter the EAB Key ID (EAB_KID):")
                         .with_help_message("This value is a text string provided to you by the CA")

@@ -131,6 +131,8 @@ pub struct AccountRequest {
     pub terms_of_service_agreed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_account_binding: Option<FlatJsonWebSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub only_return_existing: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -725,18 +727,21 @@ mod tests {
             contact: vec!(Url::parse("mailto:admin@example.org").unwrap()),
             terms_of_service_agreed: Some(true),
             external_account_binding: None,
+            only_return_existing: None,
         }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true}"#)]
     #[case(
         AccountRequest{
             contact: vec!(Url::parse("mailto:admin@example.org").unwrap()),
             terms_of_service_agreed: Some(true),
             external_account_binding: Some(FlatJsonWebSignature::new_test_values("header", "payload", "signature")),
+            only_return_existing: None,
             }, r#"{"contact":["mailto:admin@example.org"],"termsOfServiceAgreed":true,"externalAccountBinding":{"protected":"header","payload":"payload","signature":"signature"}}"#
     )]
     #[case(AccountRequest{
             contact: vec!(),
             terms_of_service_agreed: None,
             external_account_binding: None,
+            only_return_existing: None,
         }, r#"{"contact":[]}"#)]
     fn test_serialize_account_request(
         #[case] account_request: AccountRequest,
