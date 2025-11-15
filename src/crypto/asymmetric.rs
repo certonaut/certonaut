@@ -1,11 +1,11 @@
-use crate::crypto::SignatureError;
 use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
-use anyhow::{Context, anyhow, bail};
+use crate::crypto::SignatureError;
+use anyhow::{anyhow, bail, Context};
 use aws_lc_rs::encoding::AsBigEndian;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING};
 use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa, signature};
-use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
+use base64::Engine;
 use pem::Pem;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -109,16 +109,16 @@ impl KeyPair {
         let pkcs8_der = rcgen_keypair.serialized_der();
         Ok(match rcgen_keypair.algorithm() {
             alg if alg == &rcgen::PKCS_ECDSA_P256_SHA256 => {
-                KeyPair::Ecdsa(EcdsaKeyPair::from_pkcs8(Curve::P256, pkcs8_der)?)
+                KeyPair::Ecdsa(EcdsaKeyPair::from_der(Curve::P256, pkcs8_der)?)
             }
             alg if alg == &rcgen::PKCS_ECDSA_P384_SHA384 => {
-                KeyPair::Ecdsa(EcdsaKeyPair::from_pkcs8(Curve::P384, pkcs8_der)?)
+                KeyPair::Ecdsa(EcdsaKeyPair::from_der(Curve::P384, pkcs8_der)?)
             }
             alg if alg == &rcgen::PKCS_RSA_SHA256
                 || alg == &rcgen::PKCS_RSA_SHA384
                 || alg == &rcgen::PKCS_RSA_SHA512 =>
             {
-                KeyPair::Rsa(RsaKeyPair::from_pkcs8(pkcs8_der)?)
+                KeyPair::Rsa(RsaKeyPair::from_der(pkcs8_der)?)
             }
             _ => bail!("unsupported algorithm in PEM"),
         })
@@ -244,9 +244,10 @@ impl AsymmetricKeyOperation for EcdsaKeyPair {
 }
 
 impl EcdsaKeyPair {
-    fn from_pkcs8(curve: Curve, der: &[u8]) -> anyhow::Result<Self> {
+    fn from_der(curve: Curve, der: &[u8]) -> anyhow::Result<Self> {
         let algorithm = curve.get_jws_signing_algorithm();
         let keypair = signature::EcdsaKeyPair::from_pkcs8(algorithm, der)
+            .or_else(|_| signature::EcdsaKeyPair::from_private_key_der(algorithm, der))
             .map_err(|_| anyhow!("ECDSA private key file is corrupted or invalid"))?;
         Ok(Self::new(curve, keypair))
     }
@@ -288,8 +289,9 @@ impl AsymmetricKeyOperation for RsaKeyPair {
 }
 
 impl RsaKeyPair {
-    pub fn from_pkcs8(der: &[u8]) -> anyhow::Result<Self> {
+    pub fn from_der(der: &[u8]) -> anyhow::Result<Self> {
         let keypair = signature::RsaKeyPair::from_pkcs8(der)
+            .or_else(|_| signature::RsaKeyPair::from_der(der))
             .map_err(|_| anyhow!("RSA private key file is corrupted or invalid"))?;
         Ok(Self::new(keypair))
     }
@@ -330,7 +332,7 @@ pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType, new_key};
+    use crate::crypto::asymmetric::{new_key, AsymmetricKeyOperation, Curve, KeyPair, KeyType};
     use crate::crypto::jws::{JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
     use aws_lc_rs::rsa::KeySize;
     use rstest::*;
