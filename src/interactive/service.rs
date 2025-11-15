@@ -10,12 +10,12 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::renew::RenewService;
-use crate::time::{humanize_duration, ParsedDuration};
+use crate::time::{ParsedDuration, humanize_duration};
 use crate::{
-    choose_solver_name, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, Certonaut,
-    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, CRATE_NAME,
+    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
+    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, choose_solver_name,
 };
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;

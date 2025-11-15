@@ -1,3 +1,4 @@
+use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, AccountImportCommand, CertificateModifyCommand,
     IssueCommand, IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
@@ -8,9 +9,8 @@ use crate::config::{
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
-use crate::CRATE_NAME;
 use crate::{Certonaut, NewAccountOptions};
-use anyhow::{bail, Context, Error};
+use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;

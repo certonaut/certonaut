@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
 use crate::challenge_solver::ChallengeSolver;
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    config_directory, AccountConfiguration,
-    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
-    MainConfiguration, SolverConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration,
+    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
+    ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
+    SolverConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{KeyPair, KeyType};
@@ -19,10 +19,10 @@ use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
-use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
+use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};

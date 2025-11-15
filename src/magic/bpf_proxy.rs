@@ -70,7 +70,12 @@ where
     let mut open_skeleton = skeleton_builder
         .open(&mut open_object)
         .context("Initializing BPF program")?;
-    open_skeleton.maps.rodata_data.as_mut().context("Initializing BPF program - no RODATA")?.CHALLENGE_PORT = u32::from(challenge_port);
+    open_skeleton
+        .maps
+        .rodata_data
+        .as_mut()
+        .context("Initializing BPF program - no RODATA")?
+        .CHALLENGE_PORT = u32::from(challenge_port);
 
     let skeleton = open_skeleton.load().context("Loading BPF program")?;
     for (idx, socket) in sockets.enumerate() {

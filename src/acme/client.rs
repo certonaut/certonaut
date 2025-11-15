@@ -8,16 +8,16 @@ use crate::acme::object::{
     OrderStatus, RenewalInfo, Revocation, RevocationReason,
 };
 use crate::crypto::asymmetric::KeyPair;
-use crate::crypto::jws::{ExternalAccountBinding, JsonWebKey, ProtectedHeader, EMPTY_PAYLOAD};
+use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
 use crate::util::serde_helper::PassthroughBytes;
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use parking_lot::Mutex;
 use rcgen::CertificateSigningRequest;
 use reqwest::StatusCode;
-use serde::de::value::BytesDeserializer;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::de::value::BytesDeserializer;
 use std::any::TypeId;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};

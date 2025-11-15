@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{create_and_sign_csr, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, create_and_sign_csr};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
@@ -14,8 +14,8 @@ use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier, RevocationReason};
-use anyhow::{anyhow, bail, Context, Error};
+use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -640,7 +640,7 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
+    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;

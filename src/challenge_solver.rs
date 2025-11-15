@@ -496,9 +496,7 @@ impl SolverConfigBuilder for WebrootBuilder {
         println!(
             "The solver will place a static file in this directory to solve the CA's challenge."
         );
-        println!(
-            "Please provide the top-level directory from where your domain is served."
-        );
+        println!("Please provide the top-level directory from where your domain is served.");
         let webroot = CustomType::<String>::new(
             "Enter the directory path to your webserver's root directory:",
         )
