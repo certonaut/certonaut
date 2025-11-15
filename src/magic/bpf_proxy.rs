@@ -362,15 +362,15 @@ fn get_kernel_version() -> anyhow::Result<(usize, usize, usize)> {
     let major = parts
         .next()
         .and_then(|major| major.parse::<usize>().ok())
-        .ok_or(anyhow!("Failed to parse kernel version"))?;
+        .ok_or(anyhow!("Failed to parse kernel version {kernel_version}"))?;
     let minor = parts
         .next()
         .and_then(|minor| minor.parse::<usize>().ok())
-        .ok_or(anyhow!("Failed to parse kernel version"))?;
+        .ok_or(anyhow!("Failed to parse kernel version {kernel_version}"))?;
     let patch = parts
         .next()
         .and_then(|patch| patch.parse::<usize>().ok())
-        .ok_or(anyhow!("Failed to parse kernel version"))?;
+        .ok_or(anyhow!("Failed to parse kernel version {kernel_version}"))?;
     Ok((major, minor, patch))
 }
 
