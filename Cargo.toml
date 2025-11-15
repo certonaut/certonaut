@@ -27,7 +27,7 @@ rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_
 # TODO: In order to avoid reqwest depending on ring, we (currently) need to build the TLS client ourselves,
 # which may involve bringing in rustls directly.
 reqwest = { version = "0.12.12", default-features = false, features = ["json", "charset", "http2", "rustls-tls"] }
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.134"
 time = { version = "0.3.41", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1.45.0", features = ["full"] }
