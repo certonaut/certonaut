@@ -4,6 +4,7 @@
 
 pub use self::imp::*;
 
+#[allow(renamed_and_removed_lints)]
 #[allow(dead_code)]
 #[allow(non_snake_case)]
 #[allow(non_camel_case_types)]
@@ -12,7 +13,7 @@ pub use self::imp::*;
 #[allow(clippy::zero_repeat_side_effects)]
 #[warn(single_use_lifetimes)]
 mod imp {
-    #[allow(unused_imports)]
+    #[allow(unused_imports, clippy::wildcard_imports)]
     use super::*;
     use libbpf_rs::libbpf_sys;
     use libbpf_rs::skel::OpenSkel;
@@ -33,7 +34,7 @@ mod imp {
     pub struct OpenPortMapperMaps<'obj> {
         pub solver_socket: libbpf_rs::OpenMapMut<'obj>,
         pub rodata: libbpf_rs::OpenMapMut<'obj>,
-        pub rodata_data: &'obj mut types::rodata,
+        pub rodata_data: Option<&'obj mut types::rodata>,
         _phantom: std::marker::PhantomData<&'obj ()>,
     }
 
@@ -75,7 +76,6 @@ mod imp {
                         .expect("BPF map `rodata` does not have mmap pointer")
                         .cast::<types::rodata>()
                         .as_mut()
-                        .expect("BPF map `rodata` mmap pointer is NULL")
                 },
                 _phantom: std::marker::PhantomData,
             };
@@ -85,7 +85,7 @@ mod imp {
     pub struct PortMapperMaps<'obj> {
         pub solver_socket: libbpf_rs::MapMut<'obj>,
         pub rodata: libbpf_rs::MapMut<'obj>,
-        pub rodata_data: &'obj types::rodata,
+        pub rodata_data: Option<&'obj types::rodata>,
         _phantom: std::marker::PhantomData<&'obj ()>,
     }
 
@@ -125,7 +125,6 @@ mod imp {
                         .expect("BPF map `rodata` does not have mmap pointer")
                         .cast::<types::rodata>()
                         .as_ref()
-                        .expect("BPF map `rodata` mmap pointer is NULL")
                 },
                 _phantom: std::marker::PhantomData,
             };
@@ -325,7 +324,7 @@ mod imp {
         #[derive(Debug, Default, Copy, Clone)]
         #[repr(C)]
         pub struct bpf_sk_lookup {
-            pub __anon_2: __anon_2,
+            pub __anon_bpf_sk_lookup_1: __anon_bpf_sk_lookup_1,
             pub family: u32,
             pub protocol: u32,
             pub remote_ip4: u32,
@@ -339,33 +338,33 @@ mod imp {
         }
         #[derive(Copy, Clone)]
         #[repr(C)]
-        pub union __anon_2 {
-            pub __anon_3: __anon_3,
+        pub union __anon_bpf_sk_lookup_1 {
+            pub __anon_bpf_sk_lookup_2: __anon_bpf_sk_lookup_2,
             pub cookie: u64,
         }
-        impl std::fmt::Debug for __anon_2 {
+        impl std::fmt::Debug for __anon_bpf_sk_lookup_1 {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "(???)")
             }
         }
-        impl Default for __anon_2 {
+        impl Default for __anon_bpf_sk_lookup_1 {
             fn default() -> Self {
                 Self {
-                    __anon_3: __anon_3::default(),
+                    __anon_bpf_sk_lookup_2: __anon_bpf_sk_lookup_2::default(),
                 }
             }
         }
         #[derive(Copy, Clone)]
         #[repr(C)]
-        pub union __anon_3 {
+        pub union __anon_bpf_sk_lookup_2 {
             pub sk: *mut std::ffi::c_void,
         }
-        impl std::fmt::Debug for __anon_3 {
+        impl std::fmt::Debug for __anon_bpf_sk_lookup_2 {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "(???)")
             }
         }
-        impl Default for __anon_3 {
+        impl Default for __anon_bpf_sk_lookup_2 {
             fn default() -> Self {
                 Self {
                     sk: std::ptr::null_mut(),
