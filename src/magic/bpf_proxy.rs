@@ -1,9 +1,9 @@
-use crate::CRATE_NAME;
 use crate::challenge_solver::HttpChallengeParameters;
-use anyhow::{Context, anyhow};
+use crate::CRATE_NAME;
+use anyhow::{anyhow, Context};
 use caps::{CapSet, Capability};
 use futures::stream::FuturesUnordered;
-use futures::{StreamExt, future};
+use futures::{future, StreamExt};
 use http::HeaderName;
 use http_body_util::{Either, Full};
 use hyper::body::Bytes;
@@ -358,6 +358,10 @@ fn handle_connection(
 fn get_kernel_version() -> anyhow::Result<(usize, usize, usize)> {
     let kernel_version =
         std::fs::read_to_string("/proc/sys/kernel/osrelease").context("Reading os-release")?;
+    parse_kernel_version(&kernel_version)
+}
+
+fn parse_kernel_version(kernel_version: &str) -> anyhow::Result<(usize, usize, usize)> {
     let mut parts = kernel_version.split('.');
     let major = parts
         .next()
@@ -369,7 +373,12 @@ fn get_kernel_version() -> anyhow::Result<(usize, usize, usize)> {
         .ok_or(anyhow!("Failed to parse kernel version {kernel_version}"))?;
     let patch = parts
         .next()
-        .and_then(|patch| patch.parse::<usize>().ok())
+        .and_then(|patch| {
+            let end = patch
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(patch.len());
+            patch[..end].parse::<usize>().ok()
+        })
         .ok_or(anyhow!("Failed to parse kernel version {kernel_version}"))?;
     Ok((major, minor, patch))
 }
@@ -412,4 +421,24 @@ pub fn is_supported() -> bool {
 #[cfg(test)]
 mod tests {
     // TODO unit tests? (proxy without BPF?)
+
+    use super::parse_kernel_version;
+    use rstest::rstest;
+
+    #[rstest]
+    #[test]
+    #[case("1.0.0", (1,0,0))]
+    #[case("6.12.47+rpt-rpi-v8", (6,12,47))]
+    #[case("6.12.48+deb13-amd64", (6,12,48))]
+    #[case("6.6.87.2-microsoft-standard-WSL2", (6,6,87))]
+    #[case("5.1.2;my kernel build", (5,1,2))]
+    fn test_parse_kernel_version(
+        #[case] kernel_version: &str,
+        #[case] expected: (usize, usize, usize),
+    ) {
+        let actual = parse_kernel_version(kernel_version)
+            .expect("Parsing kernel version failed when it should not fail");
+
+        assert_eq!(actual, expected);
+    }
 }
