@@ -10,12 +10,12 @@ use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::renew::RenewService;
-use crate::time::{ParsedDuration, humanize_duration};
+use crate::time::{humanize_duration, ParsedDuration};
 use crate::{
-    AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
-    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, choose_solver_name,
+    choose_solver_name, AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, Certonaut,
+    DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, CRATE_NAME,
 };
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use crossterm::style::Stylize;
 use futures::FutureExt;
 use inquire::validator::Validation;
@@ -78,6 +78,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
                     .lifetime
                     .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
+                alternate_chain: issue_cmd.advanced.preferred_chain,
             },
             installer: issue_cmd
                 .install_script
@@ -644,6 +645,24 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
                         let issuer = lock.client.get_issuer_with_account(&ca, &account)?;
                         config.profile =
                             Self::user_ask_cert_profile(&issuer, config.profile).await?;
+                        Ok(config)
+                    }
+                    .boxed()
+                },
+            ),
+            ClosureEditor::new(
+                "Preferred Chain",
+                |config: &AdvancedCertificateConfiguration| {
+                    config
+                        .alternate_chain
+                        .as_deref()
+                        .unwrap_or("Not specified")
+                        .into()
+                },
+                |mut config| {
+                    async {
+                        config.alternate_chain =
+                            Self::user_ask_alternate_chain(config.alternate_chain)?;
                         Ok(config)
                     }
                     .boxed()
@@ -1429,6 +1448,30 @@ You may need to create an account at the CA's website first.",
         .prompt_skippable()
         .context("No answer to revocation reason prompt")?;
         Ok(reason)
+    }
+
+    fn user_ask_alternate_chain(current: Option<String>) -> Result<Option<String>, Error> {
+        println!("Some CAs offers several chains for a single end-entity certificate.");
+        println!("They usually differ in the amount of client compatibility they provide.");
+        println!(
+            "With this option you can specify an \"alternate chain\" to be used, instead of the default chain selected by the CA."
+        );
+        println!(
+            "To select an alternate chain, enter the name of the issuer you expect the last certificate to have."
+        );
+        let alternate_chain = Text::new("Name of issuer to use for alternate chain")
+            .with_initial_value(current.as_deref().unwrap_or_default())
+            .with_help_message("Enter the name of a certificate issuer, like \"ISRG Root X2\"")
+            .prompt_skippable()
+            .context("No answer to alternate chain prompt")?
+            .map_or(current, |alternate_chain| {
+                if alternate_chain.is_empty() {
+                    None
+                } else {
+                    Some(alternate_chain)
+                }
+            });
+        Ok(alternate_chain)
     }
 }
 

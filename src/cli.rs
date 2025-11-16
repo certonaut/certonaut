@@ -1,4 +1,4 @@
-use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
+use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
 use crate::config;
 use crate::config::ConfigBackend;
 use crate::crypto::asymmetric::{Curve, KeyType};
@@ -6,9 +6,9 @@ use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::time::parse_duration;
-use crate::{CRATE_NAME, Identifier};
 use crate::{Certonaut, RevocationReason};
-use anyhow::{Context, bail};
+use crate::{Identifier, CRATE_NAME};
+use anyhow::{bail, Context};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;
@@ -273,6 +273,9 @@ pub struct AdvancedIssueConfiguration {
     /// Whether to reuse the same private key on each renewal, or rotate the key on each renewal
     #[clap(short, long, global = true)]
     pub reuse_key: bool,
+    /// The name of the issuer of the last certificate, if the CA offers multiple chains
+    #[clap(long, global = true)]
+    pub preferred_chain: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum, VariantArray)]

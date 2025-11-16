@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
+use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
 use crate::challenge_solver::ChallengeSolver;
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    AccountConfiguration, CertificateAuthorityConfiguration,
-    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
-    ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
-    SolverConfiguration, config_directory,
+    config_directory, AccountConfiguration,
+    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
+    ConfigBackend, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
+    MainConfiguration, SolverConfiguration,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{KeyPair, KeyType};
@@ -19,10 +19,10 @@ use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
-use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
+use crate::state::Database;
 use crate::time::humanize_duration;
-use anyhow::{Context, Error, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Error};
 use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
@@ -337,6 +337,9 @@ async fn modify_certificate_config(
     if let Some(profile) = modify.advanced.profile {
         // TODO: Profile validation
         cert.advanced.profile = Some(profile);
+    }
+    if let Some(preferred_chain) = modify.advanced.preferred_chain {
+        cert.advanced.alternate_chain = Some(preferred_chain);
     }
     cert.advanced.reuse_key = modify.advanced.reuse_key;
     let domains_and_solvers =
@@ -740,7 +743,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .lifetime_seconds
             .map(|lifetime| Some(Duration::from_secs(lifetime)))
             .unwrap_or_default();
-        let cert = issuer
+        let mut cert = issuer
             .issue(
                 &cert_key,
                 lifetime,
@@ -750,7 +753,20 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             )
             .await
             .context(format!("Issuing certificate with CA {ca_name}"))?;
-        println!(
+        if let Some(alternate_chain) = cert_config.advanced.alternate_chain.as_ref() {
+            match issuer
+                .download_alternate_chain(alternate_chain, &cert)
+                .await
+            {
+                Ok(alternate) => {
+                    cert = alternate;
+                }
+                Err(e) => {
+                    warn!("Downloading alternate chain failed, using default chain instead: {e:#}")
+                }
+            }
+        }
+        info!(
             "Successfully issued certificate {} with CA {ca_name}",
             cert_config.display_name
         );
@@ -775,6 +791,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 "Installing certificate {}",
                 cert_config.display_name
             ))?;
+        info!(
+            "Successfully installed certificate {}",
+            cert_config.display_name
+        );
         Ok(())
     }
 
@@ -803,7 +823,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 .map(|lifetime| Some(Duration::from_secs(lifetime)))
                 .unwrap_or_default();
             let renewal_identifier = old_cert.acme_renewal_identifier.clone();
-            let issue_result = issuer
+            let mut issue_result = issuer
                 .issue(
                     &cert_key,
                     lifetime,
@@ -812,13 +832,30 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                     cert_config.advanced.profile.clone(),
                 )
                 .await;
-            if let Ok(new_cert) = &issue_result {
+            if let Ok(new_cert) = &mut issue_result {
+                if let Some(alternate_chain) = cert_config.advanced.alternate_chain.as_ref() {
+                    match issuer
+                        .download_alternate_chain(alternate_chain, &new_cert)
+                        .await
+                    {
+                        Ok(alternate) => {
+                            *new_cert = alternate;
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Downloading alternate chain failed, using default chain instead: {e:#}"
+                            )
+                        }
+                    }
+                }
+
                 self.config.save_certificate_and_config(
                     cert_id,
                     cert_config,
                     &cert_key,
                     new_cert,
                 )?;
+
                 match load_certificates_from_memory(&new_cert.pem, Some(1)) {
                     Ok(parsed_certs) => {
                         if let Some(parsed_cert) = parsed_certs.first() {

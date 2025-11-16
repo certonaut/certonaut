@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{ParsedX509Certificate, create_and_sign_csr};
+use crate::cert::{create_and_sign_csr, load_certificates_from_memory, ParsedX509Certificate};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
@@ -14,8 +14,8 @@ use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
-use anyhow::{Context, Error, anyhow, bail};
+use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier, RevocationReason};
+use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -243,29 +243,6 @@ pub struct AcmeIssuerWithAccount<'a> {
 }
 
 impl AcmeIssuerWithAccount<'_> {
-    async fn get_cert_from_finalized_order(
-        &self,
-        order: Order,
-    ) -> IssueResult<DownloadedCertificate> {
-        debug_assert_eq!(
-            order.status,
-            OrderStatus::Valid,
-            "BUG: Certificate cannot be downloaded from non-valid order"
-        );
-        let certificate_url = order.certificate.ok_or(anyhow!(
-            "CA did not provide a certificate URL for final order"
-        ))?;
-        debug!("Final certificate available @ {certificate_url}");
-        let cert = self
-            .client()
-            .await?
-            .download_certificate(&self.account.jwk, &certificate_url)
-            .await
-            .context("Downloading certificate")?;
-        info!("Successfully issued a certificate!");
-        Ok(cert)
-    }
-
     pub async fn issue(
         &self,
         cert_key: &KeyPair,
@@ -550,6 +527,29 @@ impl AcmeIssuerWithAccount<'_> {
         Ok(validated_challenge)
     }
 
+    async fn get_cert_from_finalized_order(
+        &self,
+        order: Order,
+    ) -> IssueResult<DownloadedCertificate> {
+        debug_assert_eq!(
+            order.status,
+            OrderStatus::Valid,
+            "BUG: Certificate cannot be downloaded from non-valid order"
+        );
+        let certificate_url = order.certificate.ok_or(anyhow!(
+            "CA did not provide a certificate URL for final order"
+        ))?;
+        debug!("Final certificate available @ {certificate_url}");
+        let cert = self
+            .client()
+            .await?
+            .download_certificate(&self.account.jwk, &certificate_url)
+            .await
+            .context("Downloading certificate")?;
+        info!("Successfully issued a certificate!");
+        Ok(cert)
+    }
+
     /// Translate a given identifier to its dns-01 challenge FQDN. For example, the domain `example.com` would
     /// have a challenge FQDN of `_acme-challenge.example.com`. This function also resolves any CNAMEs present at
     /// the original identifier: For instance, if `_acme-challenge.example.com` points to `challenge-target.example.org`
@@ -617,6 +617,29 @@ impl AcmeIssuerWithAccount<'_> {
             .await?;
         Ok(())
     }
+
+    pub async fn download_alternate_chain(
+        &self,
+        wanted_issuer: &str,
+        original_cert: &DownloadedCertificate,
+    ) -> anyhow::Result<DownloadedCertificate> {
+        let client = self.client().await?;
+        for alternate_url in &original_cert.alternate_chains {
+            let alternate_chain = client
+                .download_certificate(&self.account.jwk, alternate_url)
+                .await?;
+            // TODO: Protect against unrealistically long chains?
+            let parsed_certs = load_certificates_from_memory(&alternate_chain.pem, None)
+                .context("Parsing alternate chain failed")?;
+            if let Some(last_cert) = parsed_certs.last() {
+                // TODO: This is case-sensitive, consider switching to case-insensitive
+                if last_cert.issuer.contains(wanted_issuer) {
+                    return Ok(alternate_chain);
+                }
+            }
+        }
+        bail!("No alternate chain found with issuer {wanted_issuer}")
+    }
 }
 
 impl Deref for AcmeIssuerWithAccount<'_> {
@@ -640,7 +663,7 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
+    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;

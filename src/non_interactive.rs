@@ -245,6 +245,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                     .lifetime
                     .map(|lifetime| lifetime.as_secs()),
                 profile: issue_cmd.advanced.profile,
+                alternate_chain: issue_cmd.advanced.preferred_chain,
             },
             installer: issue_cmd
                 .install_script
