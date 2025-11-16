@@ -1,6 +1,6 @@
 ## certonaut
 
-[![CI](https://github.com/GermanCoding/certonaut/actions/workflows/rust.yml/badge.svg)](https://github.com/GermanCoding/certonaut/actions/workflows/rust.yml) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![CI](https://github.com/GermanCoding/certonaut/actions/workflows/rust.yml/badge.svg)](https://github.com/GermanCoding/certonaut/actions/workflows/rust.yml) [![Nightly Builds](https://img.shields.io/badge/nightly-latest-blueviolet)](https://nightly.link/certonaut/certonaut/workflows/rust/main) [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 A Rust‑native ACME (RFC 8555) client and library for fully automated issuance, renewal, and management of X.509 certificates.
 Supports HTTP-01 and DNS-01 challenges, in a fully guided interactive mode. Features a (Linux-only) eBPF “magic” solver to solve HTTP-01 challenges automatically.
