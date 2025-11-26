@@ -647,7 +647,7 @@ pub struct AccountRegisterOptions {
     pub external_account_binding: Option<ExternalAccountBinding>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadedCertificate {
     pub pem: PassthroughBytes,
     pub alternate_chains: Vec<Url>,

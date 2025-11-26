@@ -6,6 +6,7 @@ pub(crate) mod serde_helper {
     use serde::de::{Error, Visitor};
     use serde::{Deserialize, Deserializer};
     use std::ops::Deref;
+    use tokio_util::bytes::Bytes;
 
     pub(crate) mod optional_offset_date_time {
         use serde::{self, Deserializer, Serializer};
@@ -37,14 +38,14 @@ pub(crate) mod serde_helper {
 
     /// `PassthroughBytes` is a serde-deserializable type that simply takes in a byte array as input
     /// and deserializes it unchanged.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct PassthroughBytes {
-        inner: Vec<u8>,
+        inner: Bytes,
     }
 
     impl PassthroughBytes {
         #[cfg(test)]
-        pub(crate) fn new(data: Vec<u8>) -> Self {
+        pub(crate) fn new(data: Bytes) -> Self {
             Self { inner: data }
         }
     }
@@ -58,7 +59,7 @@ pub(crate) mod serde_helper {
     pub(crate) struct PassthroughBytesVisitor;
 
     impl Visitor<'_> for PassthroughBytesVisitor {
-        type Value = Vec<u8>;
+        type Value = Bytes;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
             formatter.write_str("a byte array")
@@ -68,21 +69,21 @@ pub(crate) mod serde_helper {
         where
             E: Error,
         {
-            Ok(v.to_vec())
+            Ok(Bytes::copy_from_slice(v))
         }
 
         fn visit_borrowed_bytes<E>(self, v: &'_ [u8]) -> Result<Self::Value, E>
         where
             E: Error,
         {
-            Ok(v.to_vec())
+            Ok(Bytes::copy_from_slice(v))
         }
 
         fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
         where
             E: Error,
         {
-            Ok(v)
+            Ok(Bytes::from(v))
         }
     }
 
@@ -91,13 +92,13 @@ pub(crate) mod serde_helper {
         where
             D: Deserializer<'de>,
         {
-            let bytes: Vec<u8> = deserializer.deserialize_byte_buf(PassthroughBytesVisitor)?;
+            let bytes: Bytes = deserializer.deserialize_byte_buf(PassthroughBytesVisitor)?;
             Ok(Self { inner: bytes })
         }
     }
 
     impl Deref for PassthroughBytes {
-        type Target = Vec<u8>;
+        type Target = Bytes;
 
         fn deref(&self) -> &Self::Target {
             &self.inner

@@ -623,6 +623,15 @@ impl AcmeIssuerWithAccount<'_> {
         wanted_issuer: &str,
         original_cert: &DownloadedCertificate,
     ) -> anyhow::Result<DownloadedCertificate> {
+        // Check the original chain first
+        let parsed_certs = load_certificates_from_memory(&original_cert.pem, None)
+            .context("Parsing original chain failed")?;
+        if let Some(last_cert) = parsed_certs.last() {
+            if last_cert.issuer.contains(wanted_issuer) {
+                return Ok(original_cert.to_owned());
+            }
+        }
+
         let client = self.client().await?;
         for alternate_url in &original_cert.alternate_chains {
             let alternate_chain = client
@@ -669,6 +678,7 @@ mod tests {
     use std::str::FromStr;
     use std::sync::LazyLock;
     use std::time::SystemTime;
+    use tokio_util::bytes::Bytes;
     use x509_parser::num_bigint::BigUint;
 
     fn test_url() -> Url {
@@ -771,7 +781,7 @@ mod tests {
             Some(test_url().join("get-cert")?),
         ));
         let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
         let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
@@ -857,7 +867,7 @@ mod tests {
             Some(fake_cert_url.clone()),
         ));
         let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
         let mut mock_client = AcmeClient::faux();
@@ -914,7 +924,7 @@ mod tests {
             Some(test_url().join("get-cert")?),
         ));
         let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
         let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
@@ -969,7 +979,7 @@ mod tests {
             Some(test_url().join("get-cert")?),
         ));
         let certificate = Ok(DownloadedCertificate {
-            pem: PassthroughBytes::new("Hello, world!".as_bytes().to_vec()),
+            pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
         let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
@@ -1159,6 +1169,28 @@ mod tests {
             .validate_profile(Some(&"this-does-not-exist".into()))
             .await
             .expect_err("Profile should not exist, validation should fail");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_download_alternate_chain_with_default_as_alternate() -> anyhow::Result<()> {
+        let testcert = include_bytes!("../testdata/certs/testcert.pem");
+        let downloaded_cert = DownloadedCertificate {
+            pem: PassthroughBytes::new(Bytes::from(testcert.as_slice())),
+            alternate_chains: vec![],
+        };
+        let mock_client = AcmeClient::faux();
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let alternate_cert = issuer_with_account
+            .download_alternate_chain("Pebble Root CA 699ab9", &downloaded_cert)
+            .await?;
+
+        assert_eq!(
+            downloaded_cert, alternate_cert,
+            "alternate chain should match default chain"
+        );
         Ok(())
     }
 }
