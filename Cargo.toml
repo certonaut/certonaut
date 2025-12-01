@@ -68,7 +68,7 @@ hickory-server = { version = "0.25.2", features = ["resolver"] }
 mockito = "1.7.0"
 rstest = "0.25.0"
 tempfile = "3.20.0"
-test-log = { version = "0.2.17", default-features = false, features = ["color", "trace"] }
+test-log = { version = "0.2.19", default-features = false, features = ["color", "trace"] }
 testcontainers = "0.25.0"
 
 [profile.release]
