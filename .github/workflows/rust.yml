@@ -55,6 +55,12 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Run cargo check
+      run: cargo check --locked --all-features --target ${{ matrix.target }}
+
+    - name: Run cargo fmt
+      run: cargo fmt --check
+
     - name: Build (release)
       run: cargo build --locked --all-features --target ${{ matrix.target }} --release
 
