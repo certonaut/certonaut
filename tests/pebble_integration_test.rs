@@ -193,13 +193,13 @@ async fn pebble_e2e_test_ip_addr() -> anyhow::Result<()> {
     let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
     let authorizers = vec![
         Authorizer::new_boxed(
-            Identifier::from_str("192.0.2.1")?,
+            Identifier::from_str("127.0.0.1")?,
             ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
                 base_url: containers.1.get_management_url(),
             }),
         ),
         Authorizer::new_boxed(
-            Identifier::from_str("2001:db8::3")?,
+            Identifier::from_str("::1")?,
             ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
                 base_url: containers.1.get_management_url(),
             }),
