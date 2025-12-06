@@ -79,8 +79,8 @@ impl HttpClient {
             .get_all(reqwest::header::LINK)
             .into_iter()
             .filter_map(|header| header.to_str().ok())
-            .filter_map(|header_str| nom_rfc8288::complete::link(header_str).ok())
-            .flat_map(std::iter::IntoIterator::into_iter)
+            .filter_map(|header_str| nom_rfc8288::complete::link_lenient(header_str).ok())
+            .flat_map(IntoIterator::into_iter)
             .flatten()
             .filter_map(|link| {
                 let url = parse_url(res.url(), link.url)?;
