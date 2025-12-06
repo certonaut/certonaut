@@ -13,7 +13,7 @@ magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", 
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.84"
-aws-lc-rs = { version = "1.13.1", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
+aws-lc-rs = { version = "1.15.1", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.22.1"
 clap = { version = "4.5.23", features = ["derive", "env"] }
 crossterm = "0.28.1"
