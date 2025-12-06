@@ -55,14 +55,11 @@ jobs:
           target/
         key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Run cargo check
-      run: cargo check --locked --all-features --target ${{ matrix.target }}
-
     - name: Run cargo fmt
       run: cargo fmt --check
 
-    - name: Build (release)
-      run: cargo build --locked --all-features --target ${{ matrix.target }} --release
+    - name: Run cargo check
+      run: cargo check --locked --all-features --target ${{ matrix.target }}
 
     - name: Run tests
       # Limit the tests to Linux x64 for now, they're a bit broken on other platforms
@@ -72,6 +69,9 @@ jobs:
     - name: Run Integration Tests
       if: matrix.target == 'x86_64-unknown-linux-gnu'
       run: sudo -E env "PATH=$PATH" cargo test --locked --all-features -- --ignored
+
+    - name: Build (release)
+      run: cargo build --locked --all-features --target ${{ matrix.target }} --release
 
     - name: Upload built binary
       uses: actions/upload-artifact@v5
