@@ -115,13 +115,16 @@ impl Identifier {
 }
 
 impl FromStr for Identifier {
-    type Err = dns::name::ParseError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(ip) = s.parse::<IpAddr>() {
             Ok(Identifier::Ip(ip))
         } else {
-            Ok(Identifier::Dns(s.try_into()?))
+            Ok(Identifier::Dns(
+                s.try_into()
+                    .context(format!("Failed to parse {s} as DNS name"))?,
+            ))
         }
     }
 }

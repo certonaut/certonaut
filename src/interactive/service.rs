@@ -18,13 +18,14 @@ use crate::{
 use anyhow::{Context, Error, anyhow, bail};
 use crossterm::style::Stylize;
 use futures::FutureExt;
-use inquire::validator::Validation;
+use inquire::validator::{ErrorMessage, Validation};
 use inquire::{Confirm, CustomType, Select, Text};
 use itertools::Itertools;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fs::File;
+use std::str::FromStr;
 use std::sync::Mutex;
 use strum::VariantArray;
 use tokio::sync::RwLock;
@@ -239,11 +240,11 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         );
         Certonaut::<CB>::print_account(&account).await;
         let delete = Confirm::new(
-                "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
-            )
-                .with_default(false)
-                .prompt()
-                .context("No answer to deletion prompt")?;
+            "Are you sure you want to deactivate this account at the CA and remove it from configuration?",
+        )
+            .with_default(false)
+            .prompt()
+            .context("No answer to deletion prompt")?;
         // TODO: Verify whether any certs reference this account ID
         if delete {
             // First, deactivate account at CA
@@ -994,16 +995,23 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
                         format!("Domain {input} contains empty component").into(),
                     ));
                 }
-                if input
+                let maybe_err: Option<ErrorMessage> = input
                     .split_whitespace()
                     .flat_map(|s| s.split(','))
-                    .any(|input| input.starts_with('.') || input.ends_with('.'))
-                {
-                    return Ok(Validation::Invalid(
-                        format!("Domain {input} cannot start or end with a dot").into(),
-                    ));
+                    .find_map(|input| {
+                        if input.starts_with('.') || input.ends_with('.') {
+                            Some(format!("Domain {input} cannot start or end with a dot").into())
+                        } else if let Err(e) = Identifier::from_str(input) {
+                            Some(format!("Domain {input} is invalid: {e:#}").into())
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(err) = maybe_err {
+                    Ok(Validation::Invalid(err))
+                } else {
+                    Ok(Validation::Valid)
                 }
-                Ok(Validation::Valid)
             })
             .prompt_skippable()
             .context("No answer to domain prompt")?
@@ -1013,9 +1021,9 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             .flat_map(|s| s.split(','))
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(|s| s.parse::<Identifier>().unwrap(/* Infallible */))
-            .sorted()
-            .collect::<HashSet<_>>();
+            .map(str::parse::<Identifier>)
+            .collect::<Result<HashSet<_>, _>>()
+            .context("Invalid domain name")?;
         if domains.is_empty() {
             bail!("Domain list cannot be empty");
         }
@@ -1174,18 +1182,18 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             .context("No answer for ACME directory URL")?;
         let acme_url = Url::parse(&acme_url).context("Invalid URL")?;
         let public = Confirm::new("Is this a public CA?")
-                .with_default(false)
-                .with_help_message("Enter no for a private/enterprise CA, yes for others. This is used to control whether we run pre-issuance checks by default")
-                .prompt_skippable().context("No answer to public CA question")?
-                .unwrap_or(false);
+            .with_default(false)
+            .with_help_message("Enter no for a private/enterprise CA, yes for others. This is used to control whether we run pre-issuance checks by default")
+            .prompt_skippable().context("No answer to public CA question")?
+            .unwrap_or(false);
         let testing = Confirm::new("Is this a CA used for testing?")
-                .with_default(false)
-                .with_help_message(
-                    "Enter no if this CA issues production-ready certs, yes if the certificates are meant for testing.",
-                )
-                .prompt_skippable()
-                .context("No answer to test CA question")?
-                .unwrap_or(false);
+            .with_default(false)
+            .with_help_message(
+                "Enter no if this CA issues production-ready certs, yes if the certificates are meant for testing.",
+            )
+            .prompt_skippable()
+            .context("No answer to test CA question")?
+            .unwrap_or(false);
         let current_default = client.issuers.values().find(|ca| ca.config.default);
         let mut new_default_prompt =
             Confirm::new("Do you want to use this CA as your default?").with_default(false);
@@ -1255,36 +1263,36 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
         );
         let email_prompt = Text::new("Email(s):")
-                .with_help_message("Enter an email address, or press ESC to leave empty. Comma-separate multiple addresses")
-                .with_placeholder("email@example.com, another-address@example.org")
-                .with_validator(|input: &str| {
-                    Ok(input
-                        .split(',')
-                        .map(|address| {
-                            // Lax email validation. The CA may apply stricter requirements.
-                            let address = address.trim();
-                            if address.is_empty() {
-                                // Empty addresses are valid, but skipped
-                                return Validation::Valid;
-                            }
-                            let parts = address.split('@').collect::<Vec<_>>();
-                            if parts.len() != 2 {
-                                return Validation::Invalid(
-                                    (address.to_string() + " does not look like an email address").into(),
-                                );
-                            }
-                            if !parts[1].contains('.') {
-                                return Validation::Invalid(
-                                    (address.to_string() + " does not look like an email address").into(),
-                                );
-                            }
-                            // There are still lots of possible invalid addresses here, but we don't know exactly
-                            // what the CA will accept anyway.
-                            Validation::Valid
-                        })
-                        .find(|validation| matches!(validation, Validation::Invalid(_)))
-                        .unwrap_or(Validation::Valid))
-                });
+            .with_help_message("Enter an email address, or press ESC to leave empty. Comma-separate multiple addresses")
+            .with_placeholder("email@example.com, another-address@example.org")
+            .with_validator(|input: &str| {
+                Ok(input
+                    .split(',')
+                    .map(|address| {
+                        // Lax email validation. The CA may apply stricter requirements.
+                        let address = address.trim();
+                        if address.is_empty() {
+                            // Empty addresses are valid, but skipped
+                            return Validation::Valid;
+                        }
+                        let parts = address.split('@').collect::<Vec<_>>();
+                        if parts.len() != 2 {
+                            return Validation::Invalid(
+                                (address.to_string() + " does not look like an email address").into(),
+                            );
+                        }
+                        if !parts[1].contains('.') {
+                            return Validation::Invalid(
+                                (address.to_string() + " does not look like an email address").into(),
+                            );
+                        }
+                        // There are still lots of possible invalid addresses here, but we don't know exactly
+                        // what the CA will accept anyway.
+                        Validation::Valid
+                    })
+                    .find(|validation| matches!(validation, Validation::Invalid(_)))
+                    .unwrap_or(Validation::Valid))
+            });
         let email_string = email_prompt
             .prompt_skippable()
             .context("No answer to email dialog")?
@@ -1359,16 +1367,16 @@ of email addresses below, or leave the field empty to not provide any contact ad
 You may need to create an account at the CA's website first.",
                 );
                 let has_eab = Confirm::new(&format!(
-                        "Do you have the {} and {} provided by the CA?",
-                        "EAB_KID".dark_green().on_black(),
-                        "EAB_HMAC_KEY".dark_green().on_black()
-                    ))
-                        .with_help_message(
-                            "If not, please review the CA's website to find these. They are required to proceed.",
-                        )
-                        .with_default(false)
-                        .prompt()
-                        .context("No answer to EAB check-question")?;
+                    "Do you have the {} and {} provided by the CA?",
+                    "EAB_KID".dark_green().on_black(),
+                    "EAB_HMAC_KEY".dark_green().on_black()
+                ))
+                    .with_help_message(
+                        "If not, please review the CA's website to find these. They are required to proceed.",
+                    )
+                    .with_default(false)
+                    .prompt()
+                    .context("No answer to EAB check-question")?;
                 if has_eab {
                     let kid = Text::new("Enter the EAB Key ID (EAB_KID):")
                         .with_help_message("This value is a text string provided to you by the CA")
