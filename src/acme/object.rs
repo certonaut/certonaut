@@ -5,11 +5,12 @@ use anyhow::Context;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize, Serializer};
-use std::borrow::Borrow;
+use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
+use std::net::IpAddr;
 use std::str::FromStr;
 use time::serde::rfc3339;
 use url::Url;
@@ -181,13 +182,25 @@ pub enum Identifier {
     Dns {
         value: String,
     },
+    Ip {
+        value: IpAddr,
+    },
     #[serde(other)]
     Unknown,
 }
 
 impl From<String> for Identifier {
     fn from(value: String) -> Self {
-        Identifier::Dns { value }
+        match value.parse::<IpAddr>() {
+            Ok(ip) => Identifier::Ip { value: ip },
+            Err(_) => Identifier::Dns { value },
+        }
+    }
+}
+
+impl From<IpAddr> for Identifier {
+    fn from(value: IpAddr) -> Self {
+        Identifier::Ip { value }
     }
 }
 
@@ -195,7 +208,12 @@ impl FromStr for Identifier {
     type Err = Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Identifier::from(s.to_string()))
+        match s.parse::<IpAddr>() {
+            Ok(ip) => Ok(Identifier::Ip { value: ip }),
+            Err(_) => Ok(Identifier::Dns {
+                value: s.to_string(),
+            }),
+        }
     }
 }
 
@@ -207,23 +225,12 @@ impl From<Identifier> for String {
 
 impl Display for Identifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let value: &str = self.borrow();
+        let value: Cow<str> = match &self {
+            Identifier::Dns { value } => value.as_str().into(),
+            Identifier::Ip { value } => value.to_string().into(),
+            Identifier::Unknown => "unknown".into(),
+        };
         write!(f, "{value}")
-    }
-}
-
-impl Borrow<str> for Identifier {
-    fn borrow(&self) -> &str {
-        match self {
-            Identifier::Dns { value } => value.as_str(),
-            Identifier::Unknown => "unknown",
-        }
-    }
-}
-
-impl Identifier {
-    pub fn as_str(&self) -> &str {
-        self.borrow()
     }
 }
 
@@ -651,6 +658,8 @@ mod tests {
 
     #[rstest]
     #[case(r#"{"type":"dns","value":"example.com"}"#, "example.com")]
+    #[case(r#"{"type":"ip","value":"2001:db8::1"}"#, "2001:db8::1")]
+    #[case(r#"{"type":"ip","value":"192.0.2.0"}"#, "192.0.2.0")]
     fn test_deserialize_identifier(#[case] test_value: &str, #[case] expected: Identifier) {
         let identifier: Identifier = serde_json::from_str(test_value).unwrap();
         assert_eq!(identifier, expected);
@@ -754,6 +763,8 @@ mod tests {
 
     #[rstest]
     #[case("example.com", r#"{"type":"dns","value":"example.com"}"#)]
+    #[case("2001:db8::1", r#"{"type":"ip","value":"2001:db8::1"}"#)]
+    #[case("192.0.2.0", r#"{"type":"ip","value":"192.0.2.0"}"#)]
     fn test_serialize_identifier(#[case] identifier: Identifier, #[case] expected: &str) {
         let serialized = serde_json::to_string(&identifier).expect("serialization must not fail");
         assert_eq!(serialized, expected);
@@ -861,27 +872,37 @@ mod tests {
     }
 
     #[rstest]
-    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: None,}, r#"{"certificate":"Base64PlaceHolder"}"#)]
+    #[case(
+        Revocation{certificate: "Base64PlaceHolder".to_string(), reason: None,}, r#"{"certificate":"Base64PlaceHolder"}"#
+    )]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::Unspecified),},
         r#"{"certificate":"Base64PlaceHolder","reason":0}"#)]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::KeyCompromise),},
         r#"{"certificate":"Base64PlaceHolder","reason":1}"#)]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CaCompromise),},
         r#"{"certificate":"Base64PlaceHolder","reason":2}"#)]
-    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AffiliationChanged),},
-        r#"{"certificate":"Base64PlaceHolder","reason":3}"#)]
+    #[case(
+        Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AffiliationChanged),},
+        r#"{"certificate":"Base64PlaceHolder","reason":3}"#
+    )]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::Superseded),},
         r#"{"certificate":"Base64PlaceHolder","reason":4}"#)]
-    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CessationOfOperation),},
-        r#"{"certificate":"Base64PlaceHolder","reason":5}"#)]
+    #[case(
+        Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CessationOfOperation),},
+        r#"{"certificate":"Base64PlaceHolder","reason":5}"#
+    )]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::CertificateHold),},
         r#"{"certificate":"Base64PlaceHolder","reason":6}"#)]
     #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::RemoveFromCrl),},
         r#"{"certificate":"Base64PlaceHolder","reason":8}"#)]
-    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::PrivilegeWithdrawn),},
-        r#"{"certificate":"Base64PlaceHolder","reason":9}"#)]
-    #[case(Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AttributeAuthorityCompromise),},
-        r#"{"certificate":"Base64PlaceHolder","reason":10}"#)]
+    #[case(
+        Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::PrivilegeWithdrawn),},
+        r#"{"certificate":"Base64PlaceHolder","reason":9}"#
+    )]
+    #[case(
+        Revocation{certificate: "Base64PlaceHolder".to_string(), reason: Some(RevocationReason::AttributeAuthorityCompromise),},
+        r#"{"certificate":"Base64PlaceHolder","reason":10}"#
+    )]
     fn test_serialize_revocation(#[case] revocation: Revocation, #[case] expected: &str) {
         let serialized = serde_json::to_string(&revocation).expect("serialization must not fail");
         assert_eq!(serialized, expected);

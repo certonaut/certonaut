@@ -1,4 +1,4 @@
-use crate::challenge_solver::{SolverConfigBuilder, CHALLENGE_SOLVER_REGISTRY};
+use crate::challenge_solver::{CHALLENGE_SOLVER_REGISTRY, SolverConfigBuilder};
 use crate::config;
 use crate::config::ConfigBackend;
 use crate::crypto::asymmetric::{Curve, KeyType};
@@ -6,9 +6,9 @@ use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::time::parse_duration;
+use crate::{CRATE_NAME, Identifier};
 use crate::{Certonaut, RevocationReason};
-use crate::{Identifier, CRATE_NAME};
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use aws_lc_rs::rsa::KeySize;
 use clap::{ArgMatches, Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use inquire::Select;

@@ -62,7 +62,7 @@ async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBac
 }
 
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_http() -> anyhow::Result<()> {
@@ -84,7 +84,7 @@ async fn pebble_e2e_test_http() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
@@ -104,7 +104,7 @@ async fn pebble_e2e_test_dns() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
@@ -124,7 +124,7 @@ async fn pebble_e2e_test_wildcard() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
@@ -158,7 +158,7 @@ async fn pebble_e2e_test_multi_domain_with_wildcard() -> anyhow::Result<()> {
 }
 
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
@@ -183,9 +183,39 @@ async fn pebble_e2e_test_idna_names() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[test(tokio::test)]
+#[ignore = "integration-test; requires prerequisites"]
+/// Note that this test requires prerequisites to be setup beforehand
+/// - The test needs access to a Docker engine running locally
+async fn pebble_e2e_test_ip_addr() -> anyhow::Result<()> {
+    let (containers, certonaut) = test_setup().await?;
+    let issuer = certonaut.get_issuer_with_account(CA_NAME, ACCOUNT_NAME)?;
+    let new_key = asymmetric::new_key(KeyType::Ecdsa(Curve::P256))?;
+    let authorizers = vec![
+        Authorizer::new_boxed(
+            Identifier::from_str("192.0.2.1")?,
+            ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
+                base_url: containers.1.get_management_url(),
+            }),
+        ),
+        Authorizer::new_boxed(
+            Identifier::from_str("2001:db8::3")?,
+            ChallengeTestHttpSolver::from_config(PebbleHttpSolverConfiguration {
+                base_url: containers.1.get_management_url(),
+            }),
+        ),
+    ];
+
+    let _cert = issuer
+        .issue(&new_key, None, authorizers, None, None)
+        .await?;
+
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", feature = "magic-solver"))]
 #[test(tokio::test)]
-#[ignore]
+#[ignore = "integration-test; requires prerequisites"]
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 /// - The test must be run with at least CAP_BPF and CAP_NET_ADMIN privileges

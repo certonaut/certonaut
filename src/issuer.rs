@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{create_and_sign_csr, load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, create_and_sign_csr, load_certificates_from_memory};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
@@ -14,8 +14,8 @@ use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
-use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier, RevocationReason};
-use anyhow::{anyhow, bail, Context, Error};
+use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -568,6 +568,9 @@ impl AcmeIssuerWithAccount<'_> {
             Identifier::Dns(dns_name) => dns_name.to_acme_challenge_name().context(format!(
                 "Failed to determine _acme-challenge subdomain for {dns_name}"
             ))?,
+            Identifier::Ip(_) => {
+                bail!("Cannot use dns-01 challenge for IP address identifier {identifier}")
+            }
         };
         let cname_target = match self
             .issuer
@@ -672,7 +675,7 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
+    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -1013,6 +1016,50 @@ mod tests {
                 )],
                 None,
                 Some("profile-test".into()),
+            )
+            .await?;
+
+        assert_eq!(cert.pem.as_ref(), "Hello, world!".as_bytes());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_issue_with_ip_identifier() -> Result<(), Error> {
+        let order_url = test_url().join("ip-identifier")?;
+        let finalized_order = Ok((
+            order_url,
+            create_order(
+                OrderStatus::Valid,
+                vec![],
+                None,
+                Some(test_url().join("get-cert")?),
+            ),
+        ));
+        let certificate = Ok(DownloadedCertificate {
+            pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
+            alternate_chains: vec![],
+        });
+        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let mut mock_client = AcmeClient::faux();
+        faux::when!(mock_client.new_order)
+            .once()
+            .then_return(finalized_order);
+        faux::when!(mock_client.download_certificate(_, test_url().join("get-cert")?))
+            .once()
+            .then_return(certificate);
+        let issuer = setup_fake_issuer(mock_client)?;
+        let issuer_with_account = issuer.with_account("fake").unwrap();
+
+        let cert = issuer_with_account
+            .issue(
+                &keypair,
+                None,
+                vec![
+                    Authorizer::new(Identifier::from_str("192.0.2.22")?, NullSolver::default()),
+                    Authorizer::new(Identifier::from_str("2001:0db8::3")?, NullSolver::default()),
+                ],
+                None,
+                None,
             )
             .await?;
 

@@ -144,9 +144,6 @@ impl TryFrom<Vec<u8>> for ParsedX509Certificate {
                             }
                             GeneralName::IPAddress(ip_addr) => {
                                 let ip_addr = *ip_addr;
-                                warn!(
-                                    "Found IP address in certificate, support for IP addr identifiers is WIP"
-                                );
                                 let parsed_ip_addr = ip_addr
                                     .try_into()
                                     .ok()
@@ -159,9 +156,7 @@ impl TryFrom<Vec<u8>> for ParsedX509Certificate {
                                     });
                                 match parsed_ip_addr {
                                     Some(ip_addr) => {
-                                        // TODO: Properly parse into identifier
-                                        let id = Identifier::from(ip_addr.to_string());
-                                        subject_alternative_names.push(id);
+                                        subject_alternative_names.push(ip_addr.into());
                                     }
                                     None => {
                                         warn!(

@@ -1,11 +1,11 @@
-use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
 use crate::crypto::SignatureError;
-use anyhow::{anyhow, bail, Context};
+use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
+use anyhow::{Context, anyhow, bail};
 use aws_lc_rs::encoding::AsBigEndian;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING};
 use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa, signature};
-use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use pem::Pem;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -332,7 +332,7 @@ pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::asymmetric::{new_key, AsymmetricKeyOperation, Curve, KeyPair, KeyType};
+    use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType, new_key};
     use crate::crypto::jws::{JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
     use aws_lc_rs::rsa::KeySize;
     use rstest::*;

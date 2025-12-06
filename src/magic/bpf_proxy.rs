@@ -1,9 +1,9 @@
-use crate::challenge_solver::HttpChallengeParameters;
 use crate::CRATE_NAME;
-use anyhow::{anyhow, Context};
+use crate::challenge_solver::HttpChallengeParameters;
+use anyhow::{Context, anyhow};
 use caps::{CapSet, Capability};
 use futures::stream::FuturesUnordered;
-use futures::{future, StreamExt};
+use futures::{StreamExt, future};
 use http::HeaderName;
 use http_body_util::{Either, Full};
 use hyper::body::Bytes;

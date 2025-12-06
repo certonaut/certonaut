@@ -303,7 +303,7 @@ impl AcmeClient {
         Ok(response.body)
     }
 
-    /// Fetch the account resource belonging to both the `account_key`, when the `account_url` is not known
+    /// Fetch the account resource belonging to the `account_key`, when the `account_url` is not known
     pub async fn fetch_unknown_account(
         &self,
         account_key: KeyPair,

@@ -3,14 +3,14 @@
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
 use crate::acme::http::HttpClient;
-use crate::cert::{load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
 use crate::challenge_solver::ChallengeSolver;
 use crate::cli::{CommandLineSolverConfiguration, IssueCommand};
 use crate::config::{
-    config_directory, AccountConfiguration,
-    CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration,
-    ConfigBackend, ConfigurationManager, DomainSolverMap, InstallerConfiguration,
-    MainConfiguration, SolverConfiguration,
+    AccountConfiguration, CertificateAuthorityConfiguration,
+    CertificateAuthorityConfigurationWithAccounts, CertificateConfiguration, ConfigBackend,
+    ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
+    SolverConfiguration, config_directory,
 };
 use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{KeyPair, KeyType};
@@ -19,17 +19,19 @@ use crate::dns::name::DnsName;
 use crate::dns::resolver::Resolver;
 use crate::error::IssueResult;
 use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
-use crate::state::types::external::RenewalInformation;
 use crate::state::Database;
+use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
-use anyhow::{anyhow, bail, Context, Error};
+use anyhow::{Context, Error, anyhow, bail};
 use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::{Debug, Display, Formatter};
 use std::fs::File;
+use std::net::IpAddr;
 use std::ops::Neg;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -77,16 +79,17 @@ pub const USER_AGENT: &str = concat!(
 #[non_exhaustive]
 pub enum Identifier {
     Dns(DnsName),
+    Ip(IpAddr),
 }
 
 impl Identifier {
-    pub fn as_str(&self) -> &str {
+    pub fn to_string(&'_ self) -> Cow<'_, str> {
         match self {
-            Identifier::Dns(name) => name.as_ascii(),
+            Identifier::Dns(name) => name.as_ascii().into(),
+            Identifier::Ip(ip) => ip.to_string().into(),
         }
     }
 
-    #[allow(irrefutable_let_patterns)]
     pub fn as_ascii_domain_name(&self) -> Option<&str> {
         if let Identifier::Dns(name) = &self {
             return Some(name.as_ascii());
@@ -103,6 +106,7 @@ impl Identifier {
                     .context(format!("Failed to parse *.{value} as a DNS name"))?;
                 Ok(Self::Dns(dns))
             }
+            acme::object::Identifier::Ip { .. } => bail!("IP identifiers cannot have wildcards"),
             acme::object::Identifier::Unknown => {
                 bail!("Unknown identifier type cannot be parsed")
             }
@@ -114,7 +118,11 @@ impl FromStr for Identifier {
     type Err = dns::name::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Identifier::Dns(s.try_into()?))
+        if let Ok(ip) = s.parse::<IpAddr>() {
+            Ok(Identifier::Ip(ip))
+        } else {
+            Ok(Identifier::Dns(s.try_into()?))
+        }
     }
 }
 
@@ -124,6 +132,7 @@ impl From<Identifier> for acme::object::Identifier {
             Identifier::Dns(name) => acme::object::Identifier::Dns {
                 value: name.as_ascii().to_string(),
             },
+            Identifier::Ip(ip) => acme::object::Identifier::Ip { value: ip },
         }
     }
 }
@@ -138,6 +147,7 @@ impl TryFrom<acme::object::Identifier> for Identifier {
                     .context(format!("Failed to parse {value} as a DNS name"))?;
                 Ok(Self::Dns(dns))
             }
+            acme::object::Identifier::Ip { value } => Ok(Self::Ip(value)),
             acme::object::Identifier::Unknown => {
                 bail!("Unknown identifier type cannot be parsed")
             }
@@ -149,6 +159,7 @@ impl From<Identifier> for String {
     fn from(value: Identifier) -> Self {
         match value {
             Identifier::Dns(name) => name.as_ascii().to_string(),
+            Identifier::Ip(ip) => ip.to_string(),
         }
     }
 }
@@ -157,6 +168,7 @@ impl Display for Identifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Identifier::Dns(name) => Display::fmt(name, f),
+            Identifier::Ip(ip) => Display::fmt(ip, f),
         }
     }
 }
@@ -404,7 +416,7 @@ impl AcmeAccount {
         let key_path = &config.key_file;
         let key_file = File::open(key_path)
             .context(format!("Cannot read account key {}", key_path.display()))?;
-        let keypair = asymmetric::KeyPair::load_from_disk(key_file)?;
+        let keypair = KeyPair::load_from_disk(key_file)?;
         let jwk = JsonWebKey::new_existing(keypair, config.url.clone());
         // TODO: Validate accounts at CA, retrieve metadata?
         Ok(Self { config, jwk })
@@ -762,7 +774,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                     cert = alternate;
                 }
                 Err(e) => {
-                    warn!("Downloading alternate chain failed, using default chain instead: {e:#}")
+                    warn!("Downloading alternate chain failed, using default chain instead: {e:#}");
                 }
             }
         }
@@ -835,7 +847,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             if let Ok(new_cert) = &mut issue_result {
                 if let Some(alternate_chain) = cert_config.advanced.alternate_chain.as_ref() {
                     match issuer
-                        .download_alternate_chain(alternate_chain, &new_cert)
+                        .download_alternate_chain(alternate_chain, new_cert)
                         .await
                     {
                         Ok(alternate) => {
@@ -844,7 +856,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                         Err(e) => {
                             warn!(
                                 "Downloading alternate chain failed, using default chain instead: {e:#}"
-                            )
+                            );
                         }
                     }
                 }
