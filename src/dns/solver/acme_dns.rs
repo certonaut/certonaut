@@ -13,6 +13,7 @@ use inquire::PasswordDisplayMode;
 use inquire::validator::Validation;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::net::IpAddr;
 use std::str::FromStr;
 use tracing::warn;
@@ -172,6 +173,16 @@ pub struct Registration {
     pub password: String,
 }
 
+impl Display for Registration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "acme-dns registration:\n  Full domain: {}\n  Subdomain: {}\n  Username: {}\n  Password: {}",
+            self.full_domain, self.subdomain, self.username, self.password
+        )
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct RegistrationBody {
     #[serde(rename = "allowfrom")]
@@ -304,6 +315,7 @@ impl Builder {
                 .edit_config()
                 .await?
         };
+        println!("Using acme-dns registration:\n{registration}");
         Ok(registration)
     }
 }
