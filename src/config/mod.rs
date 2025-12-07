@@ -515,28 +515,6 @@ impl DefaultConfig {
                         trusted_roots: vec![],
                     },
                     CertificateAuthorityConfiguration {
-                        name: "BuyPass".to_string(),
-                        identifier: "buypass".to_string(),
-                        acme_directory: Url::from_str("https://api.buypass.com/acme/directory")
-                            .unwrap(),
-                        public: true,
-                        testing: false,
-                        default: false,
-                        trusted_roots: vec![],
-                    },
-                    CertificateAuthorityConfiguration {
-                        name: "BuyPass Test".to_string(),
-                        identifier: "buypass-test".to_string(),
-                        acme_directory: Url::from_str(
-                            "https://api.test4.buypass.no/acme/directory",
-                        )
-                        .unwrap(),
-                        public: true,
-                        testing: true,
-                        default: false,
-                        trusted_roots: vec![],
-                    },
-                    CertificateAuthorityConfiguration {
                         name: "ZeroSSL".to_string(),
                         identifier: "zerossl".to_string(),
                         acme_directory: Url::from_str("https://acme.zerossl.com/v2/DV90").unwrap(),
