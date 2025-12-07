@@ -78,8 +78,9 @@ pub const USER_AGENT: &str = concat!(
 #[serde(untagged)]
 #[non_exhaustive]
 pub enum Identifier {
-    Dns(DnsName),
+    // order matters: serde's untagged deserializer will attempt to deserialize top to bottom
     Ip(IpAddr),
+    Dns(DnsName),
 }
 
 impl Identifier {
