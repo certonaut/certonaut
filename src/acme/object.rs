@@ -146,7 +146,6 @@ pub struct Account {
     pub orders: Option<Url>,
     #[serde(default)]
     pub external_account_binding: Option<FlatJsonWebSignature>,
-    // TODO: Orders (not supported by Boulder)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]

@@ -367,7 +367,7 @@ async fn modify_certificate_config(
 
 /// Note: This is not collision-free. Use `Certonaut::choose_cert_id_from_display_name` instead.
 fn cert_id_from_display_name(display_name: &str) -> String {
-    // TODO: The names choosen by this function are non-ideal for IDN names
+    // TODO: The names chosen by this function are non-ideal for IDN names & IPv6 addresses
     let mut id_str = String::new();
     for char in display_name.chars() {
         if char.is_ascii_alphanumeric() || char == '_' || char == '-' || char == '.' {
@@ -421,7 +421,6 @@ impl AcmeAccount {
             .context(format!("Cannot read account key {}", key_path.display()))?;
         let keypair = KeyPair::load_from_disk(key_file)?;
         let jwk = JsonWebKey::new_existing(keypair, config.url.clone());
-        // TODO: Validate accounts at CA, retrieve metadata?
         Ok(Self { config, jwk })
     }
 

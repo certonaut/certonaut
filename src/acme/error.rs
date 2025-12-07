@@ -221,7 +221,7 @@ impl Display for Subproblem {
             write!(f, "{typ}")?;
         }
         if let Some(identifier) = &self.identifier {
-            write!(f, "(for identifier:  {identifier})")?;
+            write!(f, "(for identifier: {identifier})")?;
         }
         Ok(())
     }

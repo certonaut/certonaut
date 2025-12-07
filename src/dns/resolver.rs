@@ -55,10 +55,6 @@ impl Resolver {
         Self { resolver }
     }
 
-    // fn get_owned_resolver(&self) -> Arc<hickory_resolver::Resolver<TokioConnectionProvider>> {
-    //     self.resolver.clone()
-    // }
-
     pub async fn lookup_generic(
         &self,
         source: DnsName,
