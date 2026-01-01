@@ -65,7 +65,7 @@ vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", re
 bstr = "1.11.3"
 faux = "0.1.12"
 hickory-server = { version = "0.25.2", features = ["resolver"] }
-mockito = "1.7.0"
+mockito = "1.7.1"
 rstest = "0.25.0"
 tempfile = "3.20.0"
 test-log = { version = "0.2.19", default-features = false, features = ["color", "trace"] }
