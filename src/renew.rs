@@ -319,9 +319,12 @@ impl<CB: ConfigBackend> RenewTask<CB> {
             Ok(Some(stored_renewal_info)) => {
                 if now >= stored_renewal_info.next_update {
                     // Try updating ARI
-                    self.client
-                        .try_fetch_and_store_ari(issuer, self.cert_id.clone(), cert)
-                        .await
+                    Some(
+                        self.client
+                            .try_fetch_and_store_ari(issuer, self.cert_id.clone(), cert)
+                            .await
+                            .unwrap_or(stored_renewal_info),
+                    )
                 } else {
                     // Stored is still current
                     Some(stored_renewal_info)
