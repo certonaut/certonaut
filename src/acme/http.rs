@@ -4,6 +4,7 @@ use crate::acme::object::Nonce;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
+use tracing::warn;
 use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -104,6 +105,35 @@ impl HttpClient {
         self.execute(Request::new(Method::GET, url)).await
     }
 
+    pub async fn get_with_retry(
+        &self,
+        url: &Url,
+        retries: usize,
+        delay: Duration,
+    ) -> ProtocolResult<Response> {
+        let mut attempts = 0;
+        loop {
+            let response = self.execute(Request::new(Method::GET, url.clone())).await;
+            match response {
+                Ok(response) if response.status().is_server_error() && attempts < retries => {
+                    warn!(
+                        "Server error (status: {}) when sending GET request to {url}. Retrying...",
+                        response.status()
+                    );
+                    attempts += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                Err(err) if attempts < retries => {
+                    warn!("{:#}. Retrying...", anyhow::Error::from(err));
+                    attempts += 1;
+                    tokio::time::sleep(delay).await;
+                }
+                Ok(response) => return Ok(response),
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     pub async fn head(&self, url: Url) -> ProtocolResult<Response> {
         self.execute(Request::new(Method::HEAD, url)).await
     }
@@ -116,14 +146,15 @@ impl HttpClient {
         let request_builder = self.client.post(url);
         // RFC8555 Section 6.2, "[clients] must have the Content-Type header field set
         // to "application/jose+json""
-        let request = request_builder
+        let response = request_builder
             .header(
                 reqwest::header::CONTENT_TYPE,
                 reqwest::header::HeaderValue::from_static("application/jose+json"),
             )
             .json(&body)
-            .build()?;
-        self.execute(request).await
+            .send()
+            .await?;
+        Ok(response)
     }
 }
 

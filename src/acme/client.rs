@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 use url::Url;
 
 /// The maximum number of retries we do, per request
@@ -79,8 +79,9 @@ impl AcmeClient {
             .http_client
             .ok_or_else(HttpClient::try_new)
             .or_else(|e| e)?;
-        // TODO: Simple retry if response indicates a retry is possible (e.g. temporary rate limiting)
-        let directory_response = http_client.get(builder.server_url).await?;
+        let directory_response = http_client
+            .get_with_retry(&builder.server_url, MAX_RETRIES, DEFAULT_RETRY_BACKOFF)
+            .await?;
         let directory = match directory_response.status() {
             StatusCode::OK => directory_response.json().await?,
             _ => return Err(Error::get_error_from_http(directory_response).await),
@@ -128,10 +129,27 @@ impl AcmeClient {
             }
 
             // Ask ACME server for new nonce, retrying if necessary
-            let response = self
+            let response = match self
                 .http_client
                 .head(self.directory.new_nonce.clone())
-                .await?;
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    last_error = err;
+                    retry += 1;
+                    if retry > MAX_RETRIES {
+                        break;
+                    }
+                    warn!(
+                        "Error retrieving nonce from ACME server: {:#}. Retrying...",
+                        anyhow::Error::from(last_error)
+                    );
+                    let backoff = DEFAULT_RETRY_BACKOFF;
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+            };
             if let Some(nonce) = HttpClient::extract_nonce(&response) {
                 return Ok(nonce);
             }
@@ -170,7 +188,25 @@ impl AcmeClient {
         );
         loop {
             let signed = key.sign(&header, payload)?;
-            let response = self.http_client.post(target_url.clone(), &signed).await?;
+            let response = match self.http_client.post(target_url.clone(), &signed).await {
+                Ok(response) => response,
+                Err(err) => {
+                    last_error = err;
+                    retry += 1;
+                    if retry > MAX_RETRIES {
+                        break;
+                    }
+                    warn!(
+                        "Error sending ACME request: {:#}. Retrying...",
+                        anyhow::Error::from(last_error)
+                    );
+                    let backoff = DEFAULT_RETRY_BACKOFF;
+                    tokio::time::sleep(backoff).await;
+                    // we probably don't need a new nonce here, but reusing nonces feels very wrong security-wise
+                    header.nonce = self.get_nonce().await?;
+                    continue;
+                }
+            };
 
             let retry_after = HttpClient::extract_backoff(&response);
             let new_nonce = HttpClient::extract_nonce(&response);
@@ -585,9 +621,11 @@ impl AcmeClient {
             let fetch_url = ari_base
                 .join(&identifier.to_string())
                 .expect("BUG: URL joining with AcmeRenewalIdentifier must never fail");
-            // TODO: Retry with backoff
             debug!("Retrieving ARI from ACME server @ {fetch_url}");
-            let response = self.http_client.get(fetch_url).await?;
+            let response = self
+                .http_client
+                .get_with_retry(&fetch_url, MAX_RETRIES, DEFAULT_RETRY_BACKOFF)
+                .await?;
             let retry_after = HttpClient::extract_backoff(&response);
             let retry_after = retry_after.map_or(
                 SystemTime::now() + time::Duration::hours(6),
