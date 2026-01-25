@@ -47,7 +47,7 @@ impl std::fmt::Display for IssueError {
             IssueError::ClientFailure(err)
             | IssueError::RateLimited(err)
             | IssueError::CAFailure(err)
-            | IssueError::AuthFailure(err) => std::fmt::Debug::fmt(err, f),
+            | IssueError::AuthFailure(err) => Debug::fmt(err, f),
         }
     }
 }
@@ -62,16 +62,26 @@ impl From<anyhow::Error> for IssueError {
     fn from(err: anyhow::Error) -> Self {
         match err.downcast_ref::<AcmeError>() {
             Some(inner) => match inner {
-                Error::ProtocolViolation(_) => IssueError::CAFailure(err),
-                Error::AcmeProblem(problem) => (problem.clone(), err).into(),
-                Error::IoError(_)
-                | Error::CryptoFailure(_)
+                Error::ProtocolViolation(_)
                 | Error::DeserializationFailed(_)
-                | Error::Http(_)
-                | Error::TimedOut(_)
-                | Error::FeatureNotSupported => IssueError::ClientFailure(err),
+                | Error::TimedOut(_) => IssueError::CAFailure(err),
+                Error::AcmeProblem(problem) => (problem.clone(), err).into(),
+                Error::IoError(_) | Error::CryptoFailure(_) | Error::FeatureNotSupported => {
+                    IssueError::ClientFailure(err)
+                }
                 // TODO: Remember the retry_after value and honor it for renewals
                 Error::RateLimited(_) => IssueError::RateLimited(err),
+                Error::Http(http) => {
+                    if http.is_decode() {
+                        IssueError::CAFailure(err)
+                    } else if let Some(status) = http.status()
+                        && status.is_server_error()
+                    {
+                        IssueError::CAFailure(err)
+                    } else {
+                        IssueError::ClientFailure(err)
+                    }
+                }
             },
             None => IssueError::ClientFailure(err),
         }
