@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM renewal_info WHERE cert_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "090ada33193efb263dcf90cb4266fd63bb36294379e1f2ff73148d01f554c63c"
+}
