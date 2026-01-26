@@ -789,8 +789,13 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .save_certificate_and_config(&cert_id, &cert_config, &cert_key, &cert)?;
         match load_certificates_from_memory(&cert.pem, Some(1)) {
             Ok(parsed_certs) => {
+                // clean up any previous renewal information
+                self.database
+                    .remove_renewal_information(&cert_id)
+                    .await
+                    .ok();
                 if let Some(parsed_cert) = parsed_certs.first() {
-                    self.try_fetch_and_store_ari(&issuer, cert_id.to_string(), parsed_cert)
+                    self.try_fetch_and_store_ari(&issuer, cert_id.clone(), parsed_cert)
                         .await;
                 } else {
                     warn!("No certificate found in new certificate from CA");

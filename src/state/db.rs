@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(60);
 const EXPIRE_RENEWALS_AFTER: time::Duration = time::Duration::days(91);
+const EXPIRE_ARI_AFTER: time::Duration = time::Duration::days(7);
 
 #[derive(Debug)]
 pub struct Database {
@@ -131,12 +132,20 @@ impl crate::state::Database {
         Ok(())
     }
 
+    pub async fn remove_renewal_information(&self, cert_id: &str) -> anyhow::Result<()> {
+        sqlx::query!("DELETE FROM renewal_info WHERE cert_id = $1", cert_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub fn background_cleanup(&self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
         // Pool is internally an Arc, so this is the same pool
         let pool = self.pool.clone();
         tokio::task::spawn(async move {
-            let expire_after =
-                truncate_to_millis(OffsetDateTime::now_utc() - EXPIRE_RENEWALS_AFTER);
+            let now = OffsetDateTime::now_utc();
+            let expire_after = truncate_to_millis(now - EXPIRE_RENEWALS_AFTER);
+            let ari_expire_after = truncate_to_millis(now - EXPIRE_ARI_AFTER);
             sqlx::query!(
                 "DELETE FROM renewals WHERE timestamp_unix < unixepoch($1, 'subsec')",
                 expire_after
@@ -145,7 +154,7 @@ impl crate::state::Database {
             .await?;
             sqlx::query!(
                 "DELETE FROM renewal_info WHERE next_update_unix < unixepoch($1, 'subsec')",
-                expire_after
+                ari_expire_after
             )
             .execute(&pool)
             .await?;
