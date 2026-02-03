@@ -652,6 +652,56 @@ impl AcmeIssuerWithAccount<'_> {
         }
         bail!("No alternate chain found with issuer {wanted_issuer}")
     }
+
+    pub async fn get_order(&self, order_url: &Url) -> anyhow::Result<Order> {
+        let client = self.client().await?;
+        let order = client
+            .get_order(&self.account.jwk, order_url)
+            .await
+            .context("Error retrieving order from CA server")?;
+        Ok(order)
+    }
+
+    pub async fn get_authorization(&self, authz_url: &Url) -> anyhow::Result<Authorization> {
+        let client = self.client().await?;
+        let authz = client
+            .get_authorization(&self.account.jwk, authz_url)
+            .await
+            .context("Error retrieving authorization from CA server")?;
+        Ok(authz)
+    }
+
+    pub async fn get_challenge(&self, challenge_url: &Url) -> anyhow::Result<Challenge> {
+        let client = self.client().await?;
+        let challenge = client
+            .get_challenge(&self.account.jwk, challenge_url)
+            .await
+            .context("Error retrieving challenge from CA server")?;
+        Ok(challenge)
+    }
+
+    pub async fn deactivate_authorizations(&self, order_url: &Url) -> anyhow::Result<()> {
+        let client = self.client().await?;
+        let order = client
+            .get_order(&self.account.jwk, order_url)
+            .await
+            .context("Error retrieving order from CA server")?;
+        for authorization_url in order.authorizations {
+            debug!("Fetching authorization associated with order: {authorization_url}");
+            let authorization = self
+                .get_authorization(&authorization_url)
+                .await
+                .context("Error retrieving authorization from CA server")?;
+            if authorization.status == AuthorizationStatus::Pending {
+                debug!("Found pending authorization, trying to deactivate...");
+                client
+                    .deactivate_authorization(&self.account.jwk, &authorization_url)
+                    .await
+                    .context("Error deactivating authorization")?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Deref for AcmeIssuerWithAccount<'_> {

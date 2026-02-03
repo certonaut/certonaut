@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use strum::VariantArray;
+use url::Url;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]
@@ -50,6 +51,9 @@ pub enum Command {
     /// Add, edit or view ACME-capable certificate authorities
     #[command(subcommand, name = "ca")]
     Issuer(IssuerCommand),
+    /// Troubleshooting and test actions
+    #[command(subcommand)]
+    Debug(DebugCommand),
     #[command(hide = true)]
     InteractiveIssuer,
     #[command(hide = true)]
@@ -211,7 +215,7 @@ pub struct IssuerAddCommand {
     pub id: Option<String>,
     /// ACME directory URL of the CA
     #[arg[short = 'd', long]]
-    pub acme_directory: Option<url::Url>,
+    pub acme_directory: Option<Url>,
     /// Set to indicate a public CA
     #[arg(short, long)]
     pub public: bool,
@@ -375,6 +379,68 @@ pub struct RevokeCommand {
     pub reason: Option<RevocationReason>,
 }
 
+#[derive(Debug, Subcommand, Default)]
+pub enum DebugCommand {
+    /// Do nothing.
+    #[default]
+    #[clap(hide = true)]
+    Nothing,
+    /// Retrieve an order from the CA and display it
+    ShowOrder(DebugShowOrderCommand),
+    /// Retrieve an authorization from the CA and display it
+    ShowAuthorization(DebugShowAuthorizationCommand),
+    /// Retrieve a challenge from the CA and display it
+    ShowChallenge(DebugShowChallengeCommand),
+    /// Deactivate all authorizations for an order
+    DeactiveAuthorization(DebugDeactivateAuthorizationCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct DebugCommonArgs {
+    /// The CA for which to perform the debug action
+    #[clap(short, long)]
+    pub ca: String,
+    /// The account to use for the debug action. Mandatory if more than one account exists for the specified CA.
+    #[clap(short, long)]
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugShowOrderCommand {
+    #[clap(flatten)]
+    pub common: DebugCommonArgs,
+    /// The order URL
+    #[clap(short = 'u', long)]
+    pub order_url: Url,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugShowChallengeCommand {
+    #[clap(flatten)]
+    pub common: DebugCommonArgs,
+    /// The challenge URL
+    #[clap(short = 'u', long)]
+    pub challenge_url: Url,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugShowAuthorizationCommand {
+    #[clap(flatten)]
+    pub common: DebugCommonArgs,
+    /// The authorization URL
+    #[clap(short = 'u', long)]
+    pub authorization_url: Url,
+}
+
+#[derive(Debug, Args)]
+pub struct DebugDeactivateAuthorizationCommand {
+    #[clap(flatten)]
+    pub common: DebugCommonArgs,
+    /// The order URL
+    #[clap(short = 'u', long)]
+    pub order_url: Url,
+}
+
 pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
     mut cmd: Option<Command>,
     matches: &ArgMatches,
@@ -498,6 +564,9 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
             }
             Some(Command::Account(account_cmd)) => {
                 break handle_account_command(account_cmd, client, interactive).await;
+            }
+            Some(Command::Debug(debug_cmd)) => {
+                break handle_debug_command(debug_cmd, client, interactive).await;
             }
         }
     }
@@ -630,6 +699,23 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
                 let mut service = NonInteractiveService::new(client);
                 service.delete_account(delete).await
             }
+        }
+    }
+}
+
+async fn handle_debug_command<CB: ConfigBackend + Send + Sync + 'static>(
+    cmd: DebugCommand,
+    client: Certonaut<CB>,
+    _interactive: bool,
+) -> anyhow::Result<()> {
+    let service = NonInteractiveService::new(client);
+    match cmd {
+        DebugCommand::Nothing => Ok(()),
+        DebugCommand::ShowOrder(cmd) => service.debug_show_order(cmd).await,
+        DebugCommand::ShowAuthorization(cmd) => service.debug_show_authorization(cmd).await,
+        DebugCommand::ShowChallenge(cmd) => service.debug_show_challenge(cmd).await,
+        DebugCommand::DeactiveAuthorization(cmd) => {
+            service.debug_deactivate_authorization(cmd).await
         }
     }
 }
