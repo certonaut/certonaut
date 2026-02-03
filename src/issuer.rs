@@ -415,7 +415,7 @@ impl AcmeIssuerWithAccount<'_> {
                     // Skip
                 }
                 AuthorizationStatus::Pending => {
-                    self.solve_challenge(authz, &mut authorizers)
+                    self.solve_challenge(authz, &authz_url, &mut authorizers)
                         .await
                         .context(format!(
                             "Failed to obtain issuance authorization for {name}"
@@ -451,6 +451,7 @@ impl AcmeIssuerWithAccount<'_> {
     async fn solve_challenge(
         &self,
         authz: Authorization,
+        authz_url: &Url,
         authorizers: &mut Vec<Authorizer>,
     ) -> anyhow::Result<Challenge> {
         let client = self.client().await?;
@@ -508,12 +509,9 @@ impl AcmeIssuerWithAccount<'_> {
         // TODO: Preflight checks if enabled
 
         // Validation
-        let maybe_err = client
+        let mut maybe_err = client
             .validate_challenge(&self.account.jwk, &chosen_challenge.url)
-            .await
-            .context(format!(
-                "Error validating {challenge_type} challenge for {id} (challenge domain: {challenge_id}) with challenge solver {solver_name_long}"
-            ));
+            .await;
 
         // Cleanup
         if let Err(e) = challenge_solver.solver.cleanup_challenge().await {
@@ -522,7 +520,39 @@ impl AcmeIssuerWithAccount<'_> {
             );
         }
 
-        let validated_challenge = maybe_err?;
+        if maybe_err.is_err() {
+            if let Ok(authorization) = client.get_authorization(&self.account.jwk, authz_url).await
+            {
+                match authorization.status {
+                    AuthorizationStatus::Valid => {
+                        // We got lucky, the challenge validation worked after all
+                        let challenge = authorization.challenges.into_iter().find(|challenge|challenge.url == chosen_challenge.url).ok_or(anyhow!(
+                            "Challenge disappeared after validation for {id} (challenge domain: {challenge_id})"
+                        ))?;
+                        maybe_err = Ok(challenge);
+                    }
+                    AuthorizationStatus::Pending => {
+                        // We have given up on the challenge, but the server may not know about it. Try to deactivate it.
+                        if let Err(e) = client
+                            .deactivate_authorization(&self.account.jwk, authz_url)
+                            .await
+                        {
+                            warn!(
+                                "Failed to deactivate pending authorization {authz_url} for {id} (challenge domain: {challenge_id}): {e:#}"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            warn!(
+                "{solver_name_short} solver failed to validate {challenge_type} challenge for {id} (challenge domain: {challenge_id}) (authorization: {authz_url})",
+            );
+        }
+
+        let validated_challenge = maybe_err.context(format!(
+            "Error validating {challenge_type} challenge for {id} (challenge domain: {challenge_id}) with challenge solver {solver_name_long}"
+        ))?;
         info!("Successfully validated challenge for {id}");
         Ok(validated_challenge)
     }
