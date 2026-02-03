@@ -392,7 +392,7 @@ pub enum DebugCommand {
     /// Retrieve a challenge from the CA and display it
     ShowChallenge(DebugShowChallengeCommand),
     /// Deactivate all authorizations for an order
-    DeactiveAuthorization(DebugDeactivateAuthorizationCommand),
+    DeactivateAuthorizations(DebugDeactivateAuthorizationCommand),
 }
 
 #[derive(Debug, Args)]
@@ -714,7 +714,7 @@ async fn handle_debug_command<CB: ConfigBackend + Send + Sync + 'static>(
         DebugCommand::ShowOrder(cmd) => service.debug_show_order(cmd).await,
         DebugCommand::ShowAuthorization(cmd) => service.debug_show_authorization(cmd).await,
         DebugCommand::ShowChallenge(cmd) => service.debug_show_challenge(cmd).await,
-        DebugCommand::DeactiveAuthorization(cmd) => {
+        DebugCommand::DeactivateAuthorizations(cmd) => {
             service.debug_deactivate_authorization(cmd).await
         }
     }
