@@ -1,13 +1,13 @@
 use crate::acme::object::{HttpChallenge, InnerChallenge, Token};
 use crate::config::PebbleHttpSolverConfiguration;
 use crate::crypto::jws::JsonWebKey;
+use crate::url::Url;
 use crate::{ChallengeSolver, Identifier};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use tracing::debug;
-use url::Url;
 
 #[derive(Debug)]
 pub struct ChallengeTestHttpSolver {
@@ -147,7 +147,7 @@ impl ChallengeTestServerClient {
     async fn post<B: Serialize>(&self, path: &str, body: &B) -> anyhow::Result<()> {
         let response = self
             .client
-            .post(self.base_url.join(path)?)
+            .post(self.base_url.join(path)?.into_url())
             .json(body)
             .send()
             .await?;

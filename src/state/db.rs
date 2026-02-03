@@ -28,7 +28,7 @@ impl crate::state::Database {
             base_directory.as_ref().display()
         ))?;
         file.push(database_file_name);
-        let file_uri = url::Url::from_file_path(&file)
+        let file_uri = crate::url::Url::from_file_path(&file)
             .map_err(|()| anyhow!("Failed to parse database URI {}", file.display()))?;
         let url = &file_uri.to_string().replacen("file", "sqlite", 1);
         Self::open_url(url).await

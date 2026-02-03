@@ -2,11 +2,11 @@ use crate::acme::object::Nonce;
 use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair};
 use crate::crypto::symmetric::{MacKey, SymmetricKeyOperation};
 use crate::crypto::{SignatureError, sha256};
+use crate::url::Url;
 use anyhow::Context;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Debug, Serialize)]
 pub struct ProtectedHeader {
@@ -290,11 +290,11 @@ mod tests {
         Algorithm, ExternalAccountBinding, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters,
         JsonWebKeyRsa, KeyParameters, ProtectedHeader,
     };
+    use crate::url::Url;
     use base64::Engine;
     use base64::prelude::BASE64_URL_SAFE_NO_PAD;
     use rstest::rstest;
     use std::fs::File;
-    use url::Url;
 
     #[test]
     fn test_serialize_protected_header_with_ecdsa() {

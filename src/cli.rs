@@ -6,6 +6,7 @@ use crate::interactive::service::InteractiveService;
 use crate::non_interactive::NonInteractiveService;
 use crate::renew::RenewService;
 use crate::time::parse_duration;
+use crate::url::Url;
 use crate::{CRATE_NAME, Identifier};
 use crate::{Certonaut, RevocationReason};
 use anyhow::{Context, bail};
@@ -17,7 +18,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use strum::VariantArray;
-use url::Url;
 
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = "")]

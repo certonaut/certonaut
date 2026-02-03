@@ -4,6 +4,7 @@ use crate::cli::CommandLineSolverConfiguration;
 use crate::config::{AcmeDnsConfiguration, SolverConfiguration};
 use crate::crypto::jws::JsonWebKey;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
+use crate::url::Url;
 use crate::{Identifier, USER_AGENT};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
@@ -17,7 +18,6 @@ use std::fmt::Display;
 use std::net::IpAddr;
 use std::str::FromStr;
 use tracing::warn;
-use url::Url;
 
 pub struct Solver {
     client: Client,
@@ -110,7 +110,7 @@ impl Client {
         };
         let response = self
             .client
-            .post(self.server_url.join("register")?)
+            .post(self.server_url.join("register")?.into_url())
             .json(&body)
             .send()
             .await
@@ -138,7 +138,7 @@ impl Client {
             txt: value,
         };
         self.client
-            .post(self.server_url.join("update")?)
+            .post(self.server_url.join("update")?.into_url())
             .header("X-Api-User", registration.username.as_str())
             .header("X-Api-Key", registration.password.as_str())
             .json(&body)

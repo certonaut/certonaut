@@ -7,6 +7,7 @@ use crate::config::{
 use crate::crypto::jws::JsonWebKey;
 use crate::crypto::{SHA256_LENGTH, sha256};
 use crate::dns::solver::acme_dns;
+use crate::url::Url;
 use crate::{Identifier, magic};
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
@@ -22,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use url::Url;
 
 impl InnerChallenge {
     pub fn get_type(&self) -> &str {

@@ -1,7 +1,7 @@
 use crate::acme::http::HttpClient;
 use crate::acme::object::Identifier;
 use crate::crypto::SignatureError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::time::SystemTime;
 
@@ -136,8 +136,7 @@ pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";
 pub const ACME_UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
 pub const ACME_SERVER_INTERNAL: &str = "urn:ietf:params:acme:error:serverInternal";
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Problem {
     #[serde(rename = "type")]
     pub typ: String,
@@ -185,8 +184,7 @@ impl Display for Problem {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Subproblem {
     #[serde(rename = "type")]
     pub typ: String,

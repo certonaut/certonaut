@@ -1,5 +1,6 @@
 use crate::acme::error::{Error, Problem};
 use crate::crypto::jws::FlatJsonWebSignature;
+use crate::url::Url;
 use crate::util::serde_helper::optional_offset_date_time;
 use anyhow::Context;
 use base64::Engine;
@@ -9,11 +10,10 @@ use std::borrow::Cow;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use std::net::IpAddr;
 use std::str::FromStr;
 use time::serde::rfc3339;
-use url::Url;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,7 +174,7 @@ impl Display for AccountStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum Identifier {
@@ -222,13 +222,34 @@ impl From<Identifier> for String {
     }
 }
 
-impl Display for Identifier {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        let value: Cow<str> = match &self {
+impl Identifier {
+    pub fn as_str(&'_ self) -> Cow<'_, str> {
+        match &self {
             Identifier::Dns { value } => value.as_str().into(),
             Identifier::Ip { value } => value.to_string().into(),
             Identifier::Unknown => "unknown".into(),
-        };
+        }
+    }
+}
+
+impl Debug for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            match &self {
+                Identifier::Dns { value } => write!(f, "Dns({value})"),
+                Identifier::Ip { value } => write!(f, "Ip({value})"),
+                Identifier::Unknown => write!(f, "Unknown"),
+            }
+        } else {
+            let value = self.as_str();
+            write!(f, "Identifier {{ {value} }}")
+        }
+    }
+}
+
+impl Display for Identifier {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let value = self.as_str();
         write!(f, "{value}")
     }
 }
@@ -255,21 +276,34 @@ pub struct NewOrderRequest {
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct Order {
     pub status: OrderStatus,
-    #[serde(default, with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        with = "optional_offset_date_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expires: Option<time::OffsetDateTime>,
     pub identifiers: Vec<Identifier>,
-    #[serde(default, with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        with = "optional_offset_date_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub not_before: Option<time::OffsetDateTime>,
-    #[serde(default, with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        with = "optional_offset_date_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub not_after: Option<time::OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Problem>,
     pub authorizations: Vec<Url>,
     pub finalize: Url,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<Url>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replaces: Option<AcmeRenewalIdentifier>,
@@ -277,9 +311,8 @@ pub struct Order {
     pub profile: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub enum OrderStatus {
     Pending,
     Ready,
@@ -289,9 +322,8 @@ pub enum OrderStatus {
     Invalid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct Authorization {
     pub identifier: Identifier,
     pub status: AuthorizationStatus,
@@ -302,9 +334,8 @@ pub struct Authorization {
     pub wildcard: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub enum AuthorizationStatus {
     Pending,
     Valid,
@@ -315,22 +346,25 @@ pub enum AuthorizationStatus {
     Invalid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct Challenge {
     pub url: Url,
     pub status: ChallengeStatus,
-    #[serde(default, with = "optional_offset_date_time")]
+    #[serde(
+        default,
+        with = "optional_offset_date_time",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub validated: Option<time::OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Problem>,
     #[serde(flatten)]
     pub inner_challenge: InnerChallenge,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub enum ChallengeStatus {
     Pending,
     Processing,
@@ -339,9 +373,8 @@ pub enum ChallengeStatus {
     Invalid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
-#[cfg_attr(test, derive(Serialize))]
 pub enum InnerChallenge {
     #[serde(rename = "http-01")]
     Http(HttpChallenge),
@@ -353,23 +386,20 @@ pub enum InnerChallenge {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct HttpChallenge {
     pub token: Token,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct DnsChallenge {
     pub token: Token,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[cfg_attr(test, derive(Serialize))]
 pub struct AlpnChallenge {
     pub token: Token,
 }

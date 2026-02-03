@@ -8,6 +8,7 @@ use certonaut::dns::name::DnsName;
 use certonaut::dns::resolver::Resolver;
 use certonaut::dns::solver::acme_dns;
 use certonaut::dns::solver::acme_dns::Registration;
+use certonaut::url::Url;
 use certonaut::{Authorizer, Certonaut, Identifier};
 use hickory_resolver::config::NameServerConfigGroup;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -20,7 +21,6 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use url::Url;
 
 mod common;
 
