@@ -270,7 +270,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     pub async fn debug_show_order(&self, cmd: DebugShowOrderCommand) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let order = issuer.get_order(&cmd.order_url).await?;
-        println!("{order:?}");
+        println!("{order:#?}");
         Ok(())
     }
 
@@ -280,14 +280,14 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     ) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let authorization = issuer.get_authorization(&cmd.authorization_url).await?;
-        println!("{authorization:?}");
+        println!("{authorization:#?}");
         Ok(())
     }
 
     pub async fn debug_show_challenge(&self, cmd: DebugShowChallengeCommand) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let challenge = issuer.get_challenge(&cmd.challenge_url).await?;
-        println!("{challenge:?}");
+        println!("{challenge:#?}");
         Ok(())
     }
 
@@ -315,9 +315,12 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                 .client
                 .get_ca(&debug.ca)
                 .context(format!("CA {} not found", debug.ca))?;
-            if ca.num_accounts() != 1 {
+            if ca.num_accounts() == 0 {
+                bail!("No Accounts found for CA {}", ca.config.identifier);
+            }
+            if ca.num_accounts() > 1 {
                 bail!(
-                    "Multiple accounts found for default CA {}. Specify an account on the command line",
+                    "Multiple accounts found for CA {}. Specify an account explicitly on the command line",
                     ca.config.identifier
                 );
             }
