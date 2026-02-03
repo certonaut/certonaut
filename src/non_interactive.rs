@@ -1,7 +1,9 @@
 use crate::CRATE_NAME;
 use crate::cli::{
     AccountCreateCommand, AccountDeleteCommand, AccountImportCommand, CertificateModifyCommand,
-    IssueCommand, IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
+    DebugCommonArgs, DebugDeactivateAuthorizationCommand, DebugShowAuthorizationCommand,
+    DebugShowChallengeCommand, DebugShowOrderCommand, IssueCommand, IssuerAddCommand,
+    IssuerRemoveCommand, RevokeCommand,
 };
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration,
@@ -9,6 +11,7 @@ use crate::config::{
 };
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
+use crate::issuer::AcmeIssuerWithAccount;
 use crate::{Certonaut, NewAccountOptions};
 use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
@@ -262,5 +265,69 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             .revoke_certificate(&cert_id, reason)
             .await
             .context("Failed to revoke certificate")
+    }
+
+    pub async fn debug_show_order(&self, cmd: DebugShowOrderCommand) -> anyhow::Result<()> {
+        let issuer = self.debug_get_issuer(&cmd.common)?;
+        let order = issuer.get_order(&cmd.order_url).await?;
+        println!("{order:?}");
+        Ok(())
+    }
+
+    pub async fn debug_show_authorization(
+        &self,
+        cmd: DebugShowAuthorizationCommand,
+    ) -> anyhow::Result<()> {
+        let issuer = self.debug_get_issuer(&cmd.common)?;
+        let authorization = issuer.get_authorization(&cmd.authorization_url).await?;
+        println!("{authorization:?}");
+        Ok(())
+    }
+
+    pub async fn debug_show_challenge(&self, cmd: DebugShowChallengeCommand) -> anyhow::Result<()> {
+        let issuer = self.debug_get_issuer(&cmd.common)?;
+        let challenge = issuer.get_challenge(&cmd.challenge_url).await?;
+        println!("{challenge:?}");
+        Ok(())
+    }
+
+    pub async fn debug_deactivate_authorization(
+        &self,
+        cmd: DebugDeactivateAuthorizationCommand,
+    ) -> anyhow::Result<()> {
+        let issuer = self.debug_get_issuer(&cmd.common)?;
+        issuer.deactivate_authorizations(&cmd.order_url).await?;
+        println!(
+            "Successfully deactivated authorizations for order {}",
+            cmd.order_url
+        );
+        Ok(())
+    }
+
+    fn debug_get_issuer(
+        &'_ self,
+        debug: &DebugCommonArgs,
+    ) -> anyhow::Result<AcmeIssuerWithAccount<'_>> {
+        Ok(if let Some(account_id) = &debug.account {
+            self.client.get_issuer_with_account(&debug.ca, account_id)?
+        } else {
+            let ca = self
+                .client
+                .get_ca(&debug.ca)
+                .context(format!("CA {} not found", debug.ca))?;
+            if ca.num_accounts() != 1 {
+                bail!(
+                    "Multiple accounts found for default CA {}. Specify an account on the command line",
+                    ca.config.identifier
+                );
+            }
+            let single_account = ca
+                .get_accounts()
+                .map(|account| &account.get_config().identifier)
+                .next()
+                .unwrap();
+            ca.with_account(single_account)
+                .context("Account not found")?
+        })
     }
 }

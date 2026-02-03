@@ -401,6 +401,17 @@ impl AcmeClient {
         Ok(response.body)
     }
 
+    pub async fn get_challenge(
+        &self,
+        account_key: &JsonWebKey,
+        challenge_url: &Url,
+    ) -> ProtocolResult<Challenge> {
+        let response = self
+            .post_with_retry(challenge_url, account_key, EMPTY_PAYLOAD)
+            .await?;
+        Ok(response.body)
+    }
+
     pub async fn download_certificate(
         &self,
         account_key: &JsonWebKey,
