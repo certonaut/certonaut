@@ -6,6 +6,7 @@ use crate::crypto::asymmetric::{KeyPair, KeyType};
 use crate::dns::solver::acme_dns;
 use crate::magic::MagicHttpSolver;
 use crate::pebble::ChallengeTestHttpSolver;
+use crate::url::Url;
 use crate::util::serde_helper::key_type_config_serializer;
 use crate::{CRATE_NAME, Identifier};
 use anyhow::{Context, Error};
@@ -16,7 +17,6 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::OnceLock;
-use url::Url;
 use x509_parser::nom::AsBytes;
 
 mod toml;

@@ -1,6 +1,7 @@
 use anyhow::bail;
 use async_trait::async_trait;
 use certonaut::dns::name::DnsName;
+use certonaut::url::Url;
 use hickory_resolver::Name;
 use hickory_resolver::config::NameServerConfigGroup;
 use hickory_resolver::proto::rr::{LowerName, RecordType};
@@ -16,7 +17,6 @@ use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use url::Url;
 
 /// `StubDnsResolver` is a (test-only) DNS solver that combines local and forwarding lookups.
 /// It can be "stubbed" with a local zone whose records can be added/removed dynamically.

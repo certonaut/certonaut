@@ -22,6 +22,7 @@ use crate::issuer::{AcmeIssuer, AcmeIssuerWithAccount};
 use crate::state::Database;
 use crate::state::types::external::RenewalInformation;
 use crate::time::humanize_duration;
+use crate::url::Url;
 use anyhow::{Context, Error, anyhow, bail};
 use clap::ValueEnum;
 use itertools::Itertools;
@@ -38,7 +39,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use strum::VariantArray;
 use tracing::{error, info, warn};
-use url::Url;
 
 pub mod acme;
 pub mod cert;
@@ -57,6 +57,7 @@ pub mod pebble;
 pub mod renew;
 pub mod state;
 pub mod time;
+pub mod url;
 pub mod util;
 
 /// The name of the application

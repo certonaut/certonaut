@@ -12,12 +12,12 @@ use crate::config::{
 use crate::crypto::asymmetric::{Curve, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::issuer::AcmeIssuerWithAccount;
+use crate::url::Url;
 use crate::{Certonaut, NewAccountOptions};
 use anyhow::{Context, Error, bail};
 use crossterm::style::Stylize;
 use std::str::FromStr;
 use tracing::warn;
-use url::Url;
 
 pub struct NonInteractiveService<CB> {
     client: Certonaut<CB>,
@@ -270,7 +270,8 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     pub async fn debug_show_order(&self, cmd: DebugShowOrderCommand) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let order = issuer.get_order(&cmd.order_url).await?;
-        println!("{order:#?}");
+        let order_json = serde_json::to_string_pretty(&order)?;
+        println!("{order_json}");
         Ok(())
     }
 
@@ -280,14 +281,16 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     ) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let authorization = issuer.get_authorization(&cmd.authorization_url).await?;
-        println!("{authorization:#?}");
+        let authorization_json = serde_json::to_string_pretty(&authorization)?;
+        println!("{authorization_json}");
         Ok(())
     }
 
     pub async fn debug_show_challenge(&self, cmd: DebugShowChallengeCommand) -> anyhow::Result<()> {
         let issuer = self.debug_get_issuer(&cmd.common)?;
         let challenge = issuer.get_challenge(&cmd.challenge_url).await?;
-        println!("{challenge:#?}");
+        let challenge_json = serde_json::to_string_pretty(&challenge)?;
+        println!("{challenge_json}");
         Ok(())
     }
 

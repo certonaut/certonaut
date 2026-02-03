@@ -14,6 +14,7 @@ use crate::dns::resolver::Resolver;
 use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
+use crate::url::Url;
 use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
 use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
@@ -26,7 +27,6 @@ use std::time::Duration;
 use time::error::ConversionRange;
 use tokio::sync::OnceCell;
 use tracing::{debug, error, info, warn};
-use url::Url;
 
 #[derive(Debug)]
 pub struct AcmeIssuer {

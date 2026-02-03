@@ -6,6 +6,7 @@ use certonaut::acme::client::{AccountRegisterOptions, AcmeClientBuilder};
 use certonaut::acme::http::HttpClient;
 use certonaut::config::{AccountConfiguration, CertificateAuthorityConfiguration, ConfigBackend};
 use certonaut::crypto::asymmetric::KeyPair;
+use certonaut::url::Url;
 use certonaut::{AcmeAccount, Certonaut};
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -18,7 +19,6 @@ use testcontainers::core::logs::consumer::LogConsumer;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::{ContainerAsync, GenericImage, ImageExt};
 use tokio::net::UdpSocket;
-use url::Url;
 
 pub mod dns;
 

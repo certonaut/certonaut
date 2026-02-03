@@ -9,6 +9,7 @@ use crate::acme::object::{
 };
 use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
+use crate::url::Url;
 use crate::util::serde_helper::PassthroughBytes;
 use base64::Engine;
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
@@ -24,7 +25,6 @@ use std::fmt::{Display, Formatter};
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
 use tracing::{debug, warn};
-use url::Url;
 
 /// The maximum number of retries we do, per request
 const MAX_RETRIES: usize = 3;
@@ -625,9 +625,11 @@ impl AcmeClient {
     ) -> ProtocolResult<RenewalResponse> {
         if let Some(ari_base) = &self.get_directory().renewal_info {
             let mut ari_base = ari_base.clone();
-            if !ari_base.path().ends_with('/') {
+            let ari_path = ari_base.path();
+            if !ari_path.ends_with('/') {
                 // Ensure trailing slash for correct join behavior
-                ari_base.set_path(&format!("{}/", ari_base.path()));
+                let new_path = format!("{}/", ari_path);
+                ari_base.set_path(&new_path);
             }
             let fetch_url = ari_base
                 .join(&identifier.to_string())
@@ -812,7 +814,7 @@ mod tests {
     fn test_jwk() -> JsonWebKey {
         JsonWebKey::new_existing(
             KeyPair::load_from_disk(File::open("testdata/keys/account.key").unwrap()).unwrap(),
-            ACCOUNT_URL.try_into().unwrap(),
+            Url::parse(ACCOUNT_URL).unwrap(),
         )
     }
 

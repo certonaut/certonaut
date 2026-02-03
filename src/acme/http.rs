@@ -1,11 +1,11 @@
 use crate::USER_AGENT;
 use crate::acme::error::ProtocolResult;
 use crate::acme::object::Nonce;
+use crate::url::Url;
 use reqwest::{Certificate, ClientBuilder, Method, Request, Response};
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
 use tracing::warn;
-use url::Url;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(120);
@@ -72,7 +72,7 @@ impl HttpClient {
         res.headers()
             .get(reqwest::header::LOCATION)
             .and_then(|header| header.to_str().ok())
-            .and_then(|location_str| parse_url(res.url(), location_str))
+            .and_then(|location_str| parse_url(res.url().into(), location_str))
     }
 
     pub fn extract_relation_links(res: &Response) -> Vec<RelationLink> {
@@ -84,7 +84,7 @@ impl HttpClient {
             .flat_map(IntoIterator::into_iter)
             .flatten()
             .filter_map(|link| {
-                let url = parse_url(res.url(), link.url)?;
+                let url = parse_url(res.url().into(), link.url)?;
                 if let Some(relation) = link.params.into_iter().find(|param| param.key == "rel") {
                     Some(RelationLink {
                         relation: relation.val?,
@@ -102,7 +102,8 @@ impl HttpClient {
     }
 
     pub async fn get(&self, url: Url) -> ProtocolResult<Response> {
-        self.execute(Request::new(Method::GET, url)).await
+        self.execute(Request::new(Method::GET, url.into_url()))
+            .await
     }
 
     pub async fn get_with_retry(
@@ -113,7 +114,9 @@ impl HttpClient {
     ) -> ProtocolResult<Response> {
         let mut attempts = 0;
         loop {
-            let response = self.execute(Request::new(Method::GET, url.clone())).await;
+            let response = self
+                .execute(Request::new(Method::GET, url.clone().into()))
+                .await;
             match response {
                 Ok(response) if response.status().is_server_error() && attempts < retries => {
                     warn!(
@@ -135,7 +138,7 @@ impl HttpClient {
     }
 
     pub async fn head(&self, url: Url) -> ProtocolResult<Response> {
-        self.execute(Request::new(Method::HEAD, url)).await
+        self.execute(Request::new(Method::HEAD, url.into())).await
     }
 
     pub async fn post<T: Serialize + 'static>(
@@ -143,6 +146,7 @@ impl HttpClient {
         url: Url,
         body: &T,
     ) -> ProtocolResult<Response> {
+        let url: url::Url = url.into();
         let request_builder = self.client.post(url);
         // RFC8555 Section 6.2, "[clients] must have the Content-Type header field set
         // to "application/jose+json""
@@ -170,7 +174,7 @@ fn parse_retry_after(retry_after: &str) -> Option<SystemTime> {
     }
 }
 
-fn parse_url(base_url: &Url, raw_url: &str) -> Option<Url> {
+fn parse_url(base_url: Url, raw_url: &str) -> Option<Url> {
     // As per RFC7231 (Location) and RFC8288 (Link), both the Link and Location header
     // may contain relative URLs as well as absolute URls. We need to ensure we parse both.
     // Fortunately, the Url crate already contains the logic for this.
@@ -185,9 +189,9 @@ pub struct RelationLink {
 
 #[cfg(test)]
 pub mod test_helper {
+    use crate::url::Url;
     use mockito::{Mock, ServerGuard};
     use serde::Serialize;
-    use url::Url;
 
     pub trait AbsoluteUrl {
         fn absolute_url(&self, path: &str) -> Url;

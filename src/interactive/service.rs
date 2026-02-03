@@ -11,6 +11,7 @@ use crate::crypto::jws::ExternalAccountBinding;
 use crate::interactive::editor::{ClosureEditor, InteractiveConfigEditor};
 use crate::renew::RenewService;
 use crate::time::{ParsedDuration, humanize_duration};
+use crate::url::Url;
 use crate::{
     AcmeAccount, AcmeIssuer, AcmeIssuerWithAccount, AcmeProfile, CRATE_NAME, Certonaut,
     DomainSolverMap, Identifier, NewAccountOptions, RevocationReason, choose_solver_name,
@@ -30,7 +31,6 @@ use std::sync::Mutex;
 use strum::VariantArray;
 use tokio::sync::RwLock;
 use tracing::{error, warn};
-use url::Url;
 
 #[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
@@ -1305,7 +1305,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
             .collect::<Vec<_>>();
         let mut contacts = Vec::with_capacity(emails.len());
         for contact in emails {
-            contacts.push(Url::try_from(contact.as_str()).context("Validating contact URL")?);
+            contacts.push(Url::parse(contact.as_str()).context("Validating contact URL")?);
         }
         let ca_name = &ca.config.name;
         let ca_id = &ca.config.identifier;
