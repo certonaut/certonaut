@@ -15,7 +15,7 @@ anyhow = "1.0.95"
 async-trait = "0.1.84"
 aws-lc-rs = { version = "1.15.1", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.22.1"
-clap = { version = "4.5.23", features = ["derive", "env"] }
+clap = { version = "4.5.60", features = ["derive", "env"] }
 crossterm = "0.29.0"
 futures = "0.3.31"
 httpdate = "1.0.3"
