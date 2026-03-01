@@ -74,7 +74,7 @@ jobs:
       run: cargo build --locked --all-features --target ${{ matrix.target }} --release
 
     - name: Upload built binary
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.artifact }}
         path: target/${{ matrix.target }}/release/certonaut${{ matrix.ext }}
