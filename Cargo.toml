@@ -4,7 +4,7 @@ version = "0.2.0"
 repository = "https://github.com/certonaut/certonaut"
 license = "MIT"
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.92.0"
 default-run = "certonaut"
 
 [features]
