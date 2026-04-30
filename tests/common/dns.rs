@@ -28,7 +28,6 @@ use std::sync::Arc;
 ///
 /// It does **not** implement the DNS protocol correctly and must only be used for testing.
 pub struct StubDnsResolver {
-    server: ServerFuture<Catalog>,
     authority: Arc<StubAuthority>,
     listen_addr: SocketAddr,
 }
@@ -37,7 +36,7 @@ impl StubDnsResolver {
     /// Create a new resolver instance.
     ///
     /// # Arguments
-    /// - `listen_addr` - The address tuple (IP + port) the resolver will listen on. Currently UDP only (no TCP). Set port to 0 to choose an arbitrary port.
+    /// - `listen_addr` - The address tuple (IP + port) the resolver will listen on. Supports both UDP and TCP. Set port to 0 to choose an arbitrary port.
     /// - `local_zone` - Zone name where local data can be added.
     /// - `forward_servers` - All queries will be forwarded to (at least one) forward server and the results are merged with the local zone.
     ///   Can be an empty list, in which case forwarding is implicitly disabled.
@@ -46,15 +45,23 @@ impl StubDnsResolver {
         local_zone: Name,
         forward_servers: NameServerConfigGroup,
     ) -> anyhow::Result<Self> {
-        let socket = tokio::net::UdpSocket::bind(listen_addr).await?;
-        let listen_addr = socket.local_addr()?;
+        let udp_socket = tokio::net::UdpSocket::bind(listen_addr).await?;
+        let listen_addr = udp_socket.local_addr()?;
+
+        let tcp_listener = tokio::net::TcpListener::bind(listen_addr).await?;
+
         let mut catalog = Catalog::default();
         let authority = Arc::new(StubAuthority::try_new(local_zone, forward_servers)?);
         catalog.upsert(LowerName::from(Name::root()), vec![authority.clone()]);
         let mut server = ServerFuture::new(catalog);
-        server.register_socket(socket);
+        server.register_socket(udp_socket);
+        server.register_listener(tcp_listener, Default::default());
+
+        tokio::spawn(async move {
+            let _ = server.block_until_done().await;
+        });
+
         Ok(Self {
-            server,
             authority,
             listen_addr,
         })

@@ -46,10 +46,12 @@ impl WebServerContainer {
             .context("temp dir path must be valid UTF-8")?;
         let challenge_port = challenge_port.tcp();
         let spawned_container =
-            GenericImage::new("ghcr.io/static-web-server/static-web-server", "latest")
+            GenericImage::new("ghcr.io/static-web-server/static-web-server", "2.42.0")
+                .with_cmd(["--ignore-hidden-files=false"])
                 .with_env_var("SERVER_PORT", challenge_port.as_u16().to_string())
+                .with_env_var("SERVER_ROOT", "/var/public")
                 .with_network(HOST_NETWORK)
-                .with_mount(Mount::bind_mount(webroot_path, "/public"))
+                .with_mount(Mount::bind_mount(webroot_path, "/var/public"))
                 .with_log_consumer(TestLogConsumer::default())
                 .start()
                 .await

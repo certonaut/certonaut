@@ -34,7 +34,7 @@ pub struct PebbleContainer {
 impl PebbleContainer {
     pub async fn spawn(dns_server: Url) -> anyhow::Result<Self> {
         let dns_server = dns_server.authority();
-        let spawned_container = GenericImage::new("ghcr.io/letsencrypt/pebble", "latest")
+        let spawned_container = GenericImage::new("ghcr.io/letsencrypt/pebble", "2.10.1")
             .with_wait_for(WaitFor::message_on_stdout(
                 "ACME directory available at: https://0.0.0.0:14000/dir",
             ))
@@ -82,14 +82,14 @@ impl ChallengeTestServerContainer {
             IpAddr::V6(host_ip) => (String::new(), host_ip.to_string()),
         };
         let spawned_container =
-            GenericImage::new("ghcr.io/letsencrypt/pebble-challtestsrv", "latest")
+            GenericImage::new("ghcr.io/letsencrypt/pebble-challtestsrv", "2.10.1")
                 .with_wait_for(WaitFor::message_on_stdout("Starting challenge servers"))
                 .with_cmd([
                     "-defaultIPv4",
                     &default_ipv4,
                     "-defaultIPv6",
                     &default_ipv6,
-                    "-dns01",
+                    "-dnsserver",
                     &format!(":{dns_port}"),
                     "-http01",
                     &format!(":{validation_port}"),

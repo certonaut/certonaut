@@ -44,8 +44,8 @@ impl AcmeDnsContainer {
     pub async fn spawn() -> anyhow::Result<Self> {
         let data_dir = tempdir()?;
         let config_file = Self::create_acme_dns_config(data_dir.path()).await?;
-        let spawned_container = GenericImage::new("ghcr.io/certonaut/acme-dns-ci", "latest")
-            .with_wait_for(WaitFor::message_on_stderr("Listening DNS"))
+        let spawned_container = GenericImage::new("ghcr.io/certonaut/acme-dns-ci", "v2.0.2")
+            .with_wait_for(WaitFor::message_on_stdout("Listening HTTP"))
             .with_mount(Mount::bind_mount(
                 config_file
                     .to_str()

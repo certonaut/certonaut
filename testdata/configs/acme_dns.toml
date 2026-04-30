@@ -9,7 +9,7 @@ records = [
 ]
 debug = false
 [database]
-engine = "sqlite3"
+engine = "sqlite"
 connection = "/var/lib/acme-dns/acme-dns.db"
 [api]
 ip = "0.0.0.0"
