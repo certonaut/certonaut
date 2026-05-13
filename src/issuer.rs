@@ -4,7 +4,7 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{ParsedX509Certificate, create_and_sign_csr, load_certificates_from_memory};
+use crate::cert::{create_and_sign_csr, load_certificates_from_memory, ParsedX509Certificate};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
 };
@@ -15,8 +15,8 @@ use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
 use crate::url::Url;
-use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
-use anyhow::{Context, Error, anyhow, bail};
+use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier, RevocationReason};
+use anyhow::{anyhow, bail, Context, Error};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -147,7 +147,7 @@ impl AcmeIssuer {
         let Some(renewal_identifier) = &cert.acme_renewal_identifier else {
             let serial = &cert.serial;
             debug!(
-                "Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
+                "{cert_id}: Cert with serial {serial} does not support ACME Renewal Information (missing Authority Key Identifier extension)"
             );
             return Ok(None);
         };
@@ -156,20 +156,25 @@ impl AcmeIssuer {
         ))?;
         match client.get_renewal_info(renewal_identifier).await {
             Ok(renewal_info) => {
-                debug!("ARI server response: {renewal_info}");
-                let now = ::time::OffsetDateTime::now_utc();
+                debug!("{cert_id}: ARI server response: {renewal_info}");
+                let now = time::OffsetDateTime::now_utc();
                 if let Some(explanation_url) = renewal_info.renewal_info.explanation_url {
                     info!(
-                        "The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
+                        "Certificate {cert_id}: The server attached an explanation URL to a recently retrieved ACME Renewal Information. You may want to review it:"
                     );
                     info!("{explanation_url}");
                 }
                 let mut window = renewal_info.renewal_info.suggested_window;
                 if window.end > cert.validity.not_after {
                     warn!(
-                        "The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
+                        "Certificate {cert_id}: The CA provided an ARI window where the end time is after the certificate's expiry. Clamping the window."
                     );
                     window.end = cert.validity.not_after;
+                }
+                if window.start < now && window.end < now {
+                    info!(
+                        "Certificate {cert_id}: The CA provided an ARI window entirely in the past, indicating that the certificate should be renewed urgently."
+                    );
                 }
                 let start_unix = window.start.unix_timestamp_nanos();
                 let end_unix = window.end.unix_timestamp_nanos();
@@ -181,9 +186,9 @@ impl AcmeIssuer {
                 }
                 let mut rng = rand::rng();
                 let random_unix = rng.random_range(start_unix..=end_unix);
-                let random_time = ::time::OffsetDateTime::from_unix_timestamp_nanos(random_unix)
+                let random_time = time::OffsetDateTime::from_unix_timestamp_nanos(random_unix)
                     .context("Determining ARI window: Invalid time range provided by server")?;
-                debug!("Determined ARI random renewal time @ {random_time}");
+                debug!("{cert_id}: Determined ARI random renewal time @ {random_time}");
                 Ok(Some(RenewalInformation {
                     cert_id,
                     fetched_at: now,
@@ -264,7 +269,7 @@ impl AcmeIssuerWithAccount<'_> {
         let (not_before, not_after) = match cert_lifetime {
             Some(lifetime) => {
                 let not_before = current_time_truncated();
-                let not_after = ::time::Duration::try_from(lifetime)
+                let not_after = time::Duration::try_from(lifetime)
                     .and_then(|lifetime| not_before.checked_add(lifetime).ok_or(ConversionRange))
                     .context("Range error computing cert validity dates")
                     .client_failure()?;
@@ -659,10 +664,10 @@ impl AcmeIssuerWithAccount<'_> {
         // Check the original chain first
         let parsed_certs = load_certificates_from_memory(&original_cert.pem, None)
             .context("Parsing original chain failed")?;
-        if let Some(last_cert) = parsed_certs.last() {
-            if last_cert.issuer.contains(wanted_issuer) {
-                return Ok(original_cert.to_owned());
-            }
+        if let Some(last_cert) = parsed_certs.last()
+            && last_cert.issuer.contains(wanted_issuer)
+        {
+            return Ok(original_cert.to_owned());
         }
 
         let client = self.client().await?;
@@ -755,7 +760,7 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
+    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
