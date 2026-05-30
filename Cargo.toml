@@ -11,7 +11,7 @@ default-run = "certonaut"
 magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", "dep:http-body-util", "dep:hyper", "dep:hyper-util"]
 
 [dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.102"
 async-trait = "0.1.84"
 aws-lc-rs = { version = "1.15.1", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
 base64 = "0.22.1"
