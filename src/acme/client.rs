@@ -455,10 +455,8 @@ impl AcmeClient {
         let mut last_error = None;
         while Instant::now() < deadline {
             match challenge.status {
-                ChallengeStatus::Pending => {
-                    // Challenge should not be in pending after submission, but let's wait anyway
-                }
-                ChallengeStatus::Processing => {
+                // Challenge should not be in pending after submission, but some CA's are buggy and use this for processing
+                ChallengeStatus::Pending | ChallengeStatus::Processing => {
                     if let Some(err) = challenge.error {
                         // If the ACME server reports processing and an error,
                         // it is still retrying. Remember the error in case we give up,
