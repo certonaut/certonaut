@@ -1,7 +1,10 @@
 use crate::crypto::SignatureError;
-use crate::crypto::jws::{Algorithm, JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
+use crate::crypto::jws::{
+    Algorithm, JsonWebKeyEcdsa, JsonWebKeyEdDsa, JsonWebKeyParameters, JsonWebKeyRsa,
+};
 use anyhow::{Context, anyhow, bail};
 use aws_lc_rs::encoding::AsBigEndian;
+use aws_lc_rs::signature::KeyPair as AwsLcKeyPair;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING};
 use aws_lc_rs::{encoding, encoding::AsDer, rand::SystemRandom, rsa, signature};
 use base64::Engine;
@@ -17,6 +20,7 @@ use std::sync::OnceLock;
 pub enum KeyType {
     Ecdsa(Curve),
     Rsa(rsa::KeySize),
+    EdDsa(Curve),
 }
 
 impl Display for KeyType {
@@ -24,6 +28,10 @@ impl Display for KeyType {
         match &self {
             KeyType::Ecdsa(curve) => write!(f, "ECDSA with {curve}"),
             KeyType::Rsa(size) => write!(f, "RSA-{}", size.len() * 8),
+            KeyType::EdDsa(curve) => match curve {
+                Curve::Ed25519 => write!(f, "Ed25519"),
+                Curve::P256 | Curve::P384 => panic!("Invalid curve for EdDSA"),
+            },
         }
     }
 }
@@ -34,6 +42,7 @@ pub enum Curve {
     P256,
     #[serde(rename = "P-384")]
     P384,
+    Ed25519,
 }
 
 impl Curve {
@@ -43,6 +52,7 @@ impl Curve {
         match self {
             Curve::P256 => &ECDSA_P256_SHA256_FIXED_SIGNING,
             Curve::P384 => &ECDSA_P384_SHA384_FIXED_SIGNING,
+            Curve::Ed25519 => panic!("Not an ECDSA curve"),
         }
     }
 
@@ -50,6 +60,7 @@ impl Curve {
         match self {
             Curve::P256 => "P-256",
             Curve::P384 => "P-384",
+            Curve::Ed25519 => "Ed25519",
         }
     }
 }
@@ -60,7 +71,8 @@ impl TryFrom<&str> for Curve {
         match value {
             "P-256" => Ok(Curve::P256),
             "P-384" => Ok(Curve::P384),
-            _ => Err(anyhow!("Unknown EC curve {}", value)),
+            "Ed25519" => Ok(Curve::Ed25519),
+            _ => Err(anyhow!("Unknown EC/Ed curve {}", value)),
         }
     }
 }
@@ -76,6 +88,7 @@ impl Display for Curve {
 pub enum KeyPair {
     Ecdsa(EcdsaKeyPair),
     Rsa(RsaKeyPair),
+    EdDsa(EdDsaKeyPair),
 }
 
 impl KeyPair {
@@ -94,8 +107,10 @@ impl KeyPair {
             KeyPair::Ecdsa(keypair) => match keypair.curve {
                 Curve::P256 => Algorithm::EcdsaP256Sha256,
                 Curve::P384 => Algorithm::EcdsaP384Sha384,
+                Curve::Ed25519 => panic!("Invalid ECDSA curve"),
             },
             KeyPair::Rsa(_) => Algorithm::RsaPkcs1Sha256,
+            KeyPair::EdDsa(_) => Algorithm::EdDsa,
         }
     }
 
@@ -119,6 +134,9 @@ impl KeyPair {
                 || alg == &rcgen::PKCS_RSA_SHA512 =>
             {
                 KeyPair::Rsa(RsaKeyPair::from_der(pkcs8_der)?)
+            }
+            alg if alg == &rcgen::PKCS_ED25519 => {
+                KeyPair::EdDsa(EdDsaKeyPair::from_der(pkcs8_der)?)
             }
             _ => bail!("unsupported algorithm in PEM"),
         })
@@ -158,6 +176,17 @@ impl RsaKeyPair {
     }
 }
 
+#[derive(Debug)]
+pub struct EdDsaKeyPair {
+    keypair: signature::Ed25519KeyPair,
+}
+
+impl EdDsaKeyPair {
+    fn new(keypair: signature::Ed25519KeyPair) -> Self {
+        Self { keypair }
+    }
+}
+
 #[allow(clippy::module_name_repetitions)]
 pub trait AsymmetricKeyOperation
 where
@@ -173,6 +202,7 @@ impl AsymmetricKeyOperation for KeyPair {
         match self {
             KeyPair::Ecdsa(keypair) => AsymmetricKeyOperation::sign(keypair, message),
             KeyPair::Rsa(keypair) => AsymmetricKeyOperation::sign(keypair, message),
+            KeyPair::EdDsa(keypair) => AsymmetricKeyOperation::sign(keypair, message),
         }
     }
 
@@ -180,6 +210,7 @@ impl AsymmetricKeyOperation for KeyPair {
         match self {
             KeyPair::Ecdsa(keypair) => AsymmetricKeyOperation::to_pem(keypair),
             KeyPair::Rsa(keypair) => AsymmetricKeyOperation::to_pem(keypair),
+            KeyPair::EdDsa(keypair) => AsymmetricKeyOperation::to_pem(keypair),
         }
     }
 
@@ -187,6 +218,7 @@ impl AsymmetricKeyOperation for KeyPair {
         match self {
             KeyPair::Ecdsa(keypair) => AsymmetricKeyOperation::to_jwk_parameters(keypair),
             KeyPair::Rsa(keypair) => AsymmetricKeyOperation::to_jwk_parameters(keypair),
+            KeyPair::EdDsa(keypair) => AsymmetricKeyOperation::to_jwk_parameters(keypair),
         }
     }
 }
@@ -232,6 +264,7 @@ impl AsymmetricKeyOperation for EcdsaKeyPair {
                 let point_len = match self.curve {
                     Curve::P256 => 32,
                     Curve::P384 => 48,
+                    Curve::Ed25519 => panic!("Invalid ECDSA curve"),
                 };
                 let x = &pub_key_bytes[1..=point_len];
                 let y = &pub_key_bytes[(1 + point_len)..];
@@ -297,6 +330,40 @@ impl RsaKeyPair {
     }
 }
 
+impl AsymmetricKeyOperation for EdDsaKeyPair {
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignatureError> {
+        let signature = self
+            .keypair
+            .try_sign(message)
+            .map_err(|_| SignatureError::SignatureGeneration("EdDSA signing failed"))?;
+        let signature_bytes = signature.as_ref();
+        Ok(signature_bytes.to_vec())
+    }
+
+    fn to_pem(&self) -> Result<Pem, SignatureError> {
+        let data = self
+            .keypair
+            .to_pkcs8v1()
+            .map_err(|_| SignatureError::EncodingFailed("Serializing EdDSA keypair failed"))?;
+        let pem = Pem::new("PRIVATE KEY", data.as_ref());
+        Ok(pem)
+    }
+
+    fn to_jwk_parameters(&self) -> JsonWebKeyParameters {
+        let x = self.keypair.public_key().as_ref();
+        let x = BASE64_URL_SAFE_NO_PAD.encode(x);
+        JsonWebKeyParameters::EdDsa(JsonWebKeyEdDsa::new(Curve::Ed25519, x))
+    }
+}
+
+impl EdDsaKeyPair {
+    pub fn from_der(der: &[u8]) -> anyhow::Result<Self> {
+        let keypair = signature::Ed25519KeyPair::from_pkcs8(der)
+            .map_err(|_| anyhow!("EdDSA private key file is corrupted or invalid"))?;
+        Ok(Self::new(keypair))
+    }
+}
+
 fn save_key_to_file(pem: &Pem, mut file: File) -> anyhow::Result<()> {
     file.write_all(pem.to_string().as_bytes())
         .context("writing private key to file failed")?;
@@ -327,14 +394,26 @@ pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
                 .map_err(|_| anyhow!("Could not generate key"))?;
             KeyPair::Rsa(RsaKeyPair::new(keypair))
         }
+        KeyType::EdDsa(curve) => match curve {
+            Curve::Ed25519 => {
+                let keypair = signature::Ed25519KeyPair::generate()
+                    .map_err(|_| anyhow!("Could not generate key"))?;
+                KeyPair::EdDsa(EdDsaKeyPair::new(keypair))
+            }
+            Curve::P256 | Curve::P384 => panic!("Invalid curve for EdDSA"),
+        },
     })
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType, new_key};
-    use crate::crypto::jws::{JsonWebKeyEcdsa, JsonWebKeyParameters, JsonWebKeyRsa};
+    use crate::crypto::jws::{
+        JsonWebKeyEcdsa, JsonWebKeyEdDsa, JsonWebKeyParameters, JsonWebKeyRsa,
+    };
     use aws_lc_rs::rsa::KeySize;
+    use base64::Engine;
+    use base64::prelude::BASE64_URL_SAFE_NO_PAD;
     use rstest::*;
     use std::fs::File;
     use std::io::{Seek, SeekFrom};
@@ -383,6 +462,10 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
 -----END PRIVATE KEY-----
 ";
 
+    pub const TEST_ED25519: &str = r"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
+-----END PRIVATE KEY-----";
+
     fn temp_file() -> File {
         tempfile::tempfile().unwrap()
     }
@@ -410,6 +493,7 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::rsa2048(KeyType::Rsa(KeySize::Rsa2048))]
     #[case::rsa3072(KeyType::Rsa(KeySize::Rsa3072))]
     #[case::rsa4096(KeyType::Rsa(KeySize::Rsa4096))]
+    #[case::ed25519(KeyType::EdDsa(Curve::Ed25519))]
     fn test_new_key(#[case] key_type: KeyType) {
         let _ = new_key(key_type).expect("Key generation should not have failed");
     }
@@ -438,6 +522,10 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::rsa2048(TEST_RSA_PEM, JsonWebKeyParameters::Rsa(JsonWebKeyRsa::new(
                 "liR3NaM-u9QqCKMaL5eaU7YD7ZeWwnNCjxhAnNeTm-G0adqb6eYVE3iey_0T_7BpIneDFMLwXJAPTlWKjtBRAGuIcMafgEkGt3CqSAQyAK-8HOuDFMEpswWxfg1yvqF_z-7pIOP2K-qD5F3UfTxd0-LEBQVCR9H4IPSIjo_N2pqB_3Y4Y38oN-RhIHD10ieTDYW5KR0lYowl1mWtnTZvV5XjeUW85FKJDpAXc21zMUHrAvowrodpWVEquHICdmxOfZTPpzPadRy7sA3jsSWQNr6SwsUHDAaeSyEwbG79iEc36vHqgD_GUtUjWne8oEQHzBK8S1UPNyCam_vaTquK6w".to_string(),
                 "AQAB".to_string())))]
+    #[case::ed25519(TEST_ED25519, JsonWebKeyParameters::EdDsa(JsonWebKeyEdDsa::new(
+            Curve::Ed25519,
+            "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".to_string(),
+    )))]
     fn test_to_jwk_parameters(
         #[case] test_pem: &'static str,
         #[case] expected_jwk: JsonWebKeyParameters,
@@ -451,6 +539,7 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::p256(TEST_EC_256)]
     #[case::p384(TEST_EC_384)]
     #[case::rsa2048(TEST_RSA_PEM)]
+    #[case::ed25519(TEST_ED25519)]
     fn test_to_pem(#[case] expected_pem: &'static str) {
         let keypair = KeyPair::from_pem(expected_pem).unwrap();
         let actual_pem = keypair.to_pem().expect("pem serialization failed");
@@ -461,6 +550,7 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::p256(TEST_EC_256, 64)]
     #[case::p384(TEST_EC_384, 96)]
     #[case::rsa2048(TEST_RSA_PEM, 256)]
+    #[case::ed25519(TEST_ED25519, 64)]
     fn test_sign_length(#[case] expected_pem: &'static str, #[case] expected_length: usize) {
         let message = "Hello, world!".as_bytes();
         let keypair = KeyPair::from_pem(expected_pem).unwrap();
@@ -477,6 +567,7 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
     #[case::p256(TEST_EC_256)]
     #[case::p384(TEST_EC_384)]
     #[case::rsa2048(TEST_RSA_PEM)]
+    #[case::ed25519(TEST_ED25519)]
     fn test_save_and_load(#[case] test_pem: &'static str) {
         let mut file = temp_file();
         let keypair = KeyPair::from_pem(test_pem).unwrap();
@@ -487,6 +578,24 @@ TJewtdXtUp5YK9kffYrWgDuhjq4X2SiUmOdYdDKzleh2ebpLokzCSxk=
             keypair.to_jwk_parameters(),
             loaded_keypair.to_jwk_parameters(),
             "loaded key not equal to generated key"
+        );
+    }
+
+    #[rstest]
+    fn test_sign_eddsa() {
+        let keypair = KeyPair::from_pem(TEST_ED25519).unwrap();
+        let message = "eyJhbGciOiJFZERTQSJ9.RXhhbXBsZSBvZiBFZDI1NTE5IHNpZ25pbmc";
+        let signature = keypair
+            .sign(message.as_bytes())
+            .expect("signing must not fail");
+        let expected_signature = BASE64_URL_SAFE_NO_PAD
+            .decode(
+                "hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR6dWbhijcNR4ki4iylGjg5BhVsPt9g7sVvpAr_MuM0KAg",
+            )
+            .unwrap();
+        assert_eq!(
+            signature, expected_signature,
+            "signature does not match expected signature from RFC8037 example"
         );
     }
 }

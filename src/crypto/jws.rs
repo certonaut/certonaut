@@ -41,6 +41,8 @@ pub enum Algorithm {
     RsaPkcs1Sha256,
     #[serde(rename = "HS256")]
     HmacSha256,
+    #[serde(rename = "EdDSA")]
+    EdDsa,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -58,6 +60,7 @@ pub enum KeyParameters {
 pub enum JsonWebKeyParameters {
     Ecdsa(JsonWebKeyEcdsa),
     Rsa(JsonWebKeyRsa),
+    EdDsa(JsonWebKeyEdDsa),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -103,6 +106,26 @@ impl JsonWebKeyRsa {
     }
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct JsonWebKeyEdDsa {
+    #[serde(rename = "kty")]
+    key_type: &'static str,
+    #[serde(rename = "crv")]
+    curve: Curve,
+    #[serde(rename = "x")]
+    x_coordinate: String,
+}
+
+impl JsonWebKeyEdDsa {
+    pub fn new(curve: Curve, x_coordinate: String) -> Self {
+        Self {
+            key_type: "OKP",
+            curve,
+            x_coordinate,
+        }
+    }
+}
+
 pub const EMPTY_PAYLOAD: Option<&()> = None;
 
 #[derive(Debug)]
@@ -130,6 +153,12 @@ impl JsonWebKey {
                 let kty = rsa.key_type;
                 let n = &rsa.modulus;
                 format!(r#"{{"e":"{e}","kty":"{kty}","n":"{n}"}}"#)
+            }
+            JsonWebKeyParameters::EdDsa(ed_dsa) => {
+                let crv = ed_dsa.curve.as_str();
+                let kty = ed_dsa.key_type;
+                let x = &ed_dsa.x_coordinate;
+                format!(r#"{{"crv":"{crv}","kty":"{kty}","x":"{x}"}}"#)
             }
         };
         let hash = sha256(fixed_serialization.as_bytes());
@@ -287,8 +316,8 @@ mod tests {
     use crate::acme::object::Nonce;
     use crate::crypto::asymmetric::{Curve, KeyPair};
     use crate::crypto::jws::{
-        Algorithm, ExternalAccountBinding, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyParameters,
-        JsonWebKeyRsa, KeyParameters, ProtectedHeader,
+        Algorithm, ExternalAccountBinding, JsonWebKey, JsonWebKeyEcdsa, JsonWebKeyEdDsa,
+        JsonWebKeyParameters, JsonWebKeyRsa, KeyParameters, ProtectedHeader,
     };
     use crate::url::Url;
     use base64::Engine;
@@ -354,6 +383,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_serialize_protected_header_with_eddsa() {
+        let header = ProtectedHeader {
+            algorithm: Algorithm::EdDsa,
+            nonce: Nonce::try_from("QWERTZ".to_string()).unwrap(),
+            target_url: Url::parse("https://example.com/protected-header-test").unwrap(),
+            key: KeyParameters::FullKey(JsonWebKeyParameters::EdDsa(JsonWebKeyEdDsa::new(
+                Curve::Ed25519,
+                "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".to_string(),
+            ))),
+        };
+        let expected_header = r#"{
+  "alg": "EdDSA",
+  "nonce": "QWERTZ",
+  "url": "https://example.com/protected-header-test",
+  "jwk": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+  }
+}"#;
+        let actual_header = serde_json::to_string_pretty(&header).unwrap();
+        assert_eq!(
+            expected_header, actual_header,
+            "serialization failed, expected {expected_header}, got {actual_header}"
+        );
+    }
+
     #[rstest]
     #[case::rsa(JsonWebKeyParameters::Rsa(JsonWebKeyRsa::new("0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw".to_string(), "AQAB".to_string())), "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs")]
     #[case::ecdsa(
@@ -364,6 +421,7 @@ mod tests {
         )),
         "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s"
     )]
+    #[case::eddsa(JsonWebKeyParameters::EdDsa(JsonWebKeyEdDsa::new(Curve::Ed25519, "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".to_string())), "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k")]
     fn test_compute_account_thumbprint(
         #[case] parameters: JsonWebKeyParameters,
         #[case] expected_thumbprint: &str,
