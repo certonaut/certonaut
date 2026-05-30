@@ -39,7 +39,7 @@ url = { version = "2.5.4", features = ["serde"] }
 x509-parser = "0.17.0"
 itertools = "0.14.0"
 cyborgtime = "2.1.1"
-strum = { version = "0.27.1", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 fs4 = { version = "0.13.0", features = ["tokio"] }
 sqlx = { version = "0.8.3", features = ["runtime-tokio", "sqlite", "time"] }
 rand = "0.9.3"
