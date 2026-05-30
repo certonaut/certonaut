@@ -11,7 +11,7 @@ where
     fn algorithm(&self) -> Algorithm;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MacKey {
     Hmac(HashMacKey),
 }
@@ -22,7 +22,7 @@ impl MacKey {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HashMacKey {
     key: hmac::Key,
 }

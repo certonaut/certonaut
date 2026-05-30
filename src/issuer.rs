@@ -4,9 +4,10 @@ use crate::acme::object::{
     AccountStatus, AcmeRenewalIdentifier, Authorization, AuthorizationStatus, Challenge,
     ChallengeStatus, InnerChallenge, NewOrderRequest, Order, OrderStatus,
 };
-use crate::cert::{create_and_sign_csr, load_certificates_from_memory, ParsedX509Certificate};
+use crate::cert::{ParsedX509Certificate, create_and_sign_csr, load_certificates_from_memory};
 use crate::config::{
     CertificateAuthorityConfiguration, CertificateAuthorityConfigurationWithAccounts,
+    ConfigBackend, ConfigurationManager,
 };
 use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::JsonWebKey;
@@ -15,8 +16,8 @@ use crate::error::{IssueContext, IssueResult};
 use crate::state::types::external::RenewalInformation;
 use crate::time::current_time_truncated;
 use crate::url::Url;
-use crate::{acme, new_acme_client, AcmeAccount, Authorizer, Identifier, RevocationReason};
-use anyhow::{anyhow, bail, Context, Error};
+use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
+use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
 use rand::Rng;
 use rcgen::CertificateSigningRequest;
@@ -37,7 +38,8 @@ pub struct AcmeIssuer {
 }
 
 impl AcmeIssuer {
-    pub fn try_new(
+    pub fn try_new<CB: ConfigBackend>(
+        config_manager: &ConfigurationManager<CB>,
         config: CertificateAuthorityConfigurationWithAccounts,
         resolver: Arc<Resolver>,
     ) -> anyhow::Result<Self> {
@@ -45,7 +47,7 @@ impl AcmeIssuer {
         let mut accounts = HashMap::new();
         for account_config in config.accounts {
             let account_id = account_config.identifier.clone();
-            let account = AcmeAccount::load_existing(account_config)?;
+            let account = AcmeAccount::load_existing(config_manager, account_config)?;
             if let Some(old) = accounts.insert(account_id, account) {
                 let id = old.config.identifier;
                 bail!("Duplicate account id {id} in configuration");
@@ -760,7 +762,8 @@ mod tests {
     use crate::cert::Validity;
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
-    use crate::crypto::asymmetric::{new_key, Curve, KeyType};
+    use crate::config::test_backend::NoopBackend;
+    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -797,6 +800,7 @@ mod tests {
     }
 
     fn setup_fake_issuer(mut mock_client: AcmeClient) -> anyhow::Result<AcmeIssuer> {
+        let noop_manager = ConfigurationManager::new(NoopBackend {});
         let fake_directory = Box::new(Directory {
             new_nonce: test_url(),
             new_account: test_url(),
@@ -832,7 +836,7 @@ mod tests {
         let mut mock_resolver = Resolver::faux();
         faux::when!(mock_resolver.resolve_cname_chain).then(Ok);
         let resolver = Arc::new(mock_resolver);
-        let issuer = AcmeIssuer::try_new(fake_config, resolver)?;
+        let issuer = AcmeIssuer::try_new(&noop_manager, fake_config, resolver)?;
         issuer.override_client(mock_client)?;
         Ok(issuer)
     }
@@ -1225,6 +1229,7 @@ mod tests {
     }
 
     fn setup_issuer_with_profiles() -> anyhow::Result<(HashMap<String, String>, AcmeIssuer)> {
+        let noop_manager = ConfigurationManager::new(NoopBackend {});
         let mut mock_client = AcmeClient::faux();
         let expected_profiles: HashMap<_, _> = [
             ("first-profile", "this is the first profile"),
@@ -1256,6 +1261,7 @@ mod tests {
         }
         let resolver = Arc::new(Resolver::new());
         let issuer = AcmeIssuer::try_new(
+            &noop_manager,
             CertificateAuthorityConfigurationWithAccounts {
                 inner: CertificateAuthorityConfiguration {
                     name: "test".to_string(),

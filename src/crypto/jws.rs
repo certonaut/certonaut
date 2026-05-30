@@ -232,7 +232,7 @@ impl FlatJsonWebSignature {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExternalAccountBinding {
     key_id: String,
     key: MacKey,
