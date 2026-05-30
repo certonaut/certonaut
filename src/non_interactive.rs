@@ -86,7 +86,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
                     name: account_name,
                     identifier: account_id,
                     contacts,
-                    key_types: [KeyType::Ecdsa(Curve::P256)].into(),
+                    key_types: [KeyType::EdDsa(Curve::Ed25519), KeyType::Ecdsa(Curve::P256)].into(),
                     terms_of_service_agreed: Some(cmd.terms_of_service_agreed),
                     external_account_binding: eab,
                 },

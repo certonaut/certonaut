@@ -136,6 +136,10 @@ pub(crate) mod serde_helper {
                         };
                     serializer.serialize_str(&name)
                 }
+                KeyType::EdDsa(curve) => {
+                    let name = "EDDSA-".to_string() + curve.as_str();
+                    serializer.serialize_str(&name)
+                }
             }
         }
 
@@ -157,6 +161,9 @@ pub(crate) mod serde_helper {
                         _ => return Err(E::custom(format!("unsupported key size {size}"))),
                     };
                     Ok(KeyType::Rsa(key_size))
+                } else if let Some(curve) = input.strip_prefix("EDDSA-") {
+                    let curve = Curve::try_from(curve).map_err(E::custom)?;
+                    Ok(KeyType::EdDsa(curve))
                 } else {
                     Err(E::unknown_variant(input, &["ECDSA-", "RSA-"]))
                 }

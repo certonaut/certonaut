@@ -297,6 +297,8 @@ pub enum CommandLineKeyType {
     Rsa4096,
     /// RSA (8192-bit key)
     Rsa8192,
+    /// Ed25519 (`EdDSA`)
+    Ed25519,
 }
 
 impl Display for CommandLineKeyType {
@@ -315,6 +317,7 @@ impl From<CommandLineKeyType> for KeyType {
             CommandLineKeyType::Rsa3072 => KeyType::Rsa(KeySize::Rsa3072),
             CommandLineKeyType::Rsa4096 => KeyType::Rsa(KeySize::Rsa4096),
             CommandLineKeyType::Rsa8192 => KeyType::Rsa(KeySize::Rsa8192),
+            CommandLineKeyType::Ed25519 => KeyType::EdDsa(Curve::Ed25519),
         }
     }
 }

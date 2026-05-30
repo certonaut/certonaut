@@ -1311,8 +1311,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
                     name: account_name,
                     identifier: account_id,
                     contacts,
-                    // TODO: We could try EdDSA keys first, check for a badSignatureError, and then retry with P256?
-                    key_types: [KeyType::Ecdsa(Curve::P256)].into(),
+                    key_types: [KeyType::EdDsa(Curve::Ed25519), KeyType::Ecdsa(Curve::P256)].into(),
                     terms_of_service_agreed: tos_status,
                     external_account_binding: eab,
                 },
