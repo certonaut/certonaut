@@ -50,6 +50,7 @@ pub trait ConfigBackend {
         id: &str,
         limit: Option<usize>,
     ) -> Result<Vec<ParsedX509Certificate>, Error>;
+    fn load_account_private_key(&self, account_path: &Path) -> Result<KeyPair, Error>;
     fn save_certificate_config(
         &self,
         id: &str,
@@ -57,6 +58,8 @@ pub trait ConfigBackend {
     ) -> Result<(), Error>;
     fn save_certificate_private_key(&self, id: &str, key: &KeyPair) -> Result<(), Error>;
     fn save_certificate_file(&self, id: &str, cert: &DownloadedCertificate) -> Result<(), Error>;
+    fn save_account_private_key(&self, id: &str, key: &KeyPair) -> Result<PathBuf, Error>;
+    fn delete_account_private_key(&self, account_path: &Path) -> Result<(), Error>;
     fn list_certificates(&self) -> Result<Vec<String>, Error>;
     fn certificate_directory(&self, id: &str) -> PathBuf;
 }
@@ -72,6 +75,10 @@ impl<'a> MultiFileConfigBackend<'a> {
 
     fn certificate_path(&self, id: &str) -> PathBuf {
         self.base_dir.join("certs").join(id)
+    }
+
+    fn account_key_path(&self) -> PathBuf {
+        self.base_dir.join("account_keys")
     }
 
     fn main_path(&self) -> &Path {
@@ -116,6 +123,16 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
         load_certificates_from_file(cert_file, limit)
     }
 
+    fn load_account_private_key(&self, account_path: &Path) -> Result<KeyPair, Error> {
+        let base_key_path = self.account_key_path();
+        let key_file = base_key_path.join(account_path);
+        KeyPair::load_from_disk(
+            File::open(&key_file)
+                .context(format!("Opening account key file {}", key_file.display()))?,
+        )
+        .context(format!("Loading account key {}", key_file.display()))
+    }
+
     fn save_certificate_config(
         &self,
         id: &str,
@@ -156,6 +173,40 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
             cert_file.display()
         ))?;
         Ok(())
+    }
+
+    fn save_account_private_key(&self, id: &str, key: &KeyPair) -> Result<PathBuf, Error> {
+        let base_key_path = self.account_key_path();
+        std::fs::create_dir_all(&base_key_path).context(format!(
+            "Creating account key directory {}",
+            base_key_path.display()
+        ))?;
+        let relative_path: PathBuf = format!("{id}.key").into();
+        let key_file = base_key_path.join(&relative_path);
+        let key_file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&key_file)
+            .context(format!(
+                "Opening account private key file {}",
+                key_file.display()
+            ))?;
+        key.save_to_disk(key_file)?;
+        Ok(relative_path)
+    }
+
+    fn delete_account_private_key(&self, account_path: &Path) -> Result<(), Error> {
+        let base_key_path = self.account_key_path();
+        let key_file = base_key_path.join(account_path);
+        match std::fs::remove_file(&key_file) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e).context(format!(
+                "Removing account private key file {}",
+                key_file.display()
+            ))?,
+        }
     }
 
     fn list_certificates(&self) -> Result<Vec<String>, Error> {
@@ -261,6 +312,10 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         self.backend.load_certificate_private_key(id)
     }
 
+    pub fn load_account_key(&self, account_path: &Path) -> Result<KeyPair, Error> {
+        self.backend.load_account_private_key(account_path)
+    }
+
     pub fn save_certificate_config(
         &self,
         id: &str,
@@ -293,6 +348,14 @@ impl<B: ConfigBackend> ConfigurationManager<B> {
         self.save_certificate_private_key(id, keypair)?;
         self.save_downloaded_certificate(id, cert)?;
         Ok(())
+    }
+
+    pub fn save_account_key(&self, id: &str, key: &KeyPair) -> Result<PathBuf, Error> {
+        self.backend.save_account_private_key(id, key)
+    }
+
+    pub fn delete_account_key(&self, key_path: &Path) -> Result<(), Error> {
+        self.backend.delete_account_private_key(key_path)
     }
 
     pub fn certificate_directory(&self, cert_id: &str) -> PathBuf {
@@ -564,7 +627,7 @@ pub mod test_backend {
     };
     use crate::crypto::asymmetric::KeyPair;
     use anyhow::Error;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     pub fn new_configuration_manager_with_noop_backend() -> ConfigurationManager<NoopBackend> {
         ConfigurationManager::new(NoopBackend {})
@@ -597,6 +660,10 @@ pub mod test_backend {
             unimplemented!("noop backend cannot load certificate files")
         }
 
+        fn load_account_private_key(&self, account_path: &Path) -> Result<KeyPair, Error> {
+            KeyPair::load_from_disk(std::fs::File::open(account_path)?)
+        }
+
         fn save_certificate_config(
             &self,
             _id: &str,
@@ -615,6 +682,14 @@ pub mod test_backend {
             _cert: &DownloadedCertificate,
         ) -> Result<(), Error> {
             Ok(())
+        }
+
+        fn save_account_private_key(&self, _id: &str, _key: &KeyPair) -> Result<PathBuf, Error> {
+            Ok(PathBuf::new())
+        }
+
+        fn delete_account_private_key(&self, _account_path: &Path) -> Result<(), Error> {
+            unimplemented!("noop backend cannot delete account private keys",)
         }
 
         fn list_certificates(&self) -> Result<Vec<String>, Error> {

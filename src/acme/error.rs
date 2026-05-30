@@ -135,6 +135,7 @@ pub const ACME_BAD_NONCE: &str = "urn:ietf:params:acme:error:badNonce";
 pub const ACME_RATE_LIMITED: &str = "urn:ietf:params:acme:error:rateLimited";
 pub const ACME_UNAUTHORIZED: &str = "urn:ietf:params:acme:error:unauthorized";
 pub const ACME_SERVER_INTERNAL: &str = "urn:ietf:params:acme:error:serverInternal";
+pub const ACME_BAD_SIGNATURE_ALGORITHM: &str = "urn:ietf:params:acme:error:badSignatureAlgorithm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Problem {
@@ -162,6 +163,14 @@ impl Problem {
     pub fn is_server_failure(&self) -> bool {
         self.typ == ACME_SERVER_INTERNAL
             || self.subproblems.iter().any(Subproblem::is_server_failure)
+    }
+
+    pub fn is_bad_signature_algorithm(&self) -> bool {
+        self.typ == ACME_BAD_SIGNATURE_ALGORITHM
+            || self
+                .subproblems
+                .iter()
+                .any(Subproblem::is_bad_signature_algorithm)
     }
 
     pub fn into_result(self) -> Result<(), Error> {
@@ -207,6 +216,10 @@ impl Subproblem {
 
     pub fn is_server_failure(&self) -> bool {
         self.typ == ACME_SERVER_INTERNAL
+    }
+
+    pub fn is_bad_signature_algorithm(&self) -> bool {
+        self.typ == ACME_BAD_SIGNATURE_ALGORITHM
     }
 }
 

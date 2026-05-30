@@ -66,18 +66,9 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         }
         println!("Creating a new account at CA {ca_name}");
         let acme_client = issuer.client().await?;
-        let ca_name = &issuer.config.name;
-        let account_num = issuer.num_accounts();
-        let account_name = cmd.account_name.unwrap_or_else(|| {
-            if account_num > 0 {
-                format!("{ca_name} ({account_num})")
-            } else {
-                ca_name.to_string()
-            }
-        });
-        let account_id = cmd
-            .account_id
-            .unwrap_or_else(|| format!("{ca_id}@{account_num}"));
+        let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(issuer);
+        let account_name = cmd.account_name.unwrap_or(default_name);
+        let account_id = cmd.account_id.unwrap_or(default_id);
         let eab = if let Some(kid) = cmd.external_account_kid {
             if let Some(hmac_base64) = cmd.external_account_hmac_key {
                 Some(ExternalAccountBinding::try_new(kid, hmac_base64)?)
@@ -87,18 +78,20 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         } else {
             None
         };
-        let new_account = Certonaut::<CB>::create_account(
-            acme_client,
-            NewAccountOptions {
-                name: account_name,
-                identifier: account_id,
-                contacts,
-                key_type: KeyType::Ecdsa(Curve::P256),
-                terms_of_service_agreed: Some(cmd.terms_of_service_agreed),
-                external_account_binding: eab,
-            },
-        )
-        .await?;
+        let new_account = self
+            .client
+            .create_account(
+                acme_client,
+                NewAccountOptions {
+                    name: account_name,
+                    identifier: account_id,
+                    contacts,
+                    key_types: [KeyType::Ecdsa(Curve::P256)].into(),
+                    terms_of_service_agreed: Some(cmd.terms_of_service_agreed),
+                    external_account_binding: eab,
+                },
+            )
+            .await?;
         let acc_id = new_account.config.identifier.clone();
         self.client.add_new_account(&ca_id, new_account)?;
         let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
@@ -111,10 +104,10 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         let Some(ca_id) = cmd.ca_identifier else {
             bail!("A certificate authority must be specified in noninteractive mode")
         };
-        let Some(account_id) = cmd.account_id else {
-            bail!("An account ID in noninteractive mode")
-        };
-        let account_name = cmd.account_name.unwrap_or_else(|| account_id.clone());
+        let ca = self.client.get_ca(&ca_id).context("CA {ca_id} not found")?;
+        let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
+        let account_id = cmd.account_id.unwrap_or(default_id);
+        let account_name = cmd.account_name.unwrap_or(default_name);
         let Some(key_path) = cmd.key_file else {
             bail!("A path to the account key file must be specified in noninteractive mode")
         };

@@ -107,7 +107,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
     pub async fn interactive_create_account(&mut self) -> Result<(), Error> {
         let ca_id = self.interactive_select_ca(true)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
-        let new_account = Self::user_create_account(issuer).await?;
+        let new_account = self.user_create_account(issuer).await?;
         let acc_id = new_account.config.identifier.clone();
         self.client.add_new_account(&ca_id, new_account)?;
         let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
@@ -162,36 +162,26 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
                     Err(e) => {
                         error!("Failed to open account key file: {e:#}. Please try again.");
                     }
-                };
-            },
-        };
-        let account_id = match import.account_id {
-            Some(account_id) => account_id,
-            None => loop {
-                let account_id = Text::new(
-                    "Please give this account an identifier (must be unique and a valid filename)",
-                )
-                .prompt()
-                .context("No account name given")?;
-                if self
-                    .client
-                    // .get_issuer_with_account("a", "b")
-                    .get_issuer_with_account(&ca_id, &account_id)
-                    .is_ok()
-                {
-                    warn!("{account_id} already exists for this CA, choose another name");
-                    continue;
                 }
-                break account_id;
             },
         };
-        let account_name = match &import.account_name {
+        let ca = self
+            .client
+            .get_ca(&ca_id)
+            .ok_or(anyhow!("CA {ca_id} not found"))?;
+        let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
+        let account_id = import.account_id.unwrap_or(default_id);
+        let account_name = match import.account_name {
             Some(account_name) => account_name,
-            None => &account_id,
+            None => Text::new("You can give this account a customized name if you like:")
+                .with_default(default_name.as_str())
+                .prompt_skippable()
+                .context("Error prompting for account name")?
+                .unwrap_or(default_name),
         };
         let account = self
             .client
-            .import_account(&ca_id, &account_id, account_name, account_key)
+            .import_account(&ca_id, &account_id, &account_name, account_key)
             .await?;
         let url = account.config.url.to_string();
         self.client.add_new_account(&ca_id, account)?;
@@ -350,14 +340,14 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
             .certificates
             .iter()
             .map(|(cert_id, cert_config)| CertChoice {
-                id: cert_id.to_string(),
-                display_name: cert_config.display_name.to_string(),
+                id: cert_id.clone(),
+                display_name: cert_config.display_name.clone(),
                 domains: cert_config
                     .domains_and_solvers
                     .domains
                     .keys()
                     .sorted()
-                    .map(std::string::ToString::to_string)
+                    .map(ToString::to_string)
                     .collect(),
             })
             .collect();
@@ -1096,7 +1086,8 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             match Self::user_select_account(issuer, true)? {
                 AccountChoice::ExistingAccount(ac) => ac.identifier,
                 AccountChoice::NewAccount => {
-                    let new_account = Self::user_create_account(issuer)
+                    let new_account = self
+                        .user_create_account(issuer)
                         .await
                         .context("Error while creating new account")?;
                     let account_id = new_account.config.identifier.clone();
@@ -1253,7 +1244,7 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         Ok(user_choice)
     }
 
-    async fn user_create_account(ca: &AcmeIssuer) -> Result<AcmeAccount, Error> {
+    async fn user_create_account(&self, ca: &AcmeIssuer) -> Result<AcmeAccount, Error> {
         let ca_name = ca.config.name.as_str().green();
         println!("Creating a new account at CA {ca_name}");
         let acme_client = ca.client().await?;
@@ -1307,28 +1298,26 @@ of email addresses below, or leave the field empty to not provide any contact ad
         for contact in emails {
             contacts.push(Url::parse(contact.as_str()).context("Validating contact URL")?);
         }
-        let ca_name = &ca.config.name;
-        let ca_id = &ca.config.identifier;
-        let account_num = ca.num_accounts();
-        let account_name = if account_num > 0 {
-            format!("{ca_name} ({account_num})")
-        } else {
-            ca_name.to_string()
-        };
-        let account_id = format!("{ca_id}@{account_num}");
-        Certonaut::<CB>::create_account(
-            acme_client,
-            NewAccountOptions {
-                name: account_name,
-                identifier: account_id,
-                contacts,
-                // TODO: We could try EdDSA keys first, check for a badSignatureError, and then retry with P256?
-                key_type: KeyType::Ecdsa(Curve::P256),
-                terms_of_service_agreed: tos_status,
-                external_account_binding: eab,
-            },
-        )
-        .await
+        let (account_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
+        let account_name = Text::new("You can give this account a customized name if you like:")
+            .with_default(default_name.as_str())
+            .prompt_skippable()
+            .context("Error prompting for account name")?
+            .unwrap_or(default_name);
+        self.client
+            .create_account(
+                acme_client,
+                NewAccountOptions {
+                    name: account_name,
+                    identifier: account_id,
+                    contacts,
+                    // TODO: We could try EdDSA keys first, check for a badSignatureError, and then retry with P256?
+                    key_types: [KeyType::Ecdsa(Curve::P256)].into(),
+                    terms_of_service_agreed: tos_status,
+                    external_account_binding: eab,
+                },
+            )
+            .await
     }
 
     async fn user_create_account_ca_specific_features(
@@ -1417,7 +1406,7 @@ You may need to create an account at the CA's website first.",
             "(The above is compatible to certbot, so scripts written for certbot should just work)"
         );
         let script_raw = if let Some(InstallerConfiguration::Script { script }) = &current {
-            script.to_string()
+            script.clone()
         } else {
             String::new()
         };

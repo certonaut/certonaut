@@ -2,6 +2,7 @@
 #![deny(unsafe_code)]
 
 use crate::acme::client::{AccountRegisterOptions, AcmeClient};
+use crate::acme::error::Error::AcmeProblem;
 use crate::acme::http::HttpClient;
 use crate::cert::{ParsedX509Certificate, load_certificates_from_memory};
 use crate::challenge_solver::ChallengeSolver;
@@ -31,7 +32,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt::{Debug, Display, Formatter};
-use std::fs::File;
 use std::net::IpAddr;
 use std::ops::Neg;
 use std::str::FromStr;
@@ -405,7 +405,7 @@ pub struct NewAccountOptions {
     pub name: String,
     pub identifier: String,
     pub contacts: Vec<Url>,
-    pub key_type: KeyType,
+    pub key_types: Vec<KeyType>,
     pub terms_of_service_agreed: Option<bool>,
     pub external_account_binding: Option<ExternalAccountBinding>,
 }
@@ -417,11 +417,11 @@ pub struct AcmeAccount {
 }
 
 impl AcmeAccount {
-    pub fn load_existing(config: AccountConfiguration) -> Result<Self, Error> {
-        let key_path = &config.key_file;
-        let key_file = File::open(key_path)
-            .context(format!("Cannot read account key {}", key_path.display()))?;
-        let keypair = KeyPair::load_from_disk(key_file)?;
+    pub fn load_existing<CB: ConfigBackend>(
+        config_provider: &ConfigurationManager<CB>,
+        config: AccountConfiguration,
+    ) -> Result<Self, Error> {
+        let keypair = config_provider.load_account_key(&config.key_file)?;
         let jwk = JsonWebKey::new_existing(keypair, config.url.clone());
         Ok(Self { config, jwk })
     }
@@ -473,7 +473,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         let mut issuers = HashMap::new();
         for ca in config.main.ca_list {
             let id = ca.inner.identifier.clone();
-            let issuer = AcmeIssuer::try_new(ca, resolver.clone())?;
+            let issuer = AcmeIssuer::try_new(&manager, ca, resolver.clone())?;
             if let Some(old) = issuers.insert(id, issuer) {
                 let id = old.config.identifier;
                 bail!("Duplicate CA id {id} in configuration");
@@ -540,57 +540,67 @@ impl<CB: ConfigBackend> Certonaut<CB> {
     }
 
     pub async fn create_account(
+        &self,
         client: &AcmeClient,
         options: NewAccountOptions,
     ) -> Result<AcmeAccount, Error> {
-        let keypair =
-            asymmetric::new_key(options.key_type).context("Generating new account key")?;
-        let mut account_name = options.name;
-        if account_name.is_empty() {
-            account_name.clone_from(&options.identifier);
-        }
-        let account_id = options.identifier;
-        let config_path = config_directory();
-        let key_path = config_path
-            .join("account_keys")
-            .join(format!("{account_id}.key"));
-        if let Some(parent) = key_path.parent() {
-            std::fs::create_dir_all(parent).context("Creating account key directory")?;
-        }
-        let account_file = File::create_new(&key_path).context("Saving account key to file")?;
-        keypair
-            .save_to_disk(account_file)
-            .context("Saving account key to file")?;
-        let key_path = key_path
-            .canonicalize()
-            .context("Saving account key to file")?;
+        let mut last_error = None;
+        for (i, key_type) in options.key_types.iter().copied().enumerate() {
+            let keypair = asymmetric::new_key(key_type)
+                .context(format!("Generating new account key of type {key_type}"))?;
+            let account_name = options.name.clone();
+            let account_id = options.identifier.clone();
+            let key_path = self
+                .config
+                .save_account_key(&account_id, &keypair)
+                .context("Saving account key")?;
+            let register_options = AccountRegisterOptions {
+                key: keypair,
+                contact: options.contacts.clone(),
+                terms_of_service_agreed: options.terms_of_service_agreed,
+                external_account_binding: options.external_account_binding.clone(),
+            };
+            let (jwk, url, _account) = match client.register_account(register_options).await {
+                Ok((jwk, url, account)) => (jwk, url, account),
+                Err(AcmeProblem(problem)) => {
+                    if i < options.key_types.len() - 1 {
+                        // We have the option to retry with a different key.
+                        // According to RFC8555 Section 6.2: "If the client sends a JWS signed with an algorithm that the server
+                        //    does not support, then the server MUST return an error with [...] badSignatureAlgorithm".
+                        // Unfortunately, CA's are known to be bad at handling this, so we cannot rely on it.
+                        // Thus, we retry all the time, but we add extra logging in a case where we need to guess.
+                        if !problem.is_bad_signature_algorithm() {
+                            warn!(
+                                "The CA refused account creation with an unknown error, assuming the key type {key_type} is unsupported"
+                            );
+                            warn!("The CA reported this error: {problem}");
+                        }
+                        last_error = Some(problem);
+                        continue;
+                    }
+                    // We have no other key types available, treat this as a hard error.
+                    return Err(AcmeProblem(problem)).context("Registering account at CA failed");
+                }
+                Err(err) => {
+                    return Err(err).context("Registering account at CA failed");
+                }
+            };
 
-        let options = AccountRegisterOptions {
-            key: keypair,
-            contact: options.contacts,
-            terms_of_service_agreed: options.terms_of_service_agreed,
-            external_account_binding: options.external_account_binding,
-        };
-        let (jwk, url, _account) = match client
-            .register_account(options)
-            .await
-            .context("Registering account at CA failed")
-        {
-            Ok((jwk, url, account)) => (jwk, url, account),
-            Err(err) => {
-                // Remove the account key we just created to avoid a conflict if the user retries
-                std::fs::remove_file(&key_path).ok(); // We're already reporting a fatal error, swallow the cleanup problem
-                bail!(err)
-            }
-        };
-
-        let config = AccountConfiguration {
-            name: account_name,
-            identifier: account_id,
-            key_file: key_path,
-            url,
-        };
-        Ok(AcmeAccount::new_account(config, jwk))
+            let config = AccountConfiguration {
+                name: account_name,
+                identifier: account_id,
+                key_file: key_path,
+                url,
+            };
+            return Ok(AcmeAccount::new_account(config, jwk));
+        }
+        bail!(
+            "The CA does not support any of the offered key types (tried: {}). The last error was: {}",
+            options.key_types.into_iter().join(", "),
+            last_error
+                .map(|err| err.to_string())
+                .unwrap_or_else(|| "No error available".to_string())
+        );
     }
 
     pub fn add_new_ca(&mut self, new_ca: CertificateAuthorityConfiguration) -> Result<(), Error> {
@@ -599,7 +609,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             inner: new_ca,
             accounts: vec![],
         };
-        let issuer = AcmeIssuer::try_new(new_ca, self.resolver.clone())?;
+        let issuer = AcmeIssuer::try_new(&self.config, new_ca, self.resolver.clone())?;
         if issuer.config.default {
             self.issuers
                 .values_mut()
@@ -630,23 +640,13 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         account_name: &str,
         account_key: KeyPair,
     ) -> Result<AcmeAccount, Error> {
+        let key_path = self
+            .config
+            .save_account_key(account_id, &account_key)
+            .context("Saving imported account key")?;
         let ca = self
             .get_ca_mut(ca_id)
             .ok_or(anyhow::anyhow!("CA {ca_id} not found"))?;
-        let config_path = config_directory();
-        let key_path = config_path
-            .join("account_keys")
-            .join(format!("{account_id}.key"));
-        if let Some(parent) = key_path.parent() {
-            std::fs::create_dir_all(parent).context("Creating account key directory")?;
-        }
-        let account_file = File::create_new(&key_path).context("Saving account key to file")?;
-        account_key
-            .save_to_disk(account_file)
-            .context("Saving account key to file")?;
-        let key_path = key_path
-            .canonicalize()
-            .context("Saving account key to file")?;
         let (jwk, account_url) = ca.fetch_account_from_ca(account_key).await?;
         let imported_account = AcmeAccount {
             config: AccountConfiguration {
@@ -674,6 +674,19 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             ca_id = format!("{ca_id_base}-{ca_num}");
         }
         ca_id
+    }
+
+    pub fn choose_account_id_and_name(ca: &AcmeIssuer) -> (String, String) {
+        let ca_name = &ca.config.name;
+        let ca_id = &ca.config.identifier;
+        let account_num = ca.num_accounts();
+        let account_name = if account_num > 0 {
+            format!("{ca_name} ({account_num})")
+        } else {
+            ca_name.to_string()
+        };
+        let account_id = format!("{ca_id}@{account_num}");
+        (account_id, account_name)
     }
 
     pub fn choose_cert_name_from_domains<'a, I: Iterator<Item = &'a Identifier>>(
@@ -724,7 +737,10 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             self.config
                 .save_main(&self.current_main_config())
                 .context("Saving new configuration")?;
-            if let Err(e) = std::fs::remove_file(deleted_account.config.key_file) {
+            if let Err(e) = self
+                .config
+                .delete_account_key(&deleted_account.config.key_file)
+            {
                 warn!("Failed to delete account key: {}", e);
             }
             Ok(())
