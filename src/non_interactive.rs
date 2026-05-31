@@ -1,15 +1,15 @@
 use crate::CRATE_NAME;
 use crate::cli::{
-    AccountCreateCommand, AccountDeleteCommand, AccountImportCommand, CertificateModifyCommand,
-    DebugCommonArgs, DebugDeactivateAuthorizationCommand, DebugShowAuthorizationCommand,
-    DebugShowChallengeCommand, DebugShowOrderCommand, IssueCommand, IssuerAddCommand,
-    IssuerRemoveCommand, RevokeCommand,
+    AccountCommonCommand, AccountCreateCommand, AccountDeleteCommand, AccountImportCommand,
+    AccountRolloverCommand, CertificateModifyCommand, DebugCommonArgs,
+    DebugDeactivateAuthorizationCommand, DebugShowAuthorizationCommand, DebugShowChallengeCommand,
+    DebugShowOrderCommand, IssueCommand, IssuerAddCommand, IssuerRemoveCommand, RevokeCommand,
 };
 use crate::config::{
     AdvancedCertificateConfiguration, CertificateAuthorityConfiguration, CertificateConfiguration,
     ConfigBackend, InstallerConfiguration,
 };
-use crate::crypto::asymmetric::{Curve, KeyType};
+use crate::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use crate::crypto::jws::ExternalAccountBinding;
 use crate::issuer::AcmeIssuerWithAccount;
 use crate::url::Url;
@@ -52,10 +52,13 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     }
 
     pub async fn create_account(&mut self, cmd: AccountCreateCommand) -> Result<(), Error> {
-        let Some(ca_id) = cmd.ca_identifier else {
+        let Some(ca_id) = cmd.common.ca_identifier else {
             bail!("A certificate authority must be specified in noninteractive mode")
         };
-        let issuer = self.client.get_ca(&ca_id).context("CA not found")?;
+        let issuer = self
+            .client
+            .get_ca(&ca_id)
+            .context(format!("CA {ca_id} not found"))?;
         let ca_name = issuer.config.name.as_str().green();
         let mut contacts = Vec::new();
         for contact in cmd.contact {
@@ -68,7 +71,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
         let acme_client = issuer.client().await?;
         let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(issuer);
         let account_name = cmd.account_name.unwrap_or(default_name);
-        let account_id = cmd.account_id.unwrap_or(default_id);
+        let account_id = cmd.common.account_id.unwrap_or(default_id);
         let eab = if let Some(kid) = cmd.external_account_kid {
             if let Some(hmac_base64) = cmd.external_account_hmac_key {
                 Some(ExternalAccountBinding::try_new(kid, hmac_base64)?)
@@ -101,18 +104,21 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     }
 
     pub async fn import_account(&mut self, cmd: AccountImportCommand) -> Result<(), Error> {
-        let Some(ca_id) = cmd.ca_identifier else {
+        let Some(ca_id) = cmd.common.ca_identifier else {
             bail!("A certificate authority must be specified in noninteractive mode")
         };
-        let ca = self.client.get_ca(&ca_id).context("CA {ca_id} not found")?;
+        let ca = self
+            .client
+            .get_ca(&ca_id)
+            .context(format!("CA {ca_id} not found"))?;
         let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
-        let account_id = cmd.account_id.unwrap_or(default_id);
+        let account_id = cmd.common.account_id.unwrap_or(default_id);
         let account_name = cmd.account_name.unwrap_or(default_name);
         let Some(key_path) = cmd.key_file else {
             bail!("A path to the account key file must be specified in noninteractive mode")
         };
         let key_file = std::fs::File::open(key_path).context("Failed to open account key file")?;
-        let account_key = crate::crypto::asymmetric::KeyPair::load_from_disk(key_file)
+        let account_key = KeyPair::load_from_disk(key_file)
             .context("Failed to load account key file. Make sure it is in PEM format.")?;
         let imported_account = self
             .client
@@ -123,23 +129,28 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
     }
 
     pub async fn delete_account(&mut self, cmd: AccountDeleteCommand) -> Result<(), Error> {
-        let Some(ca_id) = cmd.ca_identifier else {
-            bail!("A certificate authority must be specified in noninteractive mode")
-        };
-        let issuer = self.client.get_ca(&ca_id).context("CA not found")?;
-        let Some(account_id) = cmd.account_id else {
-            bail!("An account ID must be specified in noninteractive mode")
-        };
-        let issuer = issuer
-            .with_account(&account_id)
-            .context(format!("Account {account_id} not found at CA {ca_id}"))?;
+        let issuer = self.get_issuer_from_account_cmd(cmd.common)?;
+        let ca_id = issuer.issuer.config.identifier.clone();
+        let acc_id = issuer.account.get_config().identifier.clone();
         if let Err(e) = issuer.deactivate_account().await {
             warn!("Account deactivation at CA failed: {e:#}");
         } else {
             println!("Account deactivated.");
         }
-        self.client.remove_account(&ca_id, &account_id)?;
+        self.client.remove_account(&ca_id, &acc_id)?;
         println!("Successfully removed account from configuration");
+        Ok(())
+    }
+
+    pub async fn rollover_account(&mut self, cmd: AccountRolloverCommand) -> Result<(), Error> {
+        let issuer = self.get_issuer_from_account_cmd(cmd.common)?;
+        let ca_id = issuer.issuer.config.identifier.clone();
+        let acc_id = issuer.account.get_config().identifier.clone();
+        let new_key_type = cmd.key_type.unwrap_or_default().into();
+        self.client
+            .rollover_account_key(&ca_id, &acc_id, new_key_type)
+            .await?;
+        println!("Successfully rotated account key {acc_id}.");
         Ok(())
     }
 
@@ -219,7 +230,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             );
         }
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
-            cert_name.to_string()
+            cert_name.clone()
         } else {
             self.client
                 .choose_cert_name_from_domains(domains_and_solvers.domains.keys())
@@ -258,6 +269,32 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             .revoke_certificate(&cert_id, reason)
             .await
             .context("Failed to revoke certificate")
+    }
+
+    fn get_issuer_from_account_cmd(
+        &self,
+        cmd: AccountCommonCommand,
+    ) -> anyhow::Result<AcmeIssuerWithAccount<'_>> {
+        let Some(ca_id) = cmd.ca_identifier else {
+            bail!("A certificate authority must be specified in noninteractive mode")
+        };
+        let issuer = self
+            .client
+            .get_ca(&ca_id)
+            .context(format!("CA {ca_id} not found"))?;
+        let num_accounts = issuer.num_accounts();
+        if num_accounts == 0 {
+            bail!("No accounts found for CA {ca_id}");
+        }
+        let account_id = if num_accounts > 1 {
+            cmd.account_id.context("An account ID must be specified in noninteractive mode when multiple accounts exist")?
+        } else {
+            let account = issuer.get_accounts().next().context("No accounts found")?;
+            account.get_config().identifier.clone()
+        };
+        issuer
+            .with_account(&account_id)
+            .context(format!("Account {account_id} not found at CA {ca_id}"))
     }
 
     pub async fn debug_show_order(&self, cmd: DebugShowOrderCommand) -> anyhow::Result<()> {

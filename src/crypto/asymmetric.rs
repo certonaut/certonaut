@@ -92,6 +92,30 @@ pub enum KeyPair {
 }
 
 impl KeyPair {
+    pub fn new_key(key_type: KeyType) -> anyhow::Result<Self> {
+        Ok(match key_type {
+            KeyType::Ecdsa(curve) => {
+                let algorithm = curve.get_jws_signing_algorithm();
+                let keypair = signature::EcdsaKeyPair::generate(algorithm)
+                    .map_err(|_| anyhow!("Could not generate key"))?;
+                KeyPair::Ecdsa(EcdsaKeyPair::new(curve, keypair))
+            }
+            KeyType::Rsa(size) => {
+                let keypair = signature::RsaKeyPair::generate(size)
+                    .map_err(|_| anyhow!("Could not generate key"))?;
+                KeyPair::Rsa(RsaKeyPair::new(keypair))
+            }
+            KeyType::EdDsa(curve) => match curve {
+                Curve::Ed25519 => {
+                    let keypair = signature::Ed25519KeyPair::generate()
+                        .map_err(|_| anyhow!("Could not generate key"))?;
+                    KeyPair::EdDsa(EdDsaKeyPair::new(keypair))
+                }
+                Curve::P256 | Curve::P384 => panic!("Invalid curve for EdDSA"),
+            },
+        })
+    }
+
     pub fn save_to_disk(&self, file: File) -> anyhow::Result<()> {
         let pem = self.to_pem()?;
         save_key_to_file(&pem, file)
@@ -381,33 +405,9 @@ fn load_file(mut file: File) -> anyhow::Result<String> {
     Ok(contents)
 }
 
-pub fn new_key(typ: KeyType) -> anyhow::Result<KeyPair> {
-    Ok(match typ {
-        KeyType::Ecdsa(curve) => {
-            let algorithm = curve.get_jws_signing_algorithm();
-            let keypair = signature::EcdsaKeyPair::generate(algorithm)
-                .map_err(|_| anyhow!("Could not generate key"))?;
-            KeyPair::Ecdsa(EcdsaKeyPair::new(curve, keypair))
-        }
-        KeyType::Rsa(size) => {
-            let keypair = signature::RsaKeyPair::generate(size)
-                .map_err(|_| anyhow!("Could not generate key"))?;
-            KeyPair::Rsa(RsaKeyPair::new(keypair))
-        }
-        KeyType::EdDsa(curve) => match curve {
-            Curve::Ed25519 => {
-                let keypair = signature::Ed25519KeyPair::generate()
-                    .map_err(|_| anyhow!("Could not generate key"))?;
-                KeyPair::EdDsa(EdDsaKeyPair::new(keypair))
-            }
-            Curve::P256 | Curve::P384 => panic!("Invalid curve for EdDSA"),
-        },
-    })
-}
-
 #[cfg(test)]
 pub mod tests {
-    use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType, new_key};
+    use crate::crypto::asymmetric::{AsymmetricKeyOperation, Curve, KeyPair, KeyType};
     use crate::crypto::jws::{
         JsonWebKeyEcdsa, JsonWebKeyEdDsa, JsonWebKeyParameters, JsonWebKeyRsa,
     };
@@ -495,14 +495,14 @@ MC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g
     #[case::rsa4096(KeyType::Rsa(KeySize::Rsa4096))]
     #[case::ed25519(KeyType::EdDsa(Curve::Ed25519))]
     fn test_new_key(#[case] key_type: KeyType) {
-        let _ = new_key(key_type).expect("Key generation should not have failed");
+        let _ = KeyPair::new_key(key_type).expect("Key generation should not have failed");
     }
 
     #[test]
     fn test_new_key_with_ecdsa_p256() {
         let mut file = temp_file();
-        let keypair =
-            new_key(KeyType::Ecdsa(Curve::P256)).expect("Key generation should not have failed");
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))
+            .expect("Key generation should not have failed");
         keypair.save_to_disk(file.try_clone().unwrap()).unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
         let _ = KeyPair::load_from_disk(file).unwrap();

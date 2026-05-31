@@ -13,7 +13,6 @@ use crate::config::{
     ConfigurationManager, DomainSolverMap, InstallerConfiguration, MainConfiguration,
     SolverConfiguration, config_directory,
 };
-use crate::crypto::asymmetric;
 use crate::crypto::asymmetric::{KeyPair, KeyType};
 use crate::crypto::jws::{ExternalAccountBinding, JsonWebKey};
 use crate::dns::name::DnsName;
@@ -433,6 +432,10 @@ impl AcmeAccount {
     pub fn get_config(&self) -> &AccountConfiguration {
         &self.config
     }
+
+    pub fn get_jwk(&self) -> &JsonWebKey {
+        &self.jwk
+    }
 }
 
 async fn new_acme_client(
@@ -546,7 +549,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
     ) -> Result<AcmeAccount, Error> {
         let mut last_error = None;
         for (i, key_type) in options.key_types.iter().copied().enumerate() {
-            let keypair = asymmetric::new_key(key_type)
+            let keypair = KeyPair::new_key(key_type)
                 .context(format!("Generating new account key of type {key_type}"))?;
             let account_name = options.name.clone();
             let account_id = options.identifier.clone();
@@ -597,9 +600,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         bail!(
             "The CA does not support any of the offered key types (tried: {}). The last error was: {}",
             options.key_types.into_iter().join(", "),
-            last_error
-                .map(|err| err.to_string())
-                .unwrap_or_else(|| "No error available".to_string())
+            last_error.map_or_else(|| "No error available".to_string(), |err| err.to_string())
         );
     }
 
@@ -683,7 +684,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
         let account_name = if account_num > 0 {
             format!("{ca_name} ({account_num})")
         } else {
-            ca_name.to_string()
+            ca_name.clone()
         };
         let account_id = format!("{ca_id}@{account_num}");
         (account_id, account_name)
@@ -767,7 +768,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             .get_issuer_with_account(&cert_config.ca_identifier, &cert_config.account_identifier)?;
         let ca_name = &issuer.issuer.config.name;
         let key_type = cert_config.key_type;
-        let cert_key = asymmetric::new_key(key_type).context(format!(
+        let cert_key = KeyPair::new_key(key_type).context(format!(
             "Could not generate certificate key with type {key_type}"
         ))?;
         let lifetime = cert_config
@@ -851,7 +852,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             let cert_key = if cert_config.advanced.reuse_key {
                 self.config.load_certificate_private_key(cert_id)
             } else {
-                asymmetric::new_key(cert_config.key_type)
+                KeyPair::new_key(cert_config.key_type)
             }?;
             let authorizers = authorizers_from_config(cert_config.clone())?;
             let lifetime = cert_config
@@ -1026,6 +1027,34 @@ impl<CB: ConfigBackend> Certonaut<CB> {
             self.try_fetch_and_store_ari(issuer, cert_id.to_string(), &parsed_cert)
                 .await;
         }
+        Ok(())
+    }
+
+    #[allow(clippy::missing_panics_doc)]
+    pub async fn rollover_account_key(
+        &mut self,
+        ca_id: &str,
+        account_identifier: &str,
+        key_type: KeyType,
+    ) -> anyhow::Result<()> {
+        let new_key = KeyPair::new_key(key_type)
+            .context("Failed to generate new key for account rollover")?;
+        let issuer = self.get_issuer_with_account(ca_id, account_identifier)?;
+        let jwk = issuer.rollover_account_key(new_key).await?;
+        // TODO: If this fails we loose the account
+        let new_key_path = self
+            .config
+            .save_account_key(&issuer.account.get_config().identifier, jwk.get_keypair())
+            .context("Saving new account key")?;
+        let ca = self.get_ca_mut(ca_id).expect("CA disappeared");
+        let account = ca
+            .get_account_mut(account_identifier)
+            .expect("account disappeared");
+        account.jwk = jwk;
+        account.config.key_file = new_key_path;
+        self.config
+            .save_main(&self.current_main_config())
+            .context("Saving new configuration")?;
         Ok(())
     }
 
