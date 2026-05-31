@@ -91,6 +91,8 @@ pub enum AccountCommand {
     // Modify,
     /// Delete and deactivate an account
     Delete(AccountDeleteCommand),
+    /// Rollover (rotate) the account key of an existing account
+    Rollover(AccountRolloverCommand),
 }
 
 impl Display for AccountCommand {
@@ -104,21 +106,28 @@ impl Display for AccountCommand {
                 "Import existing account from another installation or ACME client"
             ),
             AccountCommand::Delete(_) => write!(f, "Delete (deactivate) account"),
+            AccountCommand::Rollover(_) => write!(f, "Rollover (rotate) account key"),
         }
     }
 }
 
 #[derive(Debug, Args, Default)]
+pub struct AccountCommonCommand {
+    /// Identifier of the certificate authority to which the account belongs
+    #[arg(short, long = "ca")]
+    pub ca_identifier: Option<String>,
+    /// Unique identifier of the account. Required if multiple accounts exist for the given CA.
+    #[arg(long = "id")]
+    pub account_id: Option<String>,
+}
+
+#[derive(Debug, Args, Default)]
 pub struct AccountCreateCommand {
+    #[clap(flatten)]
+    pub common: AccountCommonCommand,
     /// Display name of the new account
     #[arg(short, long)]
     pub account_name: Option<String>,
-    /// Unique identifier of the new account
-    #[arg(long = "id")]
-    pub account_id: Option<String>,
-    /// Identifier of the certificate authority where to create the account
-    #[arg(short, long = "ca")]
-    pub ca_identifier: Option<String>,
     /// Contact address(es) to provide to the CA
     #[arg(long)]
     pub contact: Vec<String>,
@@ -135,15 +144,11 @@ pub struct AccountCreateCommand {
 
 #[derive(Debug, Args, Default)]
 pub struct AccountImportCommand {
+    #[clap(flatten)]
+    pub common: AccountCommonCommand,
     /// Display name of the new account
     #[arg(short, long)]
     pub account_name: Option<String>,
-    /// Unique identifier of the new account
-    #[arg(long = "id")]
-    pub account_id: Option<String>,
-    /// Identifier of the certificate authority where to create the account
-    #[arg(short, long = "ca")]
-    pub ca_identifier: Option<String>,
     /// File path for the existing account key (PEM format)
     #[arg(short, long)]
     pub key_file: Option<PathBuf>,
@@ -151,12 +156,17 @@ pub struct AccountImportCommand {
 
 #[derive(Debug, Args, Default)]
 pub struct AccountDeleteCommand {
-    /// Unique identifier of the new account
-    #[arg(long = "id")]
-    pub account_id: Option<String>,
-    /// Identifier of the certificate authority to which the account belongs
-    #[arg(short, long = "ca")]
-    pub ca_identifier: Option<String>,
+    #[clap(flatten)]
+    pub common: AccountCommonCommand,
+}
+
+#[derive(Debug, Args, Default)]
+pub struct AccountRolloverCommand {
+    #[clap(flatten)]
+    pub common: AccountCommonCommand,
+    /// Key type of the new key to replace the old key
+    #[arg(short, long)]
+    pub key_type: Option<CommandLineKeyType>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -526,6 +536,7 @@ pub async fn handle_cli_command<CB: ConfigBackend + Send + Sync + 'static>(
                         // AccountCommand::Modify,
                         AccountCommand::Delete(AccountDeleteCommand::default()),
                         AccountCommand::Import(AccountImportCommand::default()),
+                        AccountCommand::Rollover(AccountRolloverCommand::default()),
                     ];
                     let action = Select::new("What would you like to do?", selectable_commands)
                         .prompt()
@@ -701,6 +712,15 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
             } else {
                 let mut service = NonInteractiveService::new(client);
                 service.delete_account(delete).await
+            }
+        }
+        AccountCommand::Rollover(rollover) => {
+            if interactive {
+                let mut service = InteractiveService::new(client);
+                service.interactive_rollover_account(rollover).await
+            } else {
+                let mut service = NonInteractiveService::new(client);
+                service.rollover_account(rollover).await
             }
         }
     }

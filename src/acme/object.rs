@@ -1,5 +1,5 @@
 use crate::acme::error::{Error, Problem};
-use crate::crypto::jws::FlatJsonWebSignature;
+use crate::crypto::jws::{FlatJsonWebSignature, JsonWebKeyParameters};
 use crate::url::Url;
 use crate::util::serde_helper::optional_offset_date_time;
 use anyhow::Context;
@@ -473,7 +473,7 @@ impl Serialize for RevocationReason {
 #[serde(rename_all = "camelCase")]
 pub struct RenewalInfo {
     pub suggested_window: SuggestedWindow,
-    // Annoying spec bug: Capitalising all URL letters is not camelCase, as is usually used in ACME
+    // Annoying spec bug: Capitalizing all URL letters is not camelCase, as is usually used in ACME
     #[serde(rename = "explanationURL")]
     pub explanation_url: Option<Url>,
 }
@@ -488,6 +488,7 @@ pub struct SuggestedWindow {
     pub end: time::OffsetDateTime,
 }
 
+/// `AcmeRenewalIdentifier` identifies an end-entity certificate for retrieving renewal information as per RFC9773.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcmeRenewalIdentifier {
     key_identifier_base64: String,
@@ -495,6 +496,8 @@ pub struct AcmeRenewalIdentifier {
 }
 
 impl AcmeRenewalIdentifier {
+    /// Construct a new `AcmeRenewalIdentifier` based on an end-entity certificate serial number and
+    /// authority key identifier of the issuing certificate, both in DER format.
     pub fn new(key_identifier: &[u8], serial: &[u8]) -> Self {
         Self {
             key_identifier_base64: BASE64_URL_SAFE_NO_PAD.encode(key_identifier),
@@ -525,9 +528,18 @@ impl Display for AcmeRenewalIdentifier {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyChange {
+    pub account: Url,
+    pub old_key: JsonWebKeyParameters,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::asymmetric::Curve;
+    use crate::crypto::jws::JsonWebKeyEcdsa;
     use rstest::rstest;
     use std::fs::File;
     use std::path::PathBuf;
@@ -934,6 +946,16 @@ mod tests {
     )]
     fn test_serialize_revocation(#[case] revocation: Revocation, #[case] expected: &str) {
         let serialized = serde_json::to_string(&revocation).expect("serialization must not fail");
+        assert_eq!(serialized, expected);
+    }
+
+    #[rstest]
+    #[case(KeyChange{
+        account: Url::parse("https://example.com/acme/acct/evOfKhNU60wg").unwrap(),
+        old_key:  JsonWebKeyParameters::Ecdsa(JsonWebKeyEcdsa::new(Curve::P384, "x".to_string(), "y".to_string()))
+    }, r#"{"account":"https://example.com/acme/acct/evOfKhNU60wg","oldKey":{"kty":"EC","crv":"P-384","x":"x","y":"y"}}"#)]
+    fn test_serialize_key_change(#[case] key_change: KeyChange, #[case] expected: &str) {
+        let serialized = serde_json::to_string(&key_change).expect("serialization must not fail");
         assert_eq!(serialized, expected);
     }
 

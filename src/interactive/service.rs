@@ -1,6 +1,7 @@
 use crate::challenge_solver::CHALLENGE_SOLVER_REGISTRY;
 use crate::cli::{
-    AccountImportCommand, CertificateModifyCommand, CommandLineKeyType, IssueCommand, RevokeCommand,
+    AccountImportCommand, AccountRolloverCommand, CertificateModifyCommand, CommandLineKeyType,
+    IssueCommand, RevokeCommand,
 };
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
@@ -48,7 +49,13 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
             "{}",
             format!("{CRATE_NAME} interactive certificate issuance").green()
         );
-        let (initial_issuer, initial_account) = self.user_select_ca_and_account(&issue_cmd).await?;
+        let (initial_issuer, initial_account) = self
+            .interactive_select_ca_and_account(
+                issue_cmd.ca.clone(),
+                issue_cmd.account.clone(),
+                true,
+            )
+            .await?;
         // TODO: Detect if we already have this exact set of domains, or a subset of it and offer options depending on that.
         let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
         let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains).await?;
@@ -121,7 +128,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         import: AccountImportCommand,
     ) -> Result<(), Error> {
         println!("Please select the CA for which the existing account is valid");
-        let ca_id = match import.ca_identifier {
+        let ca_id = match import.common.ca_identifier {
             Some(ca_id) => ca_id,
             None => self.interactive_select_ca(true)?,
         };
@@ -170,7 +177,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
             .get_ca(&ca_id)
             .ok_or(anyhow!("CA {ca_id} not found"))?;
         let (default_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
-        let account_id = import.account_id.unwrap_or(default_id);
+        let account_id = import.common.account_id.unwrap_or(default_id);
         let account_name = match import.account_name {
             Some(account_name) => account_name,
             None => Text::new("You can give this account a customized name if you like:")
@@ -255,6 +262,25 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
+    pub async fn interactive_rollover_account(
+        &mut self,
+        cmd: AccountRolloverCommand,
+    ) -> Result<(), Error> {
+        let (ca_id, account_id) = self
+            .interactive_select_ca_and_account(
+                cmd.common.ca_identifier,
+                cmd.common.account_id,
+                false,
+            )
+            .await?;
+        let key_type = Self::user_ask_key_type(cmd.key_type.unwrap_or_default().into())?;
+        self.client
+            .rollover_account_key(&ca_id, &account_id, key_type)
+            .await?;
+        println!("Successfully rotated account key {account_id}.");
+        Ok(())
+    }
+
     pub async fn interactive_modify_cert_configuration(
         &mut self,
         cmd: CertificateModifyCommand,
@@ -322,6 +348,26 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
+    async fn interactive_select_ca_and_account(
+        &mut self,
+        preselected_ca: Option<String>,
+        preselected_account: Option<String>,
+        allow_creation: bool,
+    ) -> Result<(String, String), Error> {
+        let ca_id = match preselected_ca {
+            Some(ca) => ca,
+            None => self.interactive_select_ca(allow_creation)?,
+        };
+        let account = match preselected_account {
+            Some(account) => account,
+            None => {
+                self.interactive_select_account(&ca_id, allow_creation)
+                    .await?
+            }
+        };
+        Ok((ca_id, account))
+    }
+
     fn interactive_select_ca(&mut self, allow_creation: bool) -> Result<String, Error> {
         Ok(match Self::user_select_ca(&self.client, allow_creation)? {
             CaChoice::ExistingCa(ca) => ca.identifier,
@@ -332,6 +378,30 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
                 id
             }
         })
+    }
+
+    async fn interactive_select_account(
+        &mut self,
+        ca_id: &str,
+        allow_creation: bool,
+    ) -> Result<String, Error> {
+        let issuer = self
+            .client
+            .get_ca(ca_id)
+            .ok_or(anyhow!("CA {ca_id} not found"))?;
+        let id = match Self::user_select_account(issuer, allow_creation)? {
+            AccountChoice::ExistingAccount(acc) => acc.identifier,
+            AccountChoice::NewAccount => {
+                let new_account = self
+                    .user_create_account(issuer)
+                    .await
+                    .context("Error while creating new account")?;
+                let account_id = new_account.config.identifier.clone();
+                self.client.add_new_account(ca_id, new_account)?;
+                account_id
+            }
+        };
+        Ok(id)
     }
 
     fn user_select_cert(&self) -> Result<String, Error> {
@@ -399,11 +469,11 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
                         |mut config: CertificateConfiguration| {
                             async {
                                 let mut lock = self_locked.write().await;
-                                let (ca, account) = lock
-                                    .user_select_ca_and_account(&IssueCommand::default())
+                                let (ca_identifier, account_identifier) = lock
+                                    .interactive_select_ca_and_account(None, None, true)
                                     .await?;
-                                config.ca_identifier = ca;
-                                config.account_identifier = account;
+                                config.ca_identifier = ca_identifier;
+                                config.account_identifier = account_identifier;
                                 drop(lock);
                                 let new_ca_display = ca_display_updater(&config).await;
                                 let mut ca_display = ca_display.lock().unwrap();
@@ -900,7 +970,7 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
 
     fn user_ask_key_type(current: KeyType) -> Result<KeyType, Error> {
         println!(
-            "The certificate can use one of the following supported cryptographic algorithms."
+            "The private key can use one of the following supported cryptographic algorithms."
         );
         println!(
             "Note that not all CAs may support all of the choices below - consult the CA documentation."
@@ -1063,40 +1133,6 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             }
         }
         Ok(domains)
-    }
-
-    async fn user_select_ca_and_account(
-        &mut self,
-        issue_cmd: &IssueCommand,
-    ) -> Result<(String, String), Error> {
-        let issuer = if let Some(preselected_ca) = &issue_cmd.ca {
-            preselected_ca.clone()
-        } else {
-            self.interactive_select_ca(true)?
-        };
-
-        let account = if let Some(preselected_account) = &issue_cmd.account {
-            preselected_account.clone()
-        } else {
-            let issuer = self
-                .client
-                .get_ca(&issuer)
-                .ok_or(anyhow!("CA {issuer} not found"))?;
-            let ca_id = issuer.config.identifier.clone();
-            match Self::user_select_account(issuer, true)? {
-                AccountChoice::ExistingAccount(ac) => ac.identifier,
-                AccountChoice::NewAccount => {
-                    let new_account = self
-                        .user_create_account(issuer)
-                        .await
-                        .context("Error while creating new account")?;
-                    let account_id = new_account.config.identifier.clone();
-                    self.client.add_new_account(&ca_id, new_account)?;
-                    account_id
-                }
-            }
-        };
-        Ok((issuer, account))
     }
 
     fn user_select_ca(client: &Certonaut<CB>, allow_creation: bool) -> Result<CaChoice, Error> {

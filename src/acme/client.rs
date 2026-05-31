@@ -4,8 +4,8 @@ use crate::acme::http::HttpClient;
 use crate::acme::http::RelationLink;
 use crate::acme::object::{
     Account, AccountRequest, AcmeRenewalIdentifier, Authorization, Challenge, ChallengeStatus,
-    Deactivation, Directory, EmptyObject, FinalizeRequest, NewOrderRequest, Nonce, Order,
-    OrderStatus, RenewalInfo, Revocation, RevocationReason,
+    Deactivation, Directory, EmptyObject, FinalizeRequest, KeyChange, NewOrderRequest, Nonce,
+    Order, OrderStatus, RenewalInfo, Revocation, RevocationReason,
 };
 use crate::crypto::asymmetric::KeyPair;
 use crate::crypto::jws::{EMPTY_PAYLOAD, ExternalAccountBinding, JsonWebKey, ProtectedHeader};
@@ -455,7 +455,7 @@ impl AcmeClient {
         let mut last_error = None;
         while Instant::now() < deadline {
             match challenge.status {
-                // Challenge should not be in pending after submission, but some CA's are buggy and use this for processing
+                // Challenge should not be in pending after submission, but some CAs are buggy and use this for processing
                 ChallengeStatus::Pending | ChallengeStatus::Processing => {
                     if let Some(err) = challenge.error {
                         // If the ACME server reports processing and an error,
@@ -616,6 +616,19 @@ impl AcmeClient {
         Ok(())
     }
 
+    /// Retrieve the data about certificate renewal for the certificate identified by `identifier`, if the CA supports this feature.
+    /// This is RFC 9773 "ACME Renewal Information (ARI) Extension", which may not be supported by all ACME CAs.
+    ///
+    /// # Arguments
+    ///
+    /// - `identifier` - the identifier of the certificate to check
+    ///
+    /// # Returns
+    ///
+    /// - A `RenewalResponse` containing information provided by the CA about the suggested time window for renewal of
+    ///   the certificate.
+    /// - `Error::FeatureNotSupported` if this CA does not support ARI.
+    /// - Any other error if a network, protocol, or processing error occurs.
     #[allow(clippy::missing_panics_doc)]
     pub async fn get_renewal_info(
         &self,
@@ -676,6 +689,43 @@ impl AcmeClient {
         } else {
             Err(Error::FeatureNotSupported)
         }
+    }
+
+    /// Rollover (rotate) the account key of the given account, in order to protect against key compromise or to recover
+    /// from a key compromise event.
+    ///
+    /// # Arguments
+    /// - The current account key (to be rotated)
+    /// - The account URL
+    /// - The new keypair to use as the account key afterward. This must be a fresh key not associated with any
+    ///   account yet.
+    ///
+    /// # Returns
+    /// The updated account key as JWK, or an error if rollover failed for any reason
+    pub async fn rollover_account_key(
+        &self,
+        current_account_key: &JsonWebKey,
+        account_url: &Url,
+        new_account_key: KeyPair,
+    ) -> ProtocolResult<JsonWebKey> {
+        let key_change_url = &self.get_directory().key_change;
+        let new_jwk = JsonWebKey::new(new_account_key);
+        let inner_header = ProtectedHeader::new(
+            new_jwk.get_algorithm(),
+            Nonce::new_empty(),
+            key_change_url.clone(),
+            new_jwk.get_parameters().clone(),
+        );
+        let key_change = KeyChange {
+            account: account_url.clone(),
+            old_key: current_account_key.to_full_key_parameters(),
+        };
+        let inner_jws = new_jwk.sign(&inner_header, Some(&key_change))?;
+        // Rollover has unspecified response body, so assume nothing
+        let _response: AcmeResponse<PassthroughBytes> = self
+            .post_with_retry(key_change_url, current_account_key, Some(&inner_jws))
+            .await?;
+        Ok(new_jwk.into_existing(account_url.clone()))
     }
 }
 

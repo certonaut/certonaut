@@ -98,6 +98,10 @@ impl AcmeIssuer {
         self.accounts.get(account_id)
     }
 
+    pub fn get_account_mut(&mut self, account_id: &str) -> Option<&mut AcmeAccount> {
+        self.accounts.get_mut(account_id)
+    }
+
     pub fn get_accounts(&self) -> impl Iterator<Item = &AcmeAccount> {
         self.accounts.values()
     }
@@ -739,6 +743,15 @@ impl AcmeIssuerWithAccount<'_> {
         }
         Ok(())
     }
+
+    pub async fn rollover_account_key(&self, new_key: KeyPair) -> anyhow::Result<JsonWebKey> {
+        let client = self.client().await?;
+        let new_jwk = client
+            .rollover_account_key(&self.account.jwk, &self.account.config.url, new_key)
+            .await
+            .context("Error rolling over account key")?;
+        Ok(new_jwk)
+    }
 }
 
 impl Deref for AcmeIssuerWithAccount<'_> {
@@ -763,7 +776,7 @@ mod tests {
     use crate::challenge_solver::NullSolver;
     use crate::config::AccountConfiguration;
     use crate::config::test_backend::NoopBackend;
-    use crate::crypto::asymmetric::{Curve, KeyType, new_key};
+    use crate::crypto::asymmetric::{Curve, KeyType};
     use crate::util::serde_helper::PassthroughBytes;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -876,7 +889,7 @@ mod tests {
             pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))?;
         let mut mock_client = AcmeClient::faux();
         faux::when!(mock_client.new_order)
             .once()
@@ -983,7 +996,7 @@ mod tests {
             .then_return(certificate);
         let issuer = setup_fake_issuer(mock_client)?;
         let issuer_with_account = issuer.with_account("fake").unwrap();
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))?;
 
         let cert = issuer_with_account
             .issue(
@@ -1019,7 +1032,7 @@ mod tests {
             pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))?;
         let new_order_request = NewOrderRequest {
             identifiers: vec![Identifier::from_str("example.com")?.into()],
             not_before: None,
@@ -1074,7 +1087,7 @@ mod tests {
             pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))?;
         let new_order_request = NewOrderRequest {
             identifiers: vec![Identifier::from_str("example.com")?.into()],
             not_before: None,
@@ -1128,7 +1141,7 @@ mod tests {
             pem: PassthroughBytes::new(Bytes::from("Hello, world!".as_bytes())),
             alternate_chains: vec![],
         });
-        let keypair = new_key(KeyType::Ecdsa(Curve::P256))?;
+        let keypair = KeyPair::new_key(KeyType::Ecdsa(Curve::P256))?;
         let mut mock_client = AcmeClient::faux();
         faux::when!(mock_client.new_order)
             .once()

@@ -198,6 +198,14 @@ impl JsonWebKey {
         &self.parameters
     }
 
+    pub fn get_keypair(&self) -> &KeyPair {
+        &self.keypair
+    }
+
+    pub fn to_full_key_parameters(&self) -> JsonWebKeyParameters {
+        self.keypair.to_jwk_parameters()
+    }
+
     pub fn sign<T: Serialize>(
         &self,
         header: &ProtectedHeader,
