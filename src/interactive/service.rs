@@ -1,7 +1,8 @@
 use crate::challenge_solver::CHALLENGE_SOLVER_REGISTRY;
 use crate::cli::{
-    AccountImportCommand, AccountRolloverCommand, CertificateModifyCommand, CommandLineKeyType,
-    IssueCommand, RevokeCommand,
+    AccountCreateCommand, AccountDeleteCommand, AccountImportCommand, AccountRolloverCommand,
+    CertificateModifyCommand, CommandLineKeyType, IssueCommand, IssuerAddCommand,
+    IssuerRemoveCommand, RevokeCommand,
 };
 use crate::config::{
     AccountConfiguration, AdvancedCertificateConfiguration, CertificateAuthorityConfiguration,
@@ -98,8 +99,8 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         self.client.issue_new(cert_config).await
     }
 
-    pub async fn interactive_add_ca(&mut self) -> Result<(), Error> {
-        let new_ca = Self::user_create_ca(&mut self.client)?;
+    pub async fn interactive_add_ca(&mut self, cmd: IssuerAddCommand) -> Result<(), Error> {
+        let new_ca = Self::user_create_ca(&mut self.client, cmd)?;
         let ca_id = new_ca.identifier.clone();
         self.client.add_new_ca(new_ca)?;
         let issuer = self
@@ -111,10 +112,13 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
-    pub async fn interactive_create_account(&mut self) -> Result<(), Error> {
-        let ca_id = self.interactive_select_ca(true)?;
+    pub async fn interactive_create_account(
+        &mut self,
+        cmd: AccountCreateCommand,
+    ) -> Result<(), Error> {
+        let ca_id = self.interactive_select_ca(cmd.common.ca_identifier.clone(), true)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
-        let new_account = self.user_create_account(issuer).await?;
+        let new_account = self.user_create_account(issuer, cmd).await?;
         let acc_id = new_account.config.identifier.clone();
         self.client.add_new_account(&ca_id, new_account)?;
         let account = self.client.get_issuer_with_account(&ca_id, &acc_id)?;
@@ -128,10 +132,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         import: AccountImportCommand,
     ) -> Result<(), Error> {
         println!("Please select the CA for which the existing account is valid");
-        let ca_id = match import.common.ca_identifier {
-            Some(ca_id) => ca_id,
-            None => self.interactive_select_ca(true)?,
-        };
+        let ca_id = self.interactive_select_ca(import.common.ca_identifier, true)?;
         let account_key = match import.key_file {
             Some(key_file) => {
                 let key_file = File::open(key_file).context("Failed to open key file")?;
@@ -196,8 +197,8 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
-    pub async fn interactive_remove_ca(&mut self) -> Result<(), Error> {
-        let ca_id = self.interactive_select_ca(false)?;
+    pub async fn interactive_remove_ca(&mut self, cmd: IssuerRemoveCommand) -> Result<(), Error> {
+        let ca_id = self.interactive_select_ca(cmd.id, false)?;
         let issuer = self.client.get_ca(&ca_id).ok_or(anyhow!("CA not found"))?;
         println!("You have selected this CA for deletion:");
         Certonaut::<CB>::print_issuer(issuer).await;
@@ -214,15 +215,18 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok(())
     }
 
-    pub async fn interactive_delete_account(&mut self) -> Result<(), Error> {
-        let ca_choice = Self::user_select_ca(&self.client, false)?;
+    pub async fn interactive_delete_account(
+        &mut self,
+        cmd: AccountDeleteCommand,
+    ) -> Result<(), Error> {
+        let ca_choice = Self::user_select_ca(&self.client, cmd.common.ca_identifier, false)?;
         let ca = if let CaChoice::ExistingCa(config) = ca_choice {
             self.client.get_ca_mut(&config.identifier)
         } else {
             None
         }
         .ok_or(anyhow!("CA not found (are there any issuers configured?)"))?;
-        let account_choice = Self::user_select_account(ca, false)?;
+        let account_choice = Self::user_select_account(ca, cmd.common.account_id, false)?;
         let account = if let AccountChoice::ExistingAccount(config) = account_choice {
             ca.with_account(&config.identifier)
         } else {
@@ -354,10 +358,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         preselected_account: Option<String>,
         allow_creation: bool,
     ) -> Result<(String, String), Error> {
-        let ca_id = match preselected_ca {
-            Some(ca) => ca,
-            None => self.interactive_select_ca(allow_creation)?,
-        };
+        let ca_id = self.interactive_select_ca(preselected_ca, allow_creation)?;
         let account = match preselected_account {
             Some(account) => account,
             None => {
@@ -368,16 +369,23 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         Ok((ca_id, account))
     }
 
-    fn interactive_select_ca(&mut self, allow_creation: bool) -> Result<String, Error> {
-        Ok(match Self::user_select_ca(&self.client, allow_creation)? {
-            CaChoice::ExistingCa(ca) => ca.identifier,
-            CaChoice::NewCa => {
-                let new_ca = Self::user_create_ca(&mut self.client)?;
-                let id = new_ca.identifier.clone();
-                self.client.add_new_ca(new_ca)?;
-                id
-            }
-        })
+    fn interactive_select_ca(
+        &mut self,
+        preselected_ca: Option<String>,
+        allow_creation: bool,
+    ) -> Result<String, Error> {
+        Ok(
+            match Self::user_select_ca(&self.client, preselected_ca, allow_creation)? {
+                CaChoice::ExistingCa(ca) => ca.identifier,
+                CaChoice::NewCa => {
+                    let new_ca =
+                        Self::user_create_ca(&mut self.client, IssuerAddCommand::default())?;
+                    let id = new_ca.identifier.clone();
+                    self.client.add_new_ca(new_ca)?;
+                    id
+                }
+            },
+        )
     }
 
     async fn interactive_select_account(
@@ -389,11 +397,11 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
             .client
             .get_ca(ca_id)
             .ok_or(anyhow!("CA {ca_id} not found"))?;
-        let id = match Self::user_select_account(issuer, allow_creation)? {
+        let id = match Self::user_select_account(issuer, None, allow_creation)? {
             AccountChoice::ExistingAccount(acc) => acc.identifier,
             AccountChoice::NewAccount => {
                 let new_account = self
-                    .user_create_account(issuer)
+                    .user_create_account(issuer, AccountCreateCommand::default())
                     .await
                     .context("Error while creating new account")?;
                 let account_id = new_account.config.identifier.clone();
@@ -1129,7 +1137,11 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         Ok(domains)
     }
 
-    fn user_select_ca(client: &Certonaut<CB>, allow_creation: bool) -> Result<CaChoice, Error> {
+    fn user_select_ca(
+        client: &Certonaut<CB>,
+        preselected_ca: Option<String>,
+        allow_creation: bool,
+    ) -> Result<CaChoice, Error> {
         let configured_ca_list = &client.issuers;
         if configured_ca_list.is_empty() {
             if allow_creation {
@@ -1147,22 +1159,32 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         if allow_creation {
             choices.push(CaChoice::NewCa);
         }
-        let default_ca = choices
-            .iter()
-            .enumerate()
-            .find(|(_, ca)| match ca {
-                CaChoice::ExistingCa(ca) => ca.default,
-                CaChoice::NewCa => false,
-            })
-            .map(|(idx, choice)| (idx, choice.clone()));
+        let preselected_ca = match preselected_ca {
+            Some(preselected_ca) => choices
+                .iter()
+                .enumerate()
+                .find(|(_, choice)| match choice {
+                    CaChoice::ExistingCa(ca) => ca.identifier == preselected_ca,
+                    CaChoice::NewCa => false,
+                })
+                .map(|(idx, choice)| (idx, choice.clone())),
+            None => choices
+                .iter()
+                .enumerate()
+                .find(|(_, ca)| match ca {
+                    CaChoice::ExistingCa(ca) => ca.default,
+                    CaChoice::NewCa => false,
+                })
+                .map(|(idx, choice)| (idx, choice.clone())),
+        };
         let mut ca_choice = Select::new(
             "Select the Certificate Authority (CA) you want to use",
             choices,
         );
-        let user_choice = if let Some((default_index, default_ca)) = default_ca {
+        let user_choice = if let Some((default_index, default_ca)) = preselected_ca {
             let default_help = Select::<CaChoice>::DEFAULT_HELP_MESSAGE.unwrap();
             let default_ca_name = default_ca.to_string();
-            let help_text = format!("{default_help}, ESC to use default ({default_ca_name})");
+            let help_text = format!("{default_help}, ESC to use {default_ca_name}");
             ca_choice.help_message = Some(&help_text);
             ca_choice.starting_cursor = default_index;
             ca_choice
@@ -1177,13 +1199,20 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
 
     fn user_create_ca(
         client: &mut Certonaut<CB>,
+        cmd: IssuerAddCommand,
     ) -> Result<CertificateAuthorityConfiguration, Error> {
         println!("{}", "Adding a new certificate authority".dark_green());
         let ca_name = Text::new("Name for the new CA:")
+            .with_default(&cmd.name.unwrap_or_default())
             .prompt()
             .context("No answer for CA name")?;
-        let ca_id = client.choose_ca_id_from_name(&ca_name);
+        let ca_id = cmd.id.unwrap_or(client.choose_ca_id_from_name(&ca_name));
         let acme_url = Text::new("ACME directory URL for new CA:")
+            .with_default(
+                &cmd.acme_directory
+                    .map(|url| url.to_string())
+                    .unwrap_or_default(),
+            )
             .with_validator(|candidate: &str| {
                 Ok(match Url::parse(candidate) {
                     Ok(url) => {
@@ -1203,12 +1232,12 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             .context("No answer for ACME directory URL")?;
         let acme_url = Url::parse(&acme_url).context("Invalid URL")?;
         let public = Confirm::new("Is this a public CA?")
-            .with_default(false)
+            .with_default(cmd.default)
             .with_help_message("Enter no for a private/enterprise CA, yes for others. This is used to control whether we run pre-issuance checks by default")
             .prompt_skippable().context("No answer to public CA question")?
             .unwrap_or(false);
         let testing = Confirm::new("Is this a CA used for testing?")
-            .with_default(false)
+            .with_default(cmd.testing)
             .with_help_message(
                 "Enter no if this CA issues production-ready certs, yes if the certificates are meant for testing.",
             )
@@ -1242,7 +1271,11 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         })
     }
 
-    fn user_select_account(ca: &AcmeIssuer, allow_creation: bool) -> Result<AccountChoice, Error> {
+    fn user_select_account(
+        ca: &AcmeIssuer,
+        preselected_account: Option<String>,
+        allow_creation: bool,
+    ) -> Result<AccountChoice, Error> {
         let num_accounts = ca.num_accounts();
         if num_accounts == 0 {
             if allow_creation {
@@ -1257,6 +1290,13 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             return Ok(AccountChoice::ExistingAccount(
                 ca.get_accounts().next().unwrap().config.clone(),
             ));
+        }
+        if let Some(preselected) = preselected_account
+            && let Some(account) = ca
+                .get_accounts()
+                .find(|account| account.config.identifier == preselected)
+        {
+            return Ok(AccountChoice::ExistingAccount(account.config.clone()));
         }
         let mut choices = ca
             .get_accounts()
@@ -1274,16 +1314,23 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         Ok(user_choice)
     }
 
-    async fn user_create_account(&self, ca: &AcmeIssuer) -> Result<AcmeAccount, Error> {
+    async fn user_create_account(
+        &self,
+        ca: &AcmeIssuer,
+        cmd: AccountCreateCommand,
+    ) -> Result<AcmeAccount, Error> {
         let ca_name = ca.config.name.as_str().green();
         println!("Creating a new account at CA {ca_name}");
         let acme_client = ca.client().await?;
-        let (tos_status, eab) = Self::user_create_account_ca_specific_features(ca).await?;
+        let (tos_status, eab) = Self::user_create_account_ca_specific_features(ca, &cmd).await?;
         println!(
             "You can provide one or more contact addresses to the CA. Please provide a comma-separated list \
 of email addresses below, or leave the field empty to not provide any contact address to the CA."
         );
-        let email_prompt = Text::new("Email(s):")
+        let email_string = if !cmd.contact.is_empty() {
+            cmd.contact.join(",")
+        } else {
+            let email_prompt = Text::new("Email(s):")
             .with_help_message("Enter an email address, or press ESC to leave empty. Comma-separate multiple addresses")
             .with_placeholder("email@example.com, another-address@example.org")
             .with_validator(|input: &str| {
@@ -1314,10 +1361,11 @@ of email addresses below, or leave the field empty to not provide any contact ad
                     .find(|validation| matches!(validation, Validation::Invalid(_)))
                     .unwrap_or(Validation::Valid))
             });
-        let email_string = email_prompt
-            .prompt_skippable()
-            .context("No answer to email dialog")?
-            .unwrap_or(String::new());
+            email_prompt
+                .prompt_skippable()
+                .context("No answer to email dialog")?
+                .unwrap_or(String::new())
+        };
         let emails = email_string
             .split(',')
             .map(str::trim)
@@ -1329,11 +1377,14 @@ of email addresses below, or leave the field empty to not provide any contact ad
             contacts.push(Url::parse(contact.as_str()).context("Validating contact URL")?);
         }
         let (account_id, default_name) = Certonaut::<CB>::choose_account_id_and_name(ca);
-        let account_name = Text::new("You can give this account a customized name if you like:")
-            .with_default(default_name.as_str())
-            .prompt_skippable()
-            .context("Error prompting for account name")?
-            .unwrap_or(default_name);
+        let account_name = match cmd.account_name {
+            Some(name) => name,
+            None => Text::new("You can give this account a customized name if you like:")
+                .with_default(default_name.as_str())
+                .prompt_skippable()
+                .context("Error prompting for account name")?
+                .unwrap_or(default_name),
+        };
         self.client
             .create_account(
                 acme_client,
@@ -1351,6 +1402,7 @@ of email addresses below, or leave the field empty to not provide any contact ad
 
     async fn user_create_account_ca_specific_features(
         ca: &AcmeIssuer,
+        cmd: &AccountCreateCommand,
     ) -> anyhow::Result<(Option<bool>, Option<ExternalAccountBinding>)> {
         let ca_name = ca.config.name.as_str().green();
         let acme_client = ca.client().await?;
@@ -1369,12 +1421,19 @@ of email addresses below, or leave the field empty to not provide any contact ad
                     "Please familiarize yourself with {ca_name} terms of service, available at this URL:",
                 );
                 println!("{}", tos.as_str().green().on_black());
-                let tos_agreed = Confirm::new("Do you agree to these terms of service?")
-                    .with_default(false)
-                    .with_help_message("This may be required by the CA for account creation")
-                    .prompt()
-                    .context("No answer to TOS prompt")?;
-                tos_status = Some(tos_agreed);
+                if cmd.terms_of_service_agreed {
+                    println!(
+                        "You have already agreed to the terms of service via the command line."
+                    );
+                    tos_status = Some(true);
+                } else {
+                    let tos_agreed = Confirm::new("Do you agree to these terms of service?")
+                        .with_default(false)
+                        .with_help_message("This may be required by the CA for account creation")
+                        .prompt()
+                        .context("No answer to TOS prompt")?;
+                    tos_status = Some(tos_agreed);
+                }
             }
             // TODO: Also allow for EAB if not mandated by CA
             if meta.external_account_required {
@@ -1384,7 +1443,15 @@ of email addresses below, or leave the field empty to not provide any contact ad
 {ca_name} will have given you instructions how to perform \"external account binding\" (EAB). \
 You may need to create an account at the CA's website first.",
                 );
-                let has_eab = Confirm::new(&format!(
+                if let (Some(kid), Some(hmac_key_base64)) =
+                    (&cmd.external_account_kid, &cmd.external_account_hmac_key)
+                {
+                    eab = Some(ExternalAccountBinding::try_new(
+                        kid.clone(),
+                        hmac_key_base64.clone(),
+                    )?);
+                } else {
+                    let has_eab = Confirm::new(&format!(
                     "Do you have the {} and {} provided by the CA?",
                     "EAB_KID".dark_green().on_black(),
                     "EAB_HMAC_KEY".dark_green().on_black()
@@ -1395,20 +1462,23 @@ You may need to create an account at the CA's website first.",
                     .with_default(false)
                     .prompt()
                     .context("No answer to EAB check-question")?;
-                if has_eab {
-                    let kid = Text::new("Enter the EAB Key ID (EAB_KID):")
-                        .with_help_message("This value is a text string provided to you by the CA")
-                        .prompt()
-                        .context("No EAB_KID provided")?;
-                    let hmac_key_base64 = Text::new("Enter the EAB HMAC Key (EAB_HMAC_KEY):")
-                        .with_help_message("This value must be in base64-url format")
-                        .prompt()
-                        .context("No EAB_HMAC_KEY provided")?;
-                    eab = Some(ExternalAccountBinding::try_new(kid, hmac_key_base64)?);
-                } else {
-                    bail!(
-                        "EAB is required for this CA. Please review the CA's website to find instructions, or select a different CA."
-                    )
+                    if has_eab {
+                        let kid = Text::new("Enter the EAB Key ID (EAB_KID):")
+                            .with_help_message(
+                                "This value is a text string provided to you by the CA",
+                            )
+                            .prompt()
+                            .context("No EAB_KID provided")?;
+                        let hmac_key_base64 = Text::new("Enter the EAB HMAC Key (EAB_HMAC_KEY):")
+                            .with_help_message("This value must be in base64-url format")
+                            .prompt()
+                            .context("No EAB_HMAC_KEY provided")?;
+                        eab = Some(ExternalAccountBinding::try_new(kid, hmac_key_base64)?);
+                    } else {
+                        bail!(
+                            "EAB is required for this CA. Please review the CA's website to find instructions, or select a different CA."
+                        )
+                    }
                 }
             }
         }

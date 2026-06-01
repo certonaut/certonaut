@@ -599,8 +599,7 @@ async fn handle_issuer_command<CB: ConfigBackend + Send + Sync + 'static>(
         IssuerCommand::Add(add) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                // TODO: Honor add command
-                return service.interactive_add_ca().await;
+                return service.interactive_add_ca(add).await;
             }
             let mut service = NonInteractiveService::new(client);
             service.add_new_ca(add).await
@@ -608,8 +607,7 @@ async fn handle_issuer_command<CB: ConfigBackend + Send + Sync + 'static>(
         IssuerCommand::Remove(remove) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                // TODO: Honor remove command
-                return service.interactive_remove_ca().await;
+                return service.interactive_remove_ca(remove).await;
             }
             let mut service = NonInteractiveService::new(client);
             service.remove_ca(remove)
@@ -684,8 +682,7 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
         AccountCommand::Create(create) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                // TODO: Honor create command
-                service.interactive_create_account().await
+                service.interactive_create_account(create).await
             } else {
                 let mut service = NonInteractiveService::new(client);
                 service.create_account(create).await
@@ -694,7 +691,6 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
         AccountCommand::Import(import) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                // TODO: Honor create command
                 service.interactive_import_account(import).await
             } else {
                 let mut service = NonInteractiveService::new(client);
@@ -707,8 +703,7 @@ async fn handle_account_command<CB: ConfigBackend + Send + Sync + 'static>(
         AccountCommand::Delete(delete) => {
             if interactive {
                 let mut service = InteractiveService::new(client);
-                // TODO: Honor delete command
-                service.interactive_delete_account().await
+                service.interactive_delete_account(delete).await
             } else {
                 let mut service = NonInteractiveService::new(client);
                 service.delete_account(delete).await
