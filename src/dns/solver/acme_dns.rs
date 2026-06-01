@@ -60,14 +60,14 @@ impl ChallengeSolver for Solver {
     ) -> Result<(), Error> {
         if let InnerChallenge::Dns(challenge) = challenge {
             let token = challenge.get_key_authorization(jwk);
-            if let Some(identifier) = identifier.as_ascii_domain_name() {
-                if identifier != self.registration.full_domain {
-                    warn!(
-                        "This solver is setup to solve the DNS-01 challenge using the domain {}, but the CNAME points to {identifier}. Did you remove or modify the CNAME?",
-                        self.registration.full_domain
-                    );
-                    // Proceed anyway, maybe our view of the world isn't correct
-                }
+            if let Some(identifier) = identifier.as_ascii_domain_name()
+                && identifier != self.registration.full_domain
+            {
+                warn!(
+                    "This solver is setup to solve the DNS-01 challenge using the domain {}, but the CNAME points to {identifier}. Did you remove or modify the CNAME?",
+                    self.registration.full_domain
+                );
+                // Proceed anyway, maybe our view of the world isn't correct
             }
             self.client.update_txt(&self.registration, token).await?;
             Ok(())

@@ -227,10 +227,9 @@ impl ConfigBackend for MultiFileConfigBackend<'_> {
                 .map(|file_type| file_type.is_dir())
                 .unwrap_or(false)
                 && dir_entry.path().join("config.toml").exists()
+                && let Some(file_name) = dir_entry.file_name().to_str()
             {
-                if let Some(file_name) = dir_entry.file_name().to_str() {
-                    certificates.push(file_name.to_owned());
-                }
+                certificates.push(file_name.to_owned());
             }
         }
         Ok(certificates)
