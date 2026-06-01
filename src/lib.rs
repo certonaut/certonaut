@@ -1071,14 +1071,13 @@ impl<CB: ConfigBackend> Certonaut<CB> {
                 warn!("{e:#}");
                 None
             });
-        if let Some(new_renewal_info) = new_renewal_info.clone() {
-            if let Err(e) = self
+        if let Some(new_renewal_info) = new_renewal_info.clone()
+            && let Err(e) = self
                 .database
                 .set_renewal_information(new_renewal_info)
                 .await
-            {
-                error!("Failed to store latest ARI result: {e:#}");
-            }
+        {
+            error!("Failed to store latest ARI result: {e:#}");
         }
         new_renewal_info
     }
