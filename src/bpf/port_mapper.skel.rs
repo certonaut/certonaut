@@ -6,10 +6,12 @@ pub use self::imp::*;
 
 #[allow(renamed_and_removed_lints)]
 #[allow(dead_code)]
+#[allow(missing_docs)]
 #[allow(non_snake_case)]
 #[allow(non_camel_case_types)]
 #[allow(clippy::absolute_paths)]
 #[allow(clippy::upper_case_acronyms)]
+#[allow(clippy::use_self)]
 #[allow(clippy::zero_repeat_side_effects)]
 #[warn(single_use_lifetimes)]
 mod imp {
@@ -21,9 +23,10 @@ mod imp {
     use libbpf_rs::skel::SkelBuilder;
     use libbpf_rs::AsRawLibbpf as _;
     use libbpf_rs::MapCore as _;
+    use libbpf_rs::ObjectBuilder;
     fn build_skel_config(
     ) -> libbpf_rs::Result<libbpf_rs::__internal_skel::ObjectSkeletonConfig<'static>> {
-        let mut builder = libbpf_rs::__internal_skel::ObjectSkeletonConfigBuilder::new(DATA);
+        let mut builder = libbpf_rs::__internal_skel::ObjectSkeletonConfigBuilder::new(&DATA);
         builder
             .name("port_mapper_bpf")
             .map("solver_socket", false)
@@ -276,7 +279,15 @@ mod imp {
             self,
             object: &'obj mut std::mem::MaybeUninit<libbpf_rs::OpenObject>,
         ) -> libbpf_rs::Result<OpenPortMapperSkel<'obj>> {
-            self.open_opts_impl(std::ptr::null(), object)
+            // Only produce a pointer to our custom open opts object
+            // if customizations have been made. This works around a
+            // bug in older versions of libbpf.
+            let opts = if self.obj_builder.ne(&ObjectBuilder::default()) {
+                self.obj_builder.as_libbpf_object().as_ptr().cast_const()
+            } else {
+                std::ptr::null()
+            };
+            self.open_opts_impl(opts, object)
         }
 
         fn open_opts(
@@ -491,7 +502,8 @@ mod imp {
             &self.struct_ops
         }
     }
-    const DATA: &[u8] = &[
+    #[unsafe(link_section = ".bpf.objs")]
+    static DATA: [u8; 3632] = [
         127, 69, 76, 70, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 247, 0, 1, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 176, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 64, 0, 0, 0, 0,
         0, 64, 0, 10, 0, 1, 0, 0, 46, 115, 116, 114, 116, 97, 98, 0, 46, 115, 121, 109, 116, 97,
