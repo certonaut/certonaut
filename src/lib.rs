@@ -752,6 +752,7 @@ impl<CB: ConfigBackend> Certonaut<CB> {
 
     pub fn remove_ca(&mut self, issuer_id: &str) -> Result<(), Error> {
         // TODO: Check if there are existing accounts or certs referencing the CA
+        // TODO: Also delete any accounts (with keys)?
         self.issuers
             .remove(issuer_id)
             .ok_or(anyhow::anyhow!("CA {issuer_id} not found"))?;
