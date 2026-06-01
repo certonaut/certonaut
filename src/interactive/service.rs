@@ -60,7 +60,7 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
         let initial_domains = Self::user_ask_initial_cert_domains(&issue_cmd)?;
         let domain_solver_map = Self::user_ask_initial_solvers(&issue_cmd, initial_domains).await?;
         let cert_name = if let Some(cert_name) = &issue_cmd.cert_name {
-            cert_name.to_string()
+            cert_name.clone()
         } else {
             self.client
                 .choose_cert_name_from_domains(domain_solver_map.domains.keys())
@@ -460,31 +460,26 @@ impl<CB: ConfigBackend + Send + Sync + 'static> InteractiveService<CB> {
             "Select an option to change it",
             config,
             Self::cert_edit_basic_editors(&self_locked)
-                .chain(
-                    [ClosureEditor::new(
-                        "Certificate Authority",
-                        |_config: &CertificateConfiguration| {
-                            ca_display.lock().unwrap().clone().into()
-                        },
-                        |mut config: CertificateConfiguration| {
-                            async {
-                                let mut lock = self_locked.write().await;
-                                let (ca_identifier, account_identifier) = lock
-                                    .interactive_select_ca_and_account(None, None, true)
-                                    .await?;
-                                config.ca_identifier = ca_identifier;
-                                config.account_identifier = account_identifier;
-                                drop(lock);
-                                let new_ca_display = ca_display_updater(&config).await;
-                                let mut ca_display = ca_display.lock().unwrap();
-                                *ca_display = new_ca_display;
-                                Ok(config)
-                            }
-                            .boxed()
-                        },
-                    )]
-                    .into_iter(),
-                )
+                .chain([ClosureEditor::new(
+                    "Certificate Authority",
+                    |_config: &CertificateConfiguration| ca_display.lock().unwrap().clone().into(),
+                    |mut config: CertificateConfiguration| {
+                        async {
+                            let mut lock = self_locked.write().await;
+                            let (ca_identifier, account_identifier) = lock
+                                .interactive_select_ca_and_account(None, None, true)
+                                .await?;
+                            config.ca_identifier = ca_identifier;
+                            config.account_identifier = account_identifier;
+                            drop(lock);
+                            let new_ca_display = ca_display_updater(&config).await;
+                            let mut ca_display = ca_display.lock().unwrap();
+                            *ca_display = new_ca_display;
+                            Ok(config)
+                        }
+                        .boxed()
+                    },
+                )])
                 .chain(Self::cert_edit_advanced_editors(&self_locked)),
             |_c| async { Ok(true) }.boxed(),
         )
@@ -847,13 +842,12 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
         identifier: Identifier,
         mut map: DomainSolverMap,
     ) -> Result<DomainSolverMap, Error> {
-        #[allow(irrefutable_let_patterns)]
-        if let Identifier::Dns(id) = &identifier {
-            if id.is_wildcard() {
-                println!(
-                    "Note: {identifier} is a wildcard. Some CAs require you to use a DNS-based challenge for this identifier."
-                );
-            }
+        if let Identifier::Dns(id) = &identifier
+            && id.is_wildcard()
+        {
+            println!(
+                "Note: {identifier} is a wildcard. Some CAs require you to use a DNS-based challenge for this identifier."
+            );
         }
         let domains = HashSet::from([identifier]);
         let builder_options: Vec<_> = CHALLENGE_SOLVER_REGISTRY

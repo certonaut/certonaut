@@ -1,3 +1,4 @@
+use crate::acme::error::Error::ProtocolViolation;
 use crate::acme::error::ProtocolResult;
 use crate::acme::error::{Error, RateLimitError};
 use crate::acme::http::HttpClient;
@@ -24,6 +25,7 @@ use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::time::{Duration, SystemTime};
 use tokio::time::Instant;
+use tokio_util::bytes::{BufMut, BytesMut};
 use tracing::{debug, warn};
 
 /// The maximum number of retries we do, per request
@@ -34,6 +36,8 @@ const DEFAULT_RETRY_BACKOFF: Duration = Duration::from_secs(3);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2 * 60);
 /// Maximum time we wait for the server to progress in the state machine
 const MAX_POLL_DURATION: Duration = Duration::from_secs(5 * 60);
+/// Maximum size of raw HTTP responses we process (in passthrough mode)
+const MAX_RESPONSE_SIZE: usize = 256 * 1024 * 1024; // 256 MB
 
 /// `AcmeClientBuilder` allows to instantiate new `AcmeClient` instances, optionally with extra configuration
 pub struct AcmeClientBuilder {
@@ -188,7 +192,7 @@ impl AcmeClient {
         );
         loop {
             let signed = key.sign(&header, payload)?;
-            let response = match self.http_client.post(target_url.clone(), &signed).await {
+            let mut response = match self.http_client.post(target_url.clone(), &signed).await {
                 Ok(response) => response,
                 Err(err) => {
                     last_error = err;
@@ -214,19 +218,27 @@ impl AcmeClient {
             let location = HttpClient::extract_location(&response);
             let status = response.status();
 
-            // TODO: Size limit on all responses, for DoS safety?
             match status {
                 StatusCode::OK | StatusCode::CREATED => {
                     self.try_store_nonce(new_nonce);
-                    // Weird hack: The ACME protocol uses JSON for every (POST) request and response,
-                    // except when downloading a certificate. To avoid unnecessary redundancy, we always
+                    // Small hack: The ACME protocol uses JSON for most (POST) request and responses,
+                    // with some exceptions. To avoid unnecessary redundancy, we always
                     // deserialize JSON here, except if the caller requests a PassthroughBytes
                     // struct, where we just pass the received bytes as-is.
                     // This condition is resolved at compile-time, depending on `R`.
                     let body: R = if TypeId::of::<R>() == TypeId::of::<PassthroughBytes>() {
-                        let bytes = response.bytes().await?;
+                        let mut raw_bytes = BytesMut::new();
+                        while let Some(chunk) = response.chunk().await? {
+                            if raw_bytes.len() + chunk.len() > MAX_RESPONSE_SIZE {
+                                return Err(ProtocolViolation(
+                                    "Size of HTTP response exceeds the limit",
+                                ));
+                            }
+                            raw_bytes.put(chunk);
+                        }
+                        // TODO: This deserializer copies the bytes
                         let deserializer =
-                            BytesDeserializer::<'_, serde::de::value::Error>::new(&bytes);
+                            BytesDeserializer::<'_, serde::de::value::Error>::new(&raw_bytes);
                         R::deserialize(deserializer)?
                     } else {
                         response.json().await?

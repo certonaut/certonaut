@@ -89,10 +89,10 @@ impl Resolver {
             };
             let new_source = lookup.record_iter().find_map(|record| {
                 let record_name: DnsName = record.name().into();
-                if let Some(cname) = record.data().as_cname() {
-                    if record_name == current {
-                        return Some((&cname.0).into());
-                    }
+                if let Some(cname) = record.data().as_cname()
+                    && record_name == current
+                {
+                    return Some((&cname.0).into());
                 }
                 None
             });
