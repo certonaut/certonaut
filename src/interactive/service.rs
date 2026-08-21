@@ -1267,7 +1267,7 @@ You need to provide challenge \"solvers\" to authenticate the requested identifi
             public,
             testing,
             default: new_default,
-            trusted_roots: vec![],
+            trusted_roots: cmd.trusted_roots,
         })
     }
 
