@@ -235,6 +235,10 @@ pub struct IssuerAddCommand {
     /// Set to indicate this CA should be used as default from now on
     #[arg(long)]
     pub default: bool,
+    /// Path to a PEM file containing the CA's root certificate to trust.
+    /// Can be specified multiple times for multiple certificates.
+    #[arg(long = "trusted-root", num_args = 0..)]
+    pub trusted_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Args, Default)]

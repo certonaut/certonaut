@@ -171,7 +171,7 @@ impl<CB: ConfigBackend> NonInteractiveService<CB> {
             public: cmd.public,
             testing: cmd.testing,
             default: cmd.default,
-            trusted_roots: vec![],
+            trusted_roots: cmd.trusted_roots,
         };
         self.client.add_new_ca(config)?;
         let new_issuer = self
