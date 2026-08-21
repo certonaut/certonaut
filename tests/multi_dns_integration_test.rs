@@ -1,4 +1,4 @@
-use crate::common::dns::StubDnsResolver;
+use crate::common::dns::{StubDnsResolver, nameservers_at_port};
 use crate::common::{ACCOUNT_NAME, CA_NAME, HOST_NETWORK, PebbleContainer, TestLogConsumer};
 use anyhow::{Context, bail};
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
@@ -9,7 +9,7 @@ use certonaut::dns::solver::acme_dns;
 use certonaut::dns::solver::acme_dns::Registration;
 use certonaut::url::Url;
 use certonaut::{Authorizer, Certonaut, Identifier};
-use hickory_resolver::config::NameServerConfigGroup;
+use hickory_resolver::config::NameServerConfig;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -82,7 +82,7 @@ impl AcmeDnsContainer {
 ///
 /// The testcontainer instance of Pebble and a local stub DNS server that can be stubbed to provide custom DNS responses
 /// for the `local.test` zone
-async fn setup_pebble_and_dns(upstream_dns: NameServerConfigGroup) -> anyhow::Result<TestSetup> {
+async fn setup_pebble_and_dns(upstream_dns: Vec<NameServerConfig>) -> anyhow::Result<TestSetup> {
     let stub_dns = StubDnsResolver::try_new(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8053),
         DnsName::try_from("local.test")?.into(),
@@ -96,15 +96,14 @@ async fn setup_pebble_and_dns(upstream_dns: NameServerConfigGroup) -> anyhow::Re
 }
 
 async fn test_setup(
-    upstream_dns: NameServerConfigGroup,
+    upstream_dns: Vec<NameServerConfig>,
 ) -> anyhow::Result<(TestSetup, Certonaut<NoopBackend>)> {
     let containers = setup_pebble_and_dns(upstream_dns).await?;
     let test_db = certonaut::state::open_test_db().await;
-    let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
+    let resolver = Resolver::new_with_upstream(nameservers_at_port(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
         containers.1.listen_port(),
-        true,
-    ));
+    ))?;
     let certonaut = Certonaut::try_new(
         new_configuration_manager_with_noop_backend(),
         test_db.into(),
@@ -120,10 +119,9 @@ async fn test_setup(
 /// Note that this test requires prerequisites to be setup beforehand
 /// - The test needs access to a Docker engine running locally
 async fn acme_dns_solver_e2e_test() -> anyhow::Result<()> {
-    let (containers, certonaut) = test_setup(NameServerConfigGroup::from_ips_clear(
+    let (containers, certonaut) = test_setup(nameservers_at_port(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
         8054,
-        true,
     ))
     .await?;
     let acme_dns = AcmeDnsContainer::spawn().await?;

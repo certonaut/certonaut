@@ -19,7 +19,7 @@ use crate::url::Url;
 use crate::{AcmeAccount, Authorizer, Identifier, RevocationReason, acme, new_acme_client};
 use anyhow::{Context, Error, anyhow, bail};
 use itertools::Itertools;
-use rand::Rng;
+use rand::RngExt;
 use rcgen::CertificateSigningRequest;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -1272,7 +1272,7 @@ mod tests {
         unsafe {
             faux::when!(mock_client.get_directory).then_unchecked_return(directory);
         }
-        let resolver = Arc::new(Resolver::new());
+        let resolver = Arc::new(Resolver::try_new()?);
         let issuer = AcmeIssuer::try_new(
             &noop_manager,
             CertificateAuthorityConfigurationWithAccounts {
