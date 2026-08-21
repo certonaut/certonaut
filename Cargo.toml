@@ -14,7 +14,7 @@ magic-solver = ["dep:libbpf-rs", "dep:libbpf-cargo", "dep:vmlinux", "dep:http", 
 anyhow = "1.0.102"
 async-trait = "0.1.84"
 aws-lc-rs = { version = "1.15.1", default-features = false, features = ["alloc", "ring-io", "aws-lc-sys", "prebuilt-nasm"] }
-base64 = "0.22.1"
+base64 = "0.23.1"
 clap = { version = "4.5.60", features = ["derive", "env"] }
 crossterm = "0.29.0"
 futures = "0.3.31"
