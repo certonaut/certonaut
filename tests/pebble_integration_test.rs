@@ -1,5 +1,6 @@
 mod common;
 
+use crate::common::dns::nameservers_at_port;
 use crate::common::{ChallengeTestServerContainer, PebbleContainer};
 use certonaut::config::PebbleHttpSolverConfiguration;
 use certonaut::config::test_backend::{NoopBackend, new_configuration_manager_with_noop_backend};
@@ -7,7 +8,6 @@ use certonaut::crypto::asymmetric::{Curve, KeyPair, KeyType};
 use certonaut::dns::resolver::Resolver;
 use certonaut::pebble::{ChallengeTestDnsSolver, ChallengeTestHttpSolver};
 use certonaut::{Authorizer, Certonaut, Identifier};
-use hickory_resolver::config::NameServerConfigGroup;
 use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
@@ -45,11 +45,10 @@ async fn setup_pebble_containers_once() -> anyhow::Result<TestContainersHandle> 
 async fn test_setup() -> anyhow::Result<(TestContainersHandle, Certonaut<NoopBackend>)> {
     let containers = setup_pebble_containers_once().await?;
     let test_db = certonaut::state::open_test_db().await;
-    let resolver = Resolver::new_with_upstream(NameServerConfigGroup::from_ips_clear(
+    let resolver = Resolver::new_with_upstream(nameservers_at_port(
         &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
         containers.1.dns_port,
-        true,
-    ));
+    ))?;
     let certonaut = Certonaut::try_new(
         new_configuration_manager_with_noop_backend(),
         test_db.into(),

@@ -1,5 +1,4 @@
-use hickory_resolver::Name;
-use hickory_resolver::proto::rr::LowerName;
+use hickory_resolver::proto::rr::{LowerName, Name};
 use serde::de::{Error, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;

@@ -2,21 +2,43 @@ use anyhow::bail;
 use async_trait::async_trait;
 use certonaut::dns::name::DnsName;
 use certonaut::url::Url;
-use hickory_resolver::Name;
-use hickory_resolver::config::NameServerConfigGroup;
-use hickory_resolver::proto::rr::{LowerName, RecordType};
-use hickory_server::ServerFuture;
-use hickory_server::authority::{
-    AuthLookup, Authority, Catalog, LookupControlFlow, LookupObject, LookupOptions, MessageRequest,
-    UpdateResult, ZoneType,
-};
+use hickory_resolver::config::{ConnectionConfig, NameServerConfig};
+use hickory_server::Server;
+use hickory_server::proto::op::ResponseCode;
 use hickory_server::proto::rr::rdata::{CNAME, SOA};
-use hickory_server::proto::rr::{RData, Record};
-use hickory_server::server::RequestInfo;
-use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
-use hickory_server::store::in_memory::InMemoryAuthority;
-use std::net::SocketAddr;
+use hickory_server::proto::rr::{LowerName, Name, RData, Record, RecordType, TSigResponseContext};
+use hickory_server::server::{Request, RequestInfo};
+use hickory_server::store::forwarder::{ForwardConfig, ForwardZoneHandler};
+use hickory_server::store::in_memory::InMemoryZoneHandler;
+use hickory_server::zone_handler::{
+    AuthLookup, AxfrPolicy, Catalog, LookupControlFlow, LookupError, LookupOptions, LookupRecords,
+    ZoneHandler, ZoneType,
+};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{Mutex, RwLock};
+
+/// Time a TCP client may stay idle before the stub server hangs up on it.
+const TCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// Number of outgoing responses the stub server buffers per TCP connection.
+const RESPONSE_BUFFER_SIZE: usize = 16;
+
+/// Build a plaintext (UDP + TCP) nameserver configuration for each of `ips`, all using `port`.
+pub fn nameservers_at_port(ips: &[IpAddr], port: u16) -> Vec<NameServerConfig> {
+    ips.iter()
+        .map(|&ip| {
+            let connections = [ConnectionConfig::udp(), ConnectionConfig::tcp()]
+                .into_iter()
+                .map(|mut connection| {
+                    connection.port = port;
+                    connection
+                })
+                .collect();
+            NameServerConfig::new(ip, true, connections)
+        })
+        .collect()
+}
 
 /// `StubDnsResolver` is a (test-only) DNS solver that combines local and forwarding lookups.
 /// It can be "stubbed" with a local zone whose records can be added/removed dynamically.
@@ -43,7 +65,7 @@ impl StubDnsResolver {
     pub async fn try_new(
         listen_addr: SocketAddr,
         local_zone: Name,
-        forward_servers: NameServerConfigGroup,
+        forward_servers: Vec<NameServerConfig>,
     ) -> anyhow::Result<Self> {
         let udp_socket = tokio::net::UdpSocket::bind(listen_addr).await?;
         let listen_addr = udp_socket.local_addr()?;
@@ -53,9 +75,9 @@ impl StubDnsResolver {
         let mut catalog = Catalog::default();
         let authority = Arc::new(StubAuthority::try_new(local_zone, forward_servers)?);
         catalog.upsert(LowerName::from(Name::root()), vec![authority.clone()]);
-        let mut server = ServerFuture::new(catalog);
+        let mut server = Server::new(catalog);
         server.register_socket(udp_socket);
-        server.register_listener(tcp_listener, Default::default());
+        server.register_listener(tcp_listener, TCP_REQUEST_TIMEOUT, RESPONSE_BUFFER_SIZE);
 
         tokio::spawn(async move {
             let _ = server.block_until_done().await;
@@ -81,38 +103,53 @@ impl StubDnsResolver {
 }
 
 pub struct StubAuthority {
-    local_authority: InMemoryAuthority,
-    forwarding_authority: ForwardAuthority,
+    local_zone: Name,
+    origin: LowerName,
+    local_records: Mutex<Vec<Record>>,
+    local_authority: RwLock<InMemoryZoneHandler>,
+    forwarding_authority: ForwardZoneHandler,
 }
 
 impl StubAuthority {
-    fn try_new(local_zone: Name, upstream_dns: NameServerConfigGroup) -> anyhow::Result<Self> {
-        let mut local_authority =
-            InMemoryAuthority::empty(local_zone.clone(), ZoneType::Primary, false);
-        local_authority.upsert_mut(
-            Record::from_rdata(
-                local_zone,
-                60,
-                RData::SOA(SOA::new(Name::root(), Name::root(), 0, 1, 1, 120, 60)),
-            ),
-            0,
-        );
-        let forwarding_authority = ForwardAuthority::builder_tokio(ForwardConfig {
+    fn try_new(local_zone: Name, upstream_dns: Vec<NameServerConfig>) -> anyhow::Result<Self> {
+        let local_authority = Self::build_zone(&local_zone, &[]);
+        let forwarding_authority = ForwardZoneHandler::builder_tokio(ForwardConfig {
             name_servers: upstream_dns,
             options: None,
         })
         .build()
         .map_err(anyhow::Error::msg)?;
         Ok(Self {
-            local_authority,
+            origin: LowerName::new(&local_zone),
+            local_zone,
+            local_records: Mutex::new(Vec::new()),
+            local_authority: RwLock::new(local_authority),
             forwarding_authority,
         })
     }
 
+    /// Create a local zone holding nothing but the mandatory SOA record and `records`.
+    fn build_zone(local_zone: &Name, records: &[Record]) -> InMemoryZoneHandler {
+        let mut zone =
+            InMemoryZoneHandler::empty(local_zone.clone(), ZoneType::Primary, AxfrPolicy::Deny);
+        zone.upsert_mut(
+            Record::from_rdata(
+                local_zone.clone(),
+                60,
+                RData::SOA(SOA::new(Name::root(), Name::root(), 0, 1, 1, 120, 60)),
+            ),
+            0,
+        );
+        for record in records {
+            zone.upsert_mut(record.clone(), 0);
+        }
+        zone
+    }
+
     pub async fn add_record(&self, name: Name, record: RData) -> bool {
-        self.local_authority
-            .upsert(Record::from_rdata(name, 60, record), 0)
-            .await
+        let record = Record::from_rdata(name, 60, record);
+        self.local_records.lock().await.push(record.clone());
+        self.local_authority.read().await.upsert(record, 0).await
     }
 
     pub async fn add_cname(&self, name: DnsName, target: DnsName) -> anyhow::Result<()> {
@@ -127,30 +164,26 @@ impl StubAuthority {
     }
 
     pub async fn remove_record(&self, name: Name, record_type: RecordType) -> bool {
-        self.local_authority
-            .upsert(Record::update0(name, 60, record_type), 0)
-            .await
+        let mut records = self.local_records.lock().await;
+        let before = records.len();
+        records.retain(|record| record.name != name || record.record_type() != record_type);
+        if records.len() == before {
+            return false;
+        }
+        *self.local_authority.write().await = Self::build_zone(&self.local_zone, &records);
+        true
     }
 
-    fn extract_cname(
-        result: &LookupControlFlow<<InMemoryAuthority as Authority>::Lookup>,
-    ) -> Option<CNAME> {
-        match result {
-            LookupControlFlow::Continue(result) | LookupControlFlow::Break(result) => {
-                match result {
-                    Ok(result) => {
-                        for record in result {
-                            if let Some(cname) = record.data().as_cname() {
-                                return Some(cname.clone());
-                            }
-                        }
-                        None
-                    }
-                    Err(_) => None,
-                }
-            }
-            LookupControlFlow::Skip => None,
-        }
+    fn extract_cname(result: &LookupControlFlow<AuthLookup>) -> Option<CNAME> {
+        let (LookupControlFlow::Continue(Ok(result)) | LookupControlFlow::Break(Ok(result))) =
+            result
+        else {
+            return None;
+        };
+        result.iter().find_map(|record| match &record.data {
+            RData::CNAME(cname) => Some(cname.clone()),
+            _ => None,
+        })
     }
 
     async fn chase_cname(
@@ -158,224 +191,167 @@ impl StubAuthority {
         cname: &CNAME,
         rtype: RecordType,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<<ForwardAuthority as Authority>::Lookup> {
+    ) -> LookupControlFlow<AuthLookup> {
         self.forwarding_authority
-            .lookup(&LowerName::from(&cname.0), rtype, lookup_options)
+            .lookup(&LowerName::from(&cname.0), rtype, None, lookup_options)
             .await
     }
 
+    /// Split a control flow value into "continue lookup?" and the response itself (`None` for `Skip`).
+    fn split(
+        result: LookupControlFlow<AuthLookup>,
+    ) -> (bool, Option<Result<AuthLookup, LookupError>>) {
+        match result {
+            LookupControlFlow::Continue(result) => (false, Some(result)),
+            LookupControlFlow::Break(result) => (true, Some(result)),
+            LookupControlFlow::Skip => (false, None),
+        }
+    }
+
+    /// Collect every record of a lookup, answers and additionals alike, into a flat list.
+    ///
+    /// The catalog drops the additional section for external (i.e. forwarding) zones, so anything
+    /// the client should see has to end up in the answer section.
+    fn all_records(lookup: &AuthLookup) -> Vec<Record> {
+        let mut records: Vec<Record> = lookup.iter().cloned().collect();
+        if let Some(additionals) = lookup.additionals() {
+            records.extend(additionals.cloned());
+        }
+        records
+    }
+
+    /// Concatenate two lookups into a single answer section, dropping duplicate records.
+    fn concat(first: &AuthLookup, second: &AuthLookup) -> AuthLookup {
+        let mut records = Self::all_records(first);
+        for record in Self::all_records(second) {
+            if !records.contains(&record) {
+                records.push(record);
+            }
+        }
+        AuthLookup::answers(LookupRecords::Section(records), None)
+    }
+
+    /// Merge two lookup results into one.
+    ///
+    /// A successful lookup wins over a failed one; if both succeeded, their records are
+    /// concatenated. `Break` from either side is preserved, and `Skip` is only returned if both
+    /// sides skipped.
     fn merge_lookups(
-        local_results: LookupControlFlow<<InMemoryAuthority as Authority>::Lookup>,
-        forward_results: LookupControlFlow<<ForwardAuthority as Authority>::Lookup>,
-    ) -> LookupControlFlow<StubLookup> {
-        let control_flow = match (&local_results, &forward_results) {
-            (LookupControlFlow::Continue(_), LookupControlFlow::Continue(_))
-            | (&LookupControlFlow::Continue(_), &LookupControlFlow::Skip)
-            | (&LookupControlFlow::Skip, &LookupControlFlow::Continue(_)) => {
-                LookupControlFlow::<StubLookup, ()>::Continue(Ok(StubLookup::default()))
-            }
-            (LookupControlFlow::Skip, LookupControlFlow::Skip) => LookupControlFlow::Skip,
-            (LookupControlFlow::Break(_), _) | (_, LookupControlFlow::Break(_)) => {
-                LookupControlFlow::Break(Ok(StubLookup::default()))
-            }
+        local_results: LookupControlFlow<AuthLookup>,
+        forward_results: LookupControlFlow<AuthLookup>,
+    ) -> LookupControlFlow<AuthLookup> {
+        let (local_break, local) = Self::split(local_results);
+        let (forward_break, forward) = Self::split(forward_results);
+        let merged = match (local, forward) {
+            (None, None) => return LookupControlFlow::Skip,
+            (Some(Ok(local)), Some(Ok(forward))) => Ok(Self::concat(&local, &forward)),
+            // Pass a lone lookup through untouched: for a forwarded one this preserves the
+            // answer/authority/additional split that the catalog knows how to unpack.
+            (Some(Ok(lookup)), _) | (_, Some(Ok(lookup))) => Ok(lookup),
+            (Some(Err(local)), _) => Err(local),
+            (None, Some(Err(forward))) => Err(forward),
         };
-        let local = match local_results {
-            LookupControlFlow::Continue(result) | LookupControlFlow::Break(result) => result,
-            LookupControlFlow::Skip => Ok(AuthLookup::default()),
-        };
-        let forward = match forward_results {
-            LookupControlFlow::Continue(result) | LookupControlFlow::Break(result) => Some(result),
-            LookupControlFlow::Skip => None,
-        };
-        let stub_result = match (local, forward) {
-            (Err(local), Some(Err(_)) | None) => Err(local),
-            (Err(_), Some(Ok(forward))) => Ok(StubLookup {
-                local_lookup: AuthLookup::default(),
-                forward_lookup: Some(forward),
-            }),
-            (Ok(local), Some(Ok(forward))) => Ok(StubLookup {
-                local_lookup: local,
-                forward_lookup: Some(forward),
-            }),
-            (Ok(local), None | Some(Err(_))) => Ok(StubLookup {
-                local_lookup: local,
-                forward_lookup: None,
-            }),
-        };
-        match control_flow {
-            LookupControlFlow::Continue(_) => LookupControlFlow::Continue(stub_result),
-            LookupControlFlow::Break(_) => LookupControlFlow::Break(stub_result),
-            LookupControlFlow::Skip => LookupControlFlow::Skip,
-        }
-    }
-
-    fn merge_extra_lookups(
-        stub_result: LookupControlFlow<StubLookup>,
-        forward_results: LookupControlFlow<<ForwardAuthority as Authority>::Lookup>,
-    ) -> LookupControlFlow<StubLookup> {
-        let forward_result = match forward_results {
-            LookupControlFlow::Continue(result) | LookupControlFlow::Break(result) => {
-                match result {
-                    Ok(result) => result,
-                    Err(_) => {
-                        return stub_result;
-                    }
-                }
-            }
-            LookupControlFlow::Skip => {
-                return stub_result;
-            }
-        };
-        match stub_result {
-            LookupControlFlow::Continue(Ok(mut stub_result)) => match stub_result.forward_lookup {
-                None => {
-                    stub_result.forward_lookup = Some(forward_result);
-                    LookupControlFlow::Continue(Ok(stub_result))
-                }
-                Some(mut existing_result) => {
-                    existing_result
-                        .0
-                        .extend_records(forward_result.0.record_iter().cloned().collect());
-                    stub_result.forward_lookup = Some(existing_result);
-                    LookupControlFlow::Continue(Ok(stub_result))
-                }
-            },
-            LookupControlFlow::Break(Ok(mut stub_result)) => match stub_result.forward_lookup {
-                None => {
-                    stub_result.forward_lookup = Some(forward_result);
-                    LookupControlFlow::Break(Ok(stub_result))
-                }
-                Some(mut existing_result) => {
-                    existing_result
-                        .0
-                        .extend_records(forward_result.0.record_iter().cloned().collect());
-                    stub_result.forward_lookup = Some(existing_result);
-                    LookupControlFlow::Break(Ok(stub_result))
-                }
-            },
-            LookupControlFlow::Continue(Err(e)) => LookupControlFlow::Continue(Err(e)),
-            LookupControlFlow::Break(Err(e)) => LookupControlFlow::Break(Err(e)),
-            LookupControlFlow::Skip => LookupControlFlow::Skip,
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct StubLookup {
-    local_lookup: <InMemoryAuthority as Authority>::Lookup,
-    forward_lookup: Option<<ForwardAuthority as Authority>::Lookup>,
-}
-
-impl LookupObject for StubLookup {
-    fn is_empty(&self) -> bool {
-        self.local_lookup.is_empty()
-            && self
-                .forward_lookup
-                .as_ref()
-                .is_none_or(hickory_server::authority::LookupObject::is_empty)
-    }
-
-    fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a Record> + Send + 'a> {
-        let iter: Box<dyn Iterator<Item = &'a Record> + Send + 'a> =
-            Box::new(self.local_lookup.iter());
-        if let Some(forward_lookup) = self.forward_lookup.as_ref() {
-            Box::new(iter.chain(Box::new(forward_lookup.iter())))
+        if local_break || forward_break {
+            LookupControlFlow::Break(merged)
         } else {
-            iter
+            LookupControlFlow::Continue(merged)
         }
-    }
-
-    fn take_additionals(&mut self) -> Option<Box<dyn LookupObject>> {
-        // TODO: Should actually merge instead of returning just one
-        LookupObject::take_additionals(&mut self.local_lookup).or_else(|| {
-            self.forward_lookup
-                .as_mut()
-                .and_then(hickory_server::authority::LookupObject::take_additionals)
-        })
     }
 }
 
 #[async_trait]
-impl Authority for StubAuthority {
-    type Lookup = StubLookup;
-
+impl ZoneHandler for StubAuthority {
     fn zone_type(&self) -> ZoneType {
         ZoneType::External
     }
 
-    fn is_axfr_allowed(&self) -> bool {
-        false
+    fn axfr_policy(&self) -> AxfrPolicy {
+        AxfrPolicy::Deny
     }
 
-    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
-        self.local_authority.update(update).await
+    async fn update(
+        &self,
+        update: &Request,
+        now: u64,
+    ) -> (Result<bool, ResponseCode>, Option<TSigResponseContext>) {
+        self.local_authority.read().await.update(update, now).await
     }
 
     fn origin(&self) -> &LowerName {
-        self.local_authority.origin()
+        &self.origin
     }
 
     async fn lookup(
         &self,
         name: &LowerName,
         rtype: RecordType,
+        request_info: Option<&RequestInfo<'_>>,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
+    ) -> LookupControlFlow<AuthLookup> {
         let local_results = self
             .local_authority
-            .lookup(name, rtype, lookup_options)
+            .read()
+            .await
+            .lookup(name, rtype, request_info, lookup_options)
             .await;
         let forward_results = self
             .forwarding_authority
-            .lookup(name, rtype, lookup_options)
+            .lookup(name, rtype, request_info, lookup_options)
             .await;
         let cname = Self::extract_cname(&local_results);
-        let stub = Self::merge_lookups(local_results, forward_results);
+        let merged = Self::merge_lookups(local_results, forward_results);
         if let Some(cname) = cname {
             let extra_results = self.chase_cname(&cname, rtype, lookup_options).await;
-            Self::merge_extra_lookups(stub, extra_results)
+            Self::merge_lookups(merged, extra_results)
         } else {
-            stub
+            merged
         }
     }
 
     async fn search(
         &self,
-        request: RequestInfo<'_>,
+        request: &Request,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
-        let local_results = self
+    ) -> (LookupControlFlow<AuthLookup>, Option<TSigResponseContext>) {
+        let rtype = match request.request_info() {
+            Ok(request_info) => request_info.query.query_type(),
+            Err(e) => return (LookupControlFlow::Break(Err(e)), None),
+        };
+        let (local_results, _) = self
             .local_authority
-            .search(request.clone(), lookup_options)
+            .read()
+            .await
+            .search(request, lookup_options)
             .await;
-        let forward_results = self
+        let (forward_results, _) = self
             .forwarding_authority
-            .search(request.clone(), lookup_options)
+            .search(request, lookup_options)
             .await;
         let cname = Self::extract_cname(&local_results);
-        let stub = Self::merge_lookups(local_results, forward_results);
-        if let Some(cname) = cname {
-            let extra_results = self
-                .chase_cname(&cname, request.query.query_type(), lookup_options)
-                .await;
-            Self::merge_extra_lookups(stub, extra_results)
+        let merged = Self::merge_lookups(local_results, forward_results);
+        let merged = if let Some(cname) = cname {
+            let extra_results = self.chase_cname(&cname, rtype, lookup_options).await;
+            Self::merge_lookups(merged, extra_results)
         } else {
-            stub
-        }
+            merged
+        };
+        (merged, None)
     }
 
-    async fn get_nsec_records(
+    async fn nsec_records(
         &self,
         name: &LowerName,
         lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
+    ) -> LookupControlFlow<AuthLookup> {
         let local_results = self
             .local_authority
-            .get_nsec_records(name, lookup_options)
+            .read()
+            .await
+            .nsec_records(name, lookup_options)
             .await;
         let forward_results = self
             .forwarding_authority
-            .get_nsec_records(name, lookup_options)
+            .nsec_records(name, lookup_options)
             .await;
         Self::merge_lookups(local_results, forward_results)
     }
@@ -383,13 +359,12 @@ impl Authority for StubAuthority {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::dns::StubDnsResolver;
+    use crate::common::dns::{StubDnsResolver, nameservers_at_port};
     use certonaut::dns::name::DnsName;
-    use hickory_resolver::config::NameServerConfigGroup;
-    use hickory_resolver::proto::rr::RecordType;
-    use hickory_resolver::proto::rr::rdata::CNAME;
+    use hickory_resolver::config::CLOUDFLARE;
     use hickory_server::proto::rr::RData;
-    use hickory_server::proto::rr::rdata::A;
+    use hickory_server::proto::rr::RecordType;
+    use hickory_server::proto::rr::rdata::{A, CNAME};
     use std::net::{IpAddr, Ipv4Addr};
 
     #[tokio::test]
@@ -397,16 +372,13 @@ mod tests {
         let server = StubDnsResolver::try_new(
             "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
-            NameServerConfigGroup::new(),
+            Vec::new(),
         )
         .await?;
-        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
-            NameServerConfigGroup::from_ips_clear(
-                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-                server.listen_port(),
-                true,
-            ),
-        );
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(nameservers_at_port(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            server.listen_port(),
+        ))?;
         let source_name = DnsName::try_from("local-zone-test-initial.example.org")?;
         let destination_name = DnsName::try_from("local-zone-test-destination.example.org")?;
         let authority = server.authority();
@@ -426,16 +398,13 @@ mod tests {
         let server = StubDnsResolver::try_new(
             "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
-            NameServerConfigGroup::new(),
+            Vec::new(),
         )
         .await?;
-        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
-            NameServerConfigGroup::from_ips_clear(
-                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-                server.listen_port(),
-                true,
-            ),
-        );
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(nameservers_at_port(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            server.listen_port(),
+        ))?;
         let source_name = DnsName::try_from("local-zone-test.example.org")?;
         let destination_name = DnsName::try_from("somewhere-else.example.org")?;
         let authority = server.authority();
@@ -458,16 +427,13 @@ mod tests {
         let server = StubDnsResolver::try_new(
             "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
-            NameServerConfigGroup::cloudflare(),
+            CLOUDFLARE.udp_and_tcp().collect(),
         )
         .await?;
-        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
-            NameServerConfigGroup::from_ips_clear(
-                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-                server.listen_port(),
-                true,
-            ),
-        );
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(nameservers_at_port(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            server.listen_port(),
+        ))?;
         let source_name = DnsName::try_from("initial-name-local-test.example.org")?;
         let destination_name = DnsName::try_from("cname-1.test.certonaut.net")?;
         let authority = server.authority();
@@ -482,7 +448,7 @@ mod tests {
             .await?;
         assert_eq!(
             lookup
-                .records()
+                .answers()
                 .iter()
                 .filter(|record| record.record_type() == RecordType::TXT)
                 .count(),
@@ -496,16 +462,13 @@ mod tests {
         let server = StubDnsResolver::try_new(
             "127.0.0.1:0".parse()?,
             DnsName::try_from("example.org")?.into(),
-            NameServerConfigGroup::cloudflare(),
+            CLOUDFLARE.udp_and_tcp().collect(),
         )
         .await?;
-        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
-            NameServerConfigGroup::from_ips_clear(
-                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-                server.listen_port(),
-                true,
-            ),
-        );
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(nameservers_at_port(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            server.listen_port(),
+        ))?;
         let source_name = DnsName::try_from("initial-name-local-test.example.org")?;
         let destination_name = DnsName::try_from("cname-3.test.certonaut.net")?;
         let authority = server.authority();
@@ -520,7 +483,7 @@ mod tests {
             .await?;
         assert_eq!(
             lookup
-                .records()
+                .answers()
                 .iter()
                 .filter(|record| record.record_type() == RecordType::TXT)
                 .count(),
@@ -535,16 +498,13 @@ mod tests {
         let server = StubDnsResolver::try_new(
             "127.0.0.1:0".parse()?,
             DnsName::try_from("test.certonaut.net")?.into(),
-            NameServerConfigGroup::cloudflare(),
+            CLOUDFLARE.udp_and_tcp().collect(),
         )
         .await?;
-        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(
-            NameServerConfigGroup::from_ips_clear(
-                &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
-                server.listen_port(),
-                true,
-            ),
-        );
+        let resolver = certonaut::dns::resolver::Resolver::new_with_upstream(nameservers_at_port(
+            &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+            server.listen_port(),
+        ))?;
         let source_name = DnsName::try_from("override.cname-1.test.certonaut.net")?;
         let parent_domain = DnsName::try_from("cname-1.test.certonaut.net")?;
         let authority = server.authority();
@@ -554,7 +514,7 @@ mod tests {
         let lookup = resolver
             .lookup_generic(parent_domain, RecordType::CNAME)
             .await?;
-        assert_eq!(lookup.records().iter().count(), 1);
+        assert_eq!(lookup.answers().iter().count(), 1);
         Ok(())
     }
 }

@@ -53,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
             "Opening local database {}",
             config_dir.join("database.sqlite").display()
         ))?;
-    let resolver = Resolver::new();
+    let resolver = Resolver::try_new()?;
     let client =
         Certonaut::try_new(config, database, resolver).context("Loading configuration failed")?;
     let maintenance = client.maintenance_task();
