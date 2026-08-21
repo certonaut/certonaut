@@ -34,7 +34,7 @@ toml_edit = { version = "0.25", features = ["serde", "display"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
-x509-parser = "0.17"
+x509-parser = "0.18"
 itertools = "0.14"
 cyborgtime = "2"
 strum = { version = "0.28.0", features = ["derive"] }
