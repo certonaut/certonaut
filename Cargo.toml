@@ -67,7 +67,7 @@ mockito = "1.7.2"
 rstest = "0.26.1"
 tempfile = "3.27.0"
 test-log = { version = "0.2.21", default-features = false, features = ["color", "trace"] }
-testcontainers = "0.25.0"
+testcontainers = "0.28.0"
 
 [profile.release]
 # Makes linking really sloooow, but gives us a faster + smaller binary.
