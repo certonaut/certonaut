@@ -52,8 +52,14 @@ impl<CB: ConfigBackend + Send + Sync + 'static> RenewService<CB> {
         let certs = self
             .client
             .certificates
-            .keys()
-            .cloned()
+            .iter()
+            .filter_map(|(id, config)| {
+                if config.auto_renew {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
             .map(|cert_name| (cert_name, RenewConfig::new(self.interactive)))
             .collect();
         self.run(certs).await
