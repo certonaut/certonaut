@@ -512,7 +512,7 @@ dependencies = [
  "inquire",
  "itertools 0.15.0",
  "libbpf-cargo",
- "libbpf-rs 0.26.2",
+ "libbpf-rs",
  "mockito",
  "nom-rfc8288",
  "parking_lot",
@@ -2089,25 +2089,13 @@ dependencies = [
  "anyhow",
  "cargo_metadata",
  "clap",
- "libbpf-rs 0.27.0",
+ "libbpf-rs",
  "memmap2",
  "serde",
  "serde_json",
  "tempfile",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "libbpf-rs"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd8e8db46a2d5967b5b3dba7aba32a875dc38f222395040607045635ec1f9b63"
-dependencies = [
- "bitflags 2.13.1",
- "libbpf-sys",
- "libc",
- "vsprintf",
 ]
 
 [[package]]
@@ -3752,7 +3740,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

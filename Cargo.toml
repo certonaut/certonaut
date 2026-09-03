@@ -46,7 +46,7 @@ thiserror = "2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 caps = { version = "0.5" }
-libbpf-rs = { version = "0.26", features = ["static", "vendored"], optional = true }
+libbpf-rs = { version = "0.27", features = ["static", "vendored"], optional = true }
 http = { version = "1", optional = true }
 http-body-util = { version = "0.1", optional = true }
 hyper = { version = "1", features = ["client", "server"], optional = true }
